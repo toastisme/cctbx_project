@@ -48,7 +48,7 @@ phil_scope = parse(
     .type = str
     .multiple = True
     .help = Files to read
-  n_bins = 10000
+  n_bins = 3000
     .type = int
     .help = Number of bins in the radial average
   d_max = 20
@@ -87,9 +87,14 @@ phil_scope = parse(
     .type = choice
     .help = The histogram may be intensity-weighted, but the results are \
             typically not very good.
+  downweight_crap = 0
+    .type = float
   split_detectors = False
     .type = bool
     .help = Plot a pattern for each detector panel.
+  xyz_offset = 0. 0. 0.
+    .type = floats
+    .help = origin offset in millimeters
 output {
   log = dials.powder_from_spots.log
     .type = str
@@ -156,6 +161,25 @@ class Script(object):
     expts = params.input.experiments[0].data
 
     import random
+
+    assert len(expts.detectors())==1
+    DET = expts[0].detector
+    hierarchy = DET.hierarchy()
+    fast = hierarchy.get_local_fast_axis()
+    slow = hierarchy.get_local_slow_axis()
+    origin = hierarchy.get_local_origin()
+    corrected_origin = (
+            origin[0] + params.xyz_offset[0],
+            origin[1] + params.xyz_offset[1],
+            origin[2] + params.xyz_offset[2]
+            )
+    hierarchy.set_local_frame(fast, slow, corrected_origin)
+
+
+
+
+
+
     for i, expt in enumerate(expts):
         if random.random() < 0.01: print("experiment ", i)
 
