@@ -10,8 +10,7 @@ from xfel.GSASII import GSASIIindex as gi
 from libtbx import easy_mp
 from cctbx.uctbx import d_as_d_star_sq, d_star_sq_as_two_theta
 from cctbx import miller, crystal
-
-n_triclinic = 24
+import functools
 
 help_message = """
 Script to generate candidate unit cells from a list of measured d-spacings
@@ -30,17 +29,20 @@ conveniently using cctbx.xfel.powder_from_spots.
 phil_scope = parse(
     """
   search {
-    lattices = cF cI cP hR hP tI tP oF oI oC oP mC mP aP
-      .type = choice(multi=True)
-      .help = "Bravais lattices to search"
+    n_searches = 2 2 2 4 4 4 4 6 6 6 6 16 16 24
+      .type = ints(size=14)
+      .help = "Number of GSASIIindex runs per lattice type. Given in order cF,"
+              "cI, cP, hR, hP, tI, tP, oF, oI, oC, oP, mC, mP, aP."
     n_peaks = 20
       .type = int
-      .help = "Number of d-spacings for unit cell search"
+      .help = "Number of d-spacings for unit cell search. If the peak list"
+              "given by input.peak_list is longer than n_peaks, a random subset"
+              "is selected for each GSASIIindex run."
     wavl = 1.03
       .type = float
       .help = "GSASII wants 2th values in addition to d-spacings, so we need"
               "a wavelength. It doesn't seem to be used for anything."
-    timeout = None
+    timeout = 300
       .type = int
       .help = "Timeout the GSASII lattice search calls after this many seconds"
   }
@@ -72,11 +74,6 @@ phil_scope = parse(
     """
 )
 
-
-
-
-
-
 class Candidate_cell(object):
   def __init__(self, cs, npeaks=None, m20=None):
     '''
@@ -88,18 +85,15 @@ class Candidate_cell(object):
     self.niggli_uc = cs.niggli_cell().unit_cell()
     self.npeaks = npeaks
     self.m20 = m20
-#    self.hit_count = 1
-#    self.hits = [gcell]
-#    self.best_score = self.cumul_score = self.hit_score(gcell)
 
   def __str__(self):
-    # cs.best_cell is really more like "better cell" so we call it a few
-    # times to ensure we get the actual best cell
     uc = self.cs.best_cell().best_cell().best_cell().best_cell().unit_cell()
     return "{}\t{}".format(str(uc), str(self.sg.info()))
 
   def standardize(self):
-    self.cs = self.cs.best_cell()
+    # cs.best_cell is really more like "better cell" so we call it a few
+    # times to ensure we get the actual best cell
+    self.cs = self.cs.best_cell().best_cell().best_cell().best_cell()
 
   def matches_cell(self, cell2):
     nc1 = self.niggli_uc
@@ -109,6 +103,7 @@ class Candidate_cell(object):
   def calc_powder_score(self, powder_pattern, d_min):
     '''Take a list of (d, counts) tuples and return a figure of merit (lower-better)
     '''
+    if powder_pattern is None: return 1
     assert self.sg is not None
     mig = miller.index_generator(self.uc, self.sg.type(), 0, 0.8*d_min)
     d_spacings = []
@@ -126,6 +121,10 @@ class Candidate_cell(object):
   def save_powder_score(self, powder_pattern, d_min):
     self.powder_score = self.calc_powder_score(powder_pattern, d_min)
 
+  @property
+  def net_score(self):
+    return self.powder_score/self.m20
+
 
   @property
   def uc(self):
@@ -134,24 +133,6 @@ class Candidate_cell(object):
   @property
   def sg(self):
     return self.cs.space_group()
-    
-
-  # Down here is Monte Carlo-related stuff we might not use anymore
-  def store_hit(self, gcell):
-    self.hits.append(gcell)
-    self.hit_count += 1
-    score = self.hit_score(gcell)
-    self.cumul_score += score
-    if score > self.best_score: self.best_score = score
-
-  def average_score(self):
-    return self.cumul_score / self.hit_count
-
-  @staticmethod
-  def hit_score(gcell):
-    m20, x20, nc = gcell[0:3]
-    return m20/nc/(x20+1)
-
 
 class Candidate_cell_manager(object):
   def __init__(self):
@@ -177,9 +158,6 @@ class Candidate_cell_manager(object):
           break
       if not found_match:
         self.cells.append(Candidate_cell(gcell))
-
-
-
   
 def gpeak_from_d_spacing(d, wavl):
   twoth = d_star_sq_as_two_theta(d_as_d_star_sq(d), wavl, deg=True)
@@ -196,12 +174,14 @@ def prepare_gpeaks(d_spacings, wavl, n_peaks=None):
 
 def call_gsas(args):
   '''
-  args is a tuple (d_spacings, bravais, powder_pattern, d_min):
+  args is a tuple (d_spacings, bravais, powder_pattern, d_min, wavl, timeout):
   d_spacings: list of floats, the peaks for the cell search
   bravais: string, a lattice symbol like mP
   powder_pattern: a list of (x,y) tuples, the powder pattern for scoring
       candidates (x-axis must be d-spacing)
   d_min: float, d_min for scoring candidates against powder pattern
+  wavl: This is a GSASII artifact
+  timeout: End GSASIIindex runs after this many seconds
   '''
 
   symmorphic_sgs = ['F23', 'I23', 'P23', 'R3', 'P3', 'I4', 'P4', 'F222', 'I222',
@@ -236,9 +216,9 @@ def call_gsas(args):
   for gcell in gcells:
     m20 = gcell[0]
     ibrav = gcell[2]
+    uc = gcell[3:9]
     npeaks = gcell[12]
     sg = symmorphic_sgs[ibrav]
-    uc = gcell[3:9]
     cs = crystal.symmetry(unit_cell=uc, space_group_symbol=sg)
     candidate = Candidate_cell(cs, npeaks, m20)
     candidate.save_powder_score(powder_pattern, d_min)
@@ -251,12 +231,27 @@ def i_first_matching(cand1, cand_list):
       return i_cand
   raise RuntimeError
 
+def print_results(candidates, params):
+  i_first_matching_partial = functools.partial(
+      i_first_matching, cand_list=candidates)
+  i_first_matching_list = easy_mp.parallel_map(
+      i_first_matching_partial,
+      candidates,
+      processes=params.multiprocessing.nproc)
 
-
-
-
-  
-
+  i_first_matching_unique = set(i_first_matching_list)
+  results = []
+  for i in i_first_matching_unique:
+    matches = [
+        (cand.net_score, cand)
+        for i_cand, cand in enumerate(candidates)
+        if i == i_first_matching_list[i_cand]
+        ]
+    best = min(matches, key=lambda m:m[0])
+    results.append(best)
+  results.sort(key=lambda r: r[0])
+  for c in results[:10]:
+    print("{:.4f}\t{}".format(c[0], c[1]))
 
 class Script(object):
   def __init__(self):
@@ -269,11 +264,6 @@ class Script(object):
          read_reflections=True,
          read_experiments=True,
          )
-
-
-
-
-
         
   def run(self):
     params, options = self.parser.parse_args()
@@ -282,32 +272,41 @@ class Script(object):
     # Load d-spacings and powder pattern from files
     with open(params.input.peak_list) as f:
       d_spacings = [float(l.strip()) for l in f.readlines()]
-    with open(params.input.powder_pattern) as f:
-      powder_pattern = []
-      for l in f.readlines():
-        x, y = l.split()
-        powder_pattern.append((float(x), float(y)))
+    if params.input.powder_pattern is not None:
+      with open(params.input.powder_pattern) as f:
+        powder_pattern = []
+        for l in f.readlines():
+          x, y = l.split()
+          powder_pattern.append((float(x), float(y)))
+    else:
+      powder_pattern = None
     d_min = params.validate.d_min
     wavl = params.search.wavl
     timeout = params.search.timeout
 
     
-    lattices_todo = (
-        ['cF'] * 2 +
-        ['cI'] * 2 +
-        ['cP'] * 2 +
-        ['hR'] * 4 +
-        ['hP'] * 4 +
-        ['tI'] * 4 +
-        ['tP'] * 4 +
-        ['oF'] * 6 +
-        ['oI'] * 6 +
-        ['oC'] * 6 +
-        ['oP'] * 6 +
-        ['mC'] * 16 +
-        ['mP'] * 16 +
-        ['aP'] * n_triclinic
-        )
+
+#    lattices_todo = (
+#        ['cF'] * 2 +
+#        ['cI'] * 2 +
+#        ['cP'] * 2 +
+#        ['hR'] * 4 +
+#        ['hP'] * 4 +
+#        ['tI'] * 4 +
+#        ['tP'] * 4 +
+#        ['oF'] * 6 +
+#        ['oI'] * 6 +
+#        ['oC'] * 6 +
+#        ['oP'] * 6 +
+#        ['mC'] * 16 +
+#        ['mP'] * 16 +
+#        ['aP'] * n_triclinic
+#        )
+    lattices_todo = []
+    lattice_symbols = ['cF', 'cI', 'cP', 'hR', 'hP', 'tI', 'tP', 'oF', 'oI',
+        'oC', 'oP', 'mC', 'mP', 'aP']
+    for l, n in zip(lattice_symbols, params.search.n_searches):
+      lattices_todo.extend([l] * n)
     lattices_todo.reverse() # we want to start the longer jobs right away
 
     candidates = easy_mp.parallel_map(
@@ -316,61 +315,16 @@ class Script(object):
             for bravais in lattices_todo],
         processes=params.multiprocessing.nproc)
 
-    candidates_triclinic_flat, candidates_other_flat = [], []
-    for c in candidates[:n_triclinic]:
-      candidates_triclinic_flat.extend(c)
-    for c in candidates[n_triclinic:]:
-      candidates_other_flat.extend(c)
-
-    from functools import partial
+    n_triclinic = params.search.n_searches[-1]
+    candidates_triclinic_flat = []
+    for c in candidates[:n_triclinic]: candidates_triclinic_flat.extend(c)
+    candidates_other_flat = []
+    for c in candidates[n_triclinic:]: candidates_other_flat.extend(c)
 
     print("Monoclinic and higher results:")
-    i_in_other_function = partial(
-        i_first_matching, cand_list=candidates_other_flat)
-    i_in_other_list = easy_mp.parallel_map(
-        i_in_other_function,
-        candidates_other_flat,
-        processes=params.multiprocessing.nproc)
-    unique_cells_other = set(i_in_other_list)
-    results_other = []
-    for i_unique in unique_cells_other:
-      matches = [
-          (cand.powder_score/cand.m20, cand)
-          for i_cand, cand in enumerate(candidates_other_flat)
-          if i_in_other_list[i_cand] == i_unique
-          ]
-      best = min(matches, key=lambda m:m[0])
-      results_other.append(best)
-    results_other.sort(key=lambda r:r[0]) #, reverse=True)
-    for c in results_other[:10]:
-      print("{:.2f}\t{}".format(c[0], c[1]))
-
+    print_results(candidates_other_flat, params)
     print("Triclinic results:")
-    i_in_triclinic_function = partial(
-        i_first_matching, cand_list=candidates_triclinic_flat)
-    i_in_triclinic_list = easy_mp.parallel_map(
-        i_in_triclinic_function,
-        candidates_triclinic_flat,
-        processes=params.multiprocessing.nproc)
-    unique_cells_triclinic = set(i_in_triclinic_list)
-    results_triclinic = []
-    for i_unique in unique_cells_triclinic:
-      matches = [
-          (cand.powder_score/cand.m20, cand)
-          for i_cand, cand in enumerate(candidates_triclinic_flat)
-          if i_in_triclinic_list[i_cand] == i_unique
-          ]
-      best = min(matches, key=lambda m:m[0])
-      results_triclinic.append(best)
-    results_triclinic.sort(key=lambda r:r[0])
-    for c in results_triclinic[:10]:
-      print("{:.2f}\t{}".format(c[0], c[1]))
-
-
-    import IPython; IPython.embed()
-
-
-    
+    print_results(candidates_triclinic_flat, params)
 
 if __name__=="__main__":
   script = Script()
