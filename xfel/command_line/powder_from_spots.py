@@ -133,22 +133,25 @@ class Script(object):
     refls = params.input.reflections[0].data
     expts = params.input.experiments[0].data
 
-# TODO: This only works if combine_experiments was run with 
-#   reference_from_model.detector=0. Can we take the first detector and use it
-#   for all the experiments?
-# 
-#    assert len(expts.detectors())==1
-#    DET = expts[0].detector
-#    hierarchy = DET.hierarchy()
-#    fast = hierarchy.get_local_fast_axis()
-#    slow = hierarchy.get_local_slow_axis()
-#    origin = hierarchy.get_local_origin()
-#    corrected_origin = (
-#            origin[0] + params.xyz_offset[0],
-#            origin[1] + params.xyz_offset[1],
-#            origin[2] + params.xyz_offset[2]
-#            )
-#    hierarchy.set_local_frame(fast, slow, corrected_origin)
+    if not np.allclose(params.xyz_offset, [0,0,0]):
+
+      if len(expts.detectors()) > 1:
+        compare_detector = DetectorComparison()
+        ref_detector = expts.detectors()[0]
+        for det in expts.detectors()[1:]:
+          assert compare_detector(ref_detector, det)
+
+      DET = expts[0].detector
+      hierarchy = DET.hierarchy()
+      fast = hierarchy.get_local_fast_axis()
+      slow = hierarchy.get_local_slow_axis()
+      origin = hierarchy.get_local_origin()
+      corrected_origin = (
+              origin[0] + params.xyz_offset[0],
+              origin[1] + params.xyz_offset[1],
+              origin[2] + params.xyz_offset[2]
+              )
+      hierarchy.set_local_frame(fast, slow, corrected_origin)
 
     for i, expt in enumerate(expts):
         if i % 1000 == 0: print("experiment ", i)
