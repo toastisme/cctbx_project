@@ -154,66 +154,65 @@ class Script(object):
       hierarchy.set_local_frame(fast, slow, corrected_origin)
 
     for i, expt in enumerate(expts):
-        if i % 1000 == 0: print("experiment ", i)
+      if i % 1000 == 0: print("experiment ", i)
+      s0 = expt.beam.get_s0()
+      sel = refls['id'] == i
+      refls_sel = refls.select(sel)
+      xyzobses = refls_sel['xyzobs.px.value']
+      intensities = refls_sel['intensity.sum.value']
+      panels = refls_sel['panel']
+      shoeboxes = refls_sel['shoebox']
+
+      for i_refl in range(len(refls_sel)):
+        i_panel = panels[i_refl]
+        panel = expt.detector[i_panel]
+        sb = shoeboxes[i_refl]
+        sbpixels = zip(sb.coords(), sb.values())
+
         
-        s0 = expt.beam.get_s0()
-        sel = refls['id'] == i
-        refls_sel = refls.select(sel)
-        xyzobses = refls_sel['xyzobs.px.value']
-        intensities = refls_sel['intensity.sum.value']
-        panels = refls_sel['panel']
-        shoeboxes = refls_sel['shoebox']
-
-        for i_refl in range(len(refls_sel)):
-            i_panel = panels[i_refl]
-            panel = expt.detector[i_panel]
-            sb = shoeboxes[i_refl]
-            sbpixels = zip(sb.coords(), sb.values())
-
-            
-            xy = xyzobses[i_refl][0:2]
-            peak_height = intensities[i_refl]
-            res = panel.get_resolution_at_pixel(s0, xy)
-            if params.peak_position=="xyzobs":
-                res_inv = 1/res
-                i_bin = int(
-                    n_bins * (res_inv - d_inv_low) / (d_inv_high - d_inv_low)
-                    )
-                if i_bin < 0 or i_bin >= n_bins: continue
-                panelsums[i_panel][i_bin] += 1 if unit_wt else peak_height
-            if params.peak_position=="shoebox":
-                for (x,y,_), px_value in sbpixels:
-                    res = panel.get_resolution_at_pixel(s0, (x,y))
-                    res_inv = 1/res
-                    i_bin = int(
-                        n_bins * (res_inv - d_inv_low) / (d_inv_high - d_inv_low)
-                        )
-                    if i_bin < 0 or i_bin >= n_bins: continue
-                    panelsums[i_panel][i_bin] += 1 if unit_wt else px_value
+        xy = xyzobses[i_refl][0:2]
+        peak_height = intensities[i_refl]
+        res = panel.get_resolution_at_pixel(s0, xy)
+        if params.peak_position=="xyzobs":
+          res_inv = 1/res
+          i_bin = int(
+              n_bins * (res_inv - d_inv_low) / (d_inv_high - d_inv_low)
+              )
+          if i_bin < 0 or i_bin >= n_bins: continue
+          panelsums[i_panel][i_bin] += 1 if unit_wt else peak_height
+        if params.peak_position=="shoebox":
+          for (x,y,_), px_value in sbpixels:
+            res = panel.get_resolution_at_pixel(s0, (x,y))
+            res_inv = 1/res
+            i_bin = int(
+                n_bins * (res_inv - d_inv_low) / (d_inv_high - d_inv_low)
+                )
+            if i_bin < 0 or i_bin >= n_bins: continue
+            panelsums[i_panel][i_bin] += 1 if unit_wt else px_value
 
                 
 
     xvalues = np.linspace(d_inv_low, d_inv_high, n_bins)
     fig, ax = plt.subplots()
     if params.split_panels:
-        # TODO: better way to stack the split patterns
-        offset = 0.5*max(np.array(panelsums[0]))
-        for i_sums, sums in enumerate(panelsums):
-            yvalues = np.array(sums)
-            plt.plot(xvalues, yvalues+0.5*i_sums*offset)
+      # TODO: better way to stack the split patterns
+      offset = 0.5*max(np.array(panelsums[0]))
+      for i_sums, sums in enumerate(panelsums):
+        yvalues = np.array(sums)
+        plt.plot(xvalues, yvalues+0.5*i_sums*offset)
     else:
-        yvalues = sum(panelsums)
-        plt.plot(xvalues, yvalues)
+      yvalues = sum(panelsums)
+      plt.plot(xvalues, yvalues)
     ax.get_xaxis().set_major_formatter(tick.FuncFormatter(
-        lambda x, _: "{:.3f}".format(1/x)))
+      lambda x, _: "{:.3f}".format(1/x)))
 
     if params.output.xy_file:
-        with open(params.output.xy_file, 'w') as f:
-            for x,y in zip(xvalues, yvalues):
-                f.write("{:.6f}\t{}\n".format(1/x, y))
+      with open(params.output.xy_file, 'w') as f:
+        for x,y in zip(xvalues, yvalues):
+          f.write("{:.6f}\t{}\n".format(1/x, y))
     plt.show()
 
 if __name__ == "__main__":
-    with show_mail_on_error():
-        script = Script()
-        script.run()
+  with show_mail_on_error():
+    script = Script()
+    script.run()
