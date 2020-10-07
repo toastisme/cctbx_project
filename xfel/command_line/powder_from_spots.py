@@ -37,7 +37,7 @@ and max=15 are a good starting point for small-molecule samples.
 
 An excellent reference geometry (rmsd <<1 px) is important. A current detector
 metrology refined from a protein sample is probably the best approach. Try a
-plot with split_detectors=True to confirm that the patterns on each panel agree.
+plot with split_panels=True to confirm that the patterns on each panel agree.
 In a data set from the MPCCD detector at SACLA we found that the Tau2 and Tau3
 tilts had to be refined for each panel.
 """
@@ -58,13 +58,6 @@ phil_scope = parse(
   verbose = True
     .type = bool
     .help = Extra logging information
-  mask = None
-    .type = str
-    .help = DIALS style pixel mask. Average will skip these pixels. Not \
-        implemented.
-  x_axis = *two_theta q resolution
-    .type = choice
-    .help = Units for x axis
   panel = None
     .type = int
     .help = Only use data from the specified panel
@@ -89,7 +82,7 @@ phil_scope = parse(
             typically not very good.
   downweight_crap = 0
     .type = float
-  split_detectors = False
+  split_panels = False
     .type = bool
     .help = Plot a pattern for each detector panel.
   xyz_offset = 0. 0. 0.
@@ -97,8 +90,6 @@ phil_scope = parse(
     .help = origin offset in millimeters
 output {
   log = dials.powder_from_spots.log
-    .type = str
-  d_table = d_table.pkl
     .type = str
   xy_file = None
     .type = str
@@ -109,7 +100,7 @@ output {
 
 class Script(object):
   def __init__(self):
-    usage = "usage: make a powder pattern"
+    usage = "$ cctbx.xfel.powder_from_spots EXPERIMENTS REFLECTIONS [options]"
     self.parser = OptionParser(
         usage=usage,
         phil=phil_scope,
@@ -125,64 +116,42 @@ class Script(object):
     log.config(verbosity=options.verbose, logfile=params.output.log)
     logger.info(dials_version())
 
-
-    assert len(params.input.reflections) == 1, "Please supply 1 reflections file"
-    assert len(params.input.experiments) == 1, "Please supply 1 experiments file"
+    assert len(params.input.reflections)==1, "Please supply 1 reflections file"
+    assert len(params.input.experiments)==1, "Please supply 1 experiments file"
 
     # setup limits and bins
-    assert params.n_bins, "Please supply n_bins for the pattern"
     n_bins = params.n_bins
     d_max, d_min = params.d_max, params.d_min
     d_inv_low, d_inv_high = 1/d_max, 1/d_min
+    unit_wt = (params.peak_weighting == "unit")
 
-    #sums = flex.double(params.n_bins)
 
-    sums0 = flex.double(params.n_bins)
-    sums1 = flex.double(params.n_bins)
-    sums2 = flex.double(params.n_bins)
-    sums3 = flex.double(params.n_bins)
-    sums4 = flex.double(params.n_bins)
-    sums5 = flex.double(params.n_bins)
-    sums6 = flex.double(params.n_bins)
-    sums7 = flex.double(params.n_bins)
-    panelsums = {
-        0: sums0,
-        1: sums1,
-        2: sums2,
-        3: sums3,
-        4: sums4,
-        5: sums5,
-        6: sums6,
-        7: sums7,
-        }
+    # TODO: get n_panels from expt
+    panelsums = [flex.double(params.n_bins) for _ in range(8)]
     d_table = []
 
     refls = params.input.reflections[0].data
     expts = params.input.experiments[0].data
 
-    import random
-
-    assert len(expts.detectors())==1
-    DET = expts[0].detector
-    hierarchy = DET.hierarchy()
-    fast = hierarchy.get_local_fast_axis()
-    slow = hierarchy.get_local_slow_axis()
-    origin = hierarchy.get_local_origin()
-    corrected_origin = (
-            origin[0] + params.xyz_offset[0],
-            origin[1] + params.xyz_offset[1],
-            origin[2] + params.xyz_offset[2]
-            )
-    hierarchy.set_local_frame(fast, slow, corrected_origin)
-
-
-
-
-
+# TODO: This only works if combine_experiments was run with 
+#   reference_from_model.detector=0. Can we take the first detector and use it
+#   for all the experiments?
+# 
+#    assert len(expts.detectors())==1
+#    DET = expts[0].detector
+#    hierarchy = DET.hierarchy()
+#    fast = hierarchy.get_local_fast_axis()
+#    slow = hierarchy.get_local_slow_axis()
+#    origin = hierarchy.get_local_origin()
+#    corrected_origin = (
+#            origin[0] + params.xyz_offset[0],
+#            origin[1] + params.xyz_offset[1],
+#            origin[2] + params.xyz_offset[2]
+#            )
+#    hierarchy.set_local_frame(fast, slow, corrected_origin)
 
     for i, expt in enumerate(expts):
-        if random.random() < 0.01: print("experiment ", i)
-
+        if i % 1000 == 0: print("experiment ", i)
         
         s0 = expt.beam.get_s0()
         sel = refls['id'] == i
@@ -194,40 +163,43 @@ class Script(object):
 
         for i_refl in range(len(refls_sel)):
             i_panel = panels[i_refl]
-            #if i_panel not in [1,2,5,6]: continue
             panel = expt.detector[i_panel]
             sb = shoeboxes[i_refl]
             sbpixels = zip(sb.coords(), sb.values())
 
             
             xy = xyzobses[i_refl][0:2]
-            intensity = intensities[i_refl]
+            peak_height = intensities[i_refl]
             res = panel.get_resolution_at_pixel(s0, xy)
-            d_table.append((res, intensity))
             if params.peak_position=="xyzobs":
                 res_inv = 1/res
-                i_bin = int(n_bins * (res_inv - d_inv_low) / (d_inv_high - d_inv_low))
+                i_bin = int(
+                    n_bins * (res_inv - d_inv_low) / (d_inv_high - d_inv_low)
+                    )
                 if i_bin < 0 or i_bin >= n_bins: continue
-                panelsums[i_panel][i_bin] += intensity if params.peak_weighting=="intensity" else 1
+                panelsums[i_panel][i_bin] += 1 if unit_wt else peak_height
             if params.peak_position=="shoebox":
-                for (x,y,_), value in sbpixels:
+                for (x,y,_), px_value in sbpixels:
                     res = panel.get_resolution_at_pixel(s0, (x,y))
                     res_inv = 1/res
-                    i_bin = int(n_bins * (res_inv - d_inv_low) / (d_inv_high - d_inv_low))
+                    i_bin = int(
+                        n_bins * (res_inv - d_inv_low) / (d_inv_high - d_inv_low)
+                        )
                     if i_bin < 0 or i_bin >= n_bins: continue
-                    panelsums[i_panel][i_bin] += value if params.peak_weighting=="intensity" else 1
+                    panelsums[i_panel][i_bin] += 1 if unit_wt else px_value
 
                 
 
     xvalues = np.linspace(d_inv_low, d_inv_high, n_bins)
     fig, ax = plt.subplots()
-    if params.split_detectors:
-        offset = max(np.array(sums1))
-        for i_sums, sums in enumerate([sums1, sums2, sums5, sums6]):
+    if params.split_panels:
+        # TODO: better way to stack the split patterns
+        offset = 0.5*max(np.array(panelsums[0]))
+        for i_sums, sums in enumerate(panelsums):
             yvalues = np.array(sums)
             plt.plot(xvalues, yvalues+0.5*i_sums*offset)
     else:
-        yvalues = sum([v for v in panelsums.values()])
+        yvalues = sum(panelsums)
         plt.plot(xvalues, yvalues)
     ax.get_xaxis().set_major_formatter(tick.FuncFormatter(
         lambda x, _: "{:.3f}".format(1/x)))
@@ -238,11 +210,7 @@ class Script(object):
                 f.write("{:.6f}\t{}\n".format(1/x, y))
     plt.show()
 
-    with open(params.output.d_table, 'wb') as f:
-        pickle.dump(d_table, f)
-
 if __name__ == "__main__":
     with show_mail_on_error():
         script = Script()
         script.run()
-
