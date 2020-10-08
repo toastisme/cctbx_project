@@ -10,6 +10,8 @@ from dials.util import show_mail_on_error
 from dials.util.options import OptionParser
 from dials.util.version import dials_version
 
+from dxtbx.model.experiment_list import DetectorComparison
+
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as tick
@@ -75,7 +77,8 @@ phil_scope = parse(
   peak_position = *xyzobs shoebox
     .type = choice
     .help = By default, use the d-spacing of the peak maximum. Shoebox: Use the \
-            coordinates of every pixel in the reflection shoebox.
+            coordinates of every pixel in the reflection shoebox. This entails \
+            intensity-weighted peaks.
   peak_weighting = *unit intensity
     .type = choice
     .help = The histogram may be intensity-weighted, but the results are \
@@ -111,6 +114,19 @@ class Script(object):
         )
 
   def run(self):
+
+    def _process_pixel(params, panelsums, i_panel, s0, panel, xy, value):
+      d_max_inv = 1/params.d_max
+      d_min_inv = 1/params.d_min
+      res_inv = 1 / panel.get_resolution_at_pixel(s0, xy)
+      n_bins = params.n_bins
+      i_bin = int(
+          n_bins * (res_inv - d_inv_low) / (d_inv_high - d_inv_low)
+          )
+      if i_bin < 0 or i_bin >= n_bins: return
+      panelsums[i_panel][i_bin] += value
+
+
     params, options = self.parser.parse_args(show_diff_phil=False)
 
     log.config(verbosity=options.verbose, logfile=params.output.log)
@@ -166,31 +182,20 @@ class Script(object):
       for i_refl in range(len(refls_sel)):
         i_panel = panels[i_refl]
         panel = expt.detector[i_panel]
-        sb = shoeboxes[i_refl]
-        sbpixels = zip(sb.coords(), sb.values())
-
         
-        xy = xyzobses[i_refl][0:2]
         peak_height = intensities[i_refl]
-        res = panel.get_resolution_at_pixel(s0, xy)
         if params.peak_position=="xyzobs":
-          res_inv = 1/res
-          i_bin = int(
-              n_bins * (res_inv - d_inv_low) / (d_inv_high - d_inv_low)
-              )
-          if i_bin < 0 or i_bin >= n_bins: continue
-          panelsums[i_panel][i_bin] += 1 if unit_wt else peak_height
+          xy = xyzobses[i_refl][0:2]
+          if params.peak_weighting == "intensity":
+            value = intensities[i_refl]
+          else:
+            value = 1
+          _process_pixel(params, panelsums, i_panel, s0, panel, xy, value)
         if params.peak_position=="shoebox":
-          for (x,y,_), px_value in sbpixels:
-            res = panel.get_resolution_at_pixel(s0, (x,y))
-            res_inv = 1/res
-            i_bin = int(
-                n_bins * (res_inv - d_inv_low) / (d_inv_high - d_inv_low)
-                )
-            if i_bin < 0 or i_bin >= n_bins: continue
-            panelsums[i_panel][i_bin] += 1 if unit_wt else px_value
-
-                
+          sb = shoeboxes[i_refl]
+          sbpixels = zip(sb.coords(), sb.values())
+          for (x,y,_), value in sbpixels:
+            _process_pixel(params, panelsums, i_panel, s0, panel, (x,y), value)
 
     xvalues = np.linspace(d_inv_low, d_inv_high, n_bins)
     fig, ax = plt.subplots()
