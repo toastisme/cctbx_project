@@ -103,7 +103,7 @@ class Candidate_cell(object):
   def calc_powder_score(self, powder_pattern, d_min):
     '''Take a list of (d, counts) tuples and return a figure of merit (lower-better)
     '''
-    if powder_pattern is None: return 1
+    if powder_pattern is None: return 100
     assert self.sg is not None
     mig = miller.index_generator(self.uc, self.sg.type(), 0, 0.8*d_min)
     d_spacings = []
@@ -122,7 +122,7 @@ class Candidate_cell(object):
     self.powder_score = self.calc_powder_score(powder_pattern, d_min)
 
   @property
-  def net_score(self):
+  def score(self):
     return self.powder_score/self.m20
 
 
@@ -226,12 +226,21 @@ def call_gsas(args):
   return candidates
 
 def i_first_matching(cand1, cand_list):
+  '''
+  Given a candidate cand1 and a list of candidates, return the index of the
+  first candidate in the list with a unit cell matching cand1.
+  '''
   for i_cand, cand2 in enumerate(cand_list):
     if cand1.matches_cell(cand2):
       return i_cand
   raise RuntimeError
 
 def print_results(candidates, params):
+  '''
+  Take a list of candidates and sort into groups with matching unit cells. For
+  each group, assign it the cell parameters of the cell giving the best score.
+  Sort groups by score and print the scores and cell parameters.
+  '''
   i_first_matching_partial = functools.partial(
       i_first_matching, cand_list=candidates)
   i_first_matching_list = easy_mp.parallel_map(
@@ -243,15 +252,15 @@ def print_results(candidates, params):
   results = []
   for i in i_first_matching_unique:
     matches = [
-        (cand.net_score, cand)
+        cand
         for i_cand, cand in enumerate(candidates)
         if i == i_first_matching_list[i_cand]
         ]
-    best = min(matches, key=lambda m:m[0])
+    best = min(matches, key=lambda m:m.score)
     results.append(best)
-  results.sort(key=lambda r: r[0])
-  for c in results[:10]:
-    print("{:.4f}\t{}".format(c[0], c[1]))
+  results.sort(key=lambda r: r.score)
+  for r in results[:10]:
+    print("{:.4f}\t{}".format(r.score, r))
 
 class Script(object):
   def __init__(self):
@@ -268,7 +277,6 @@ class Script(object):
   def run(self):
     params, options = self.parser.parse_args()
 
-
     # Load d-spacings and powder pattern from files
     with open(params.input.peak_list) as f:
       d_spacings = [float(l.strip()) for l in f.readlines()]
@@ -284,24 +292,6 @@ class Script(object):
     wavl = params.search.wavl
     timeout = params.search.timeout
 
-    
-
-#    lattices_todo = (
-#        ['cF'] * 2 +
-#        ['cI'] * 2 +
-#        ['cP'] * 2 +
-#        ['hR'] * 4 +
-#        ['hP'] * 4 +
-#        ['tI'] * 4 +
-#        ['tP'] * 4 +
-#        ['oF'] * 6 +
-#        ['oI'] * 6 +
-#        ['oC'] * 6 +
-#        ['oP'] * 6 +
-#        ['mC'] * 16 +
-#        ['mP'] * 16 +
-#        ['aP'] * n_triclinic
-#        )
     lattices_todo = []
     lattice_symbols = ['cF', 'cI', 'cP', 'hR', 'hP', 'tI', 'tP', 'oF', 'oI',
         'oC', 'oP', 'mC', 'mP', 'aP']
