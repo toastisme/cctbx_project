@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as tick
 
 import pickle
+import copy
 
 logger = logging.getLogger("dials.command_line.powder_from_spots")
 
@@ -151,14 +152,8 @@ class Script(object):
 
     if not np.allclose(params.xyz_offset, [0,0,0]):
 
-      if len(expts.detectors()) > 1:
-        compare_detector = DetectorComparison()
-        ref_detector = expts.detectors()[0]
-        for det in expts.detectors()[1:]:
-          assert compare_detector(ref_detector, det)
-
-      DET = expts[0].detector
-      hierarchy = DET.hierarchy()
+      corrected_detector = copy.deepcopy(expts[0].detector)
+      hierarchy = corrected_detector.hierarchy()
       fast = hierarchy.get_local_fast_axis()
       slow = hierarchy.get_local_slow_axis()
       origin = hierarchy.get_local_origin()
@@ -168,6 +163,12 @@ class Script(object):
               origin[2] + params.xyz_offset[2]
               )
       hierarchy.set_local_frame(fast, slow, corrected_origin)
+
+      compare_detector = DetectorComparison()
+      ref_detector = copy.deepcopy(expts.detectors()[0])
+      for expt in expts:
+        assert compare_detector(ref_detector, expt.detector)
+        expt.detector = corrected_detector
 
     for i, expt in enumerate(expts):
       if i % 1000 == 0: print("experiment ", i)
