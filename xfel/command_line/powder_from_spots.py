@@ -84,8 +84,10 @@ phil_scope = parse(
     .type = choice
     .help = The histogram may be intensity-weighted, but the results are \
             typically not very good.
-  downweight_crap = 0
+  downweight_weak = 0
     .type = float
+    .help = Subtract a constant from every intensity. May help filter out \
+            impurity peaks.
   split_panels = False
     .type = bool
     .help = Plot a pattern for each detector panel.
@@ -117,6 +119,7 @@ class Script(object):
   def run(self):
 
     def _process_pixel(params, panelsums, i_panel, s0, panel, xy, value):
+      value -= params.downweight_weak
       d_max_inv = 1/params.d_max
       d_min_inv = 1/params.d_min
       res_inv = 1 / panel.get_resolution_at_pixel(s0, xy)
