@@ -160,6 +160,7 @@ class Candidate_cell_manager(object):
         self.cells.append(Candidate_cell(gcell))
   
 def gpeak_from_d_spacing(d, wavl):
+  """take a d-spacing and return a peak in GSASII format"""
   twoth = d_star_sq_as_two_theta(d_as_d_star_sq(d), wavl, deg=True)
   return [twoth, 1000, True, False, 0, 0, 0, d, 0]
 
@@ -189,12 +190,7 @@ def call_gsas(args):
   lattices = ['cF', 'cI', 'cP', 'hR', 'hP', 'tI', 'tP', 'oF', 'oI', 'oA', 'oB',
       'oC', 'oP', 'mI', 'mC', 'mP', 'aP']
 
-  d_spacings = args[0]
-  bravais = args[1]
-  powder_pattern = args[2]
-  d_min = args[3]
-  wavl = args[4]
-  timeout = args[5]
+  d_spacings, bravais, powder_pattern, d_min, wavl, timeout = args
 
   i_bravais = lattices.index(bravais)
   bravais_list = [i==i_bravais for i in range(17)]
@@ -275,6 +271,9 @@ class Script(object):
          )
         
   def run(self):
+
+    print("TODO: print the GSASII license message")
+
     params, options = self.parser.parse_args()
 
     # Load d-spacings and powder pattern from files

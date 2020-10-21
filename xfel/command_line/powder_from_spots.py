@@ -42,7 +42,8 @@ An excellent reference geometry (rmsd <<1 px) is important. A current detector
 metrology refined from a protein sample is probably the best approach. Try a
 plot with split_panels=True to confirm that the patterns on each panel agree.
 In a data set from the MPCCD detector at SACLA we found that the Tau2 and Tau3
-tilts had to be refined for each panel.
+tilts (the tilts around the detector fast and slow axes) had to be refined for
+each panel.
 """
 
 phil_scope = parse(
@@ -117,6 +118,11 @@ class Script(object):
         )
 
   def run(self):
+    params, options = self.parser.parse_args(show_diff_phil=False)
+    run_with_preparsed(params, options)
+
+
+  def run_with_preparsed(self, params, options):
 
     def _process_pixel(params, panelsums, i_panel, s0, panel, xy, value):
       value -= params.downweight_weak
@@ -130,12 +136,10 @@ class Script(object):
       if i_bin < 0 or i_bin >= n_bins: return
       panelsums[i_panel][i_bin] += value
 
-
-    params, options = self.parser.parse_args(show_diff_phil=False)
-
     log.config(verbosity=options.verbose, logfile=params.output.log)
     logger.info(dials_version())
 
+    # TODO: flatten_xxxx
     assert len(params.input.reflections)==1, "Please supply 1 reflections file"
     assert len(params.input.experiments)==1, "Please supply 1 experiments file"
 
@@ -147,16 +151,17 @@ class Script(object):
 
 
     # TODO: get n_panels from expt
-    panelsums = [flex.double(params.n_bins) for _ in range(8)]
+    n_panels = len(expts[0].detector)
+    panelsums = [flex.double(params.n_bins) for _ in range(n_panels)]
     d_table = []
 
     refls = params.input.reflections[0].data
     expts = params.input.experiments[0].data
 
+    detector = expts[0].detector
     if not np.allclose(params.xyz_offset, [0,0,0]):
-
-      corrected_detector = copy.deepcopy(expts[0].detector)
-      hierarchy = corrected_detector.hierarchy()
+      ref_detector = copy.deepcopy(detector)
+      hierarchy = detector.hierarchy()
       fast = hierarchy.get_local_fast_axis()
       slow = hierarchy.get_local_slow_axis()
       origin = hierarchy.get_local_origin()
@@ -166,12 +171,14 @@ class Script(object):
               origin[2] + params.xyz_offset[2]
               )
       hierarchy.set_local_frame(fast, slow, corrected_origin)
+    else:
+      ref_detector = detector
 
-      compare_detector = DetectorComparison()
-      ref_detector = copy.deepcopy(expts.detectors()[0])
-      for expt in expts:
-        assert compare_detector(ref_detector, expt.detector)
-        expt.detector = corrected_detector
+    compare_detector = DetectorComparison()
+    for expt in expts:
+      if expt.detector is detector: continue
+      assert compare_detector(ref_detector, expt.detector)
+      expt.detector = detector
 
     for i, expt in enumerate(expts):
       if i % 1000 == 0: print("experiment ", i)
