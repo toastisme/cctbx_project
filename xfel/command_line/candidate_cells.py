@@ -210,7 +210,8 @@ def call_gsas(args):
         None,
         timeout=timeout,
         M20_min=m20_min,
-        X20_max=x20_max)
+        X20_max=x20_max,
+        return_Nc=True)
   except FloatingPointError: #this raises "invalid value encountered in double_scalars" sometimes
     print("############################################################\n"*10,
         "crash in search for {}".format(bravais))
