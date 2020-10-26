@@ -6,7 +6,7 @@ from dials.util import show_mail_on_error
 from dials.util.options import OptionParser
 from cctbx import uctbx, miller, crystal
 import sys
-from xfel.GSASII import GSASIIindex as gi
+import GSASIIindex as gi
 from libtbx import easy_mp
 from cctbx.uctbx import d_as_d_star_sq, d_star_sq_as_two_theta
 from cctbx import miller, crystal
@@ -38,13 +38,15 @@ phil_scope = parse(
       .help = "Number of d-spacings for unit cell search. If the peak list"
               "given by input.peak_list is longer than n_peaks, a random subset"
               "is selected for each GSASIIindex run."
-    wavl = 1.03
-      .type = float
-      .help = "GSASII wants 2th values in addition to d-spacings, so we need"
-              "a wavelength. It doesn't seem to be used for anything."
     timeout = 300
       .type = int
       .help = "Timeout the GSASII lattice search calls after this many seconds"
+    m20_min = 10.0
+      .type = float
+      .help = "Ignore search hits with an M20 figure of merit smaller than this"
+    x20_max = 2
+      .type = int
+      .help = "Ignore search hits with more than this many unindexed peaks"
   }
 
   multiprocessing {
@@ -175,14 +177,6 @@ def prepare_gpeaks(d_spacings, wavl, n_peaks=None):
 
 def call_gsas(args):
   '''
-  args is a tuple (d_spacings, bravais, powder_pattern, d_min, wavl, timeout):
-  d_spacings: list of floats, the peaks for the cell search
-  bravais: string, a lattice symbol like mP
-  powder_pattern: a list of (x,y) tuples, the powder pattern for scoring
-      candidates (x-axis must be d-spacing)
-  d_min: float, d_min for scoring candidates against powder pattern
-  wavl: This is a GSASII artifact
-  timeout: End GSASIIindex runs after this many seconds
   '''
 
   symmorphic_sgs = ['F23', 'I23', 'P23', 'R3', 'P3', 'I4', 'P4', 'F222', 'I222',
@@ -190,7 +184,14 @@ def call_gsas(args):
   lattices = ['cF', 'cI', 'cP', 'hR', 'hP', 'tI', 'tP', 'oF', 'oI', 'oA', 'oB',
       'oC', 'oP', 'mI', 'mC', 'mP', 'aP']
 
-  d_spacings, bravais, powder_pattern, d_min, wavl, timeout = args
+  #d_spacings, bravais, powder_pattern, d_min, wavl, timeout = args
+  params, bravais, d_spacings, powder_pattern = args
+
+  d_min = params.validate.d_min
+  wavl = 1.0 # GSASII does not use this
+  timeout = params.search.timeout
+  m20_min = params.search.m20_min
+  x20_max = params.search.x20_max
 
   i_bravais = lattices.index(bravais)
   bravais_list = [i==i_bravais for i in range(17)]
@@ -202,7 +203,14 @@ def call_gsas(args):
   trial_gpeaks = prepare_gpeaks(d_spacings, wavl)
 
   try:
-    success, dmin, gcells = gi.DoIndexPeaks(trial_gpeaks, controls, bravais_list, None, timeout=timeout)
+    success, dmin, gcells = gi.DoIndexPeaks(
+        trial_gpeaks,
+        controls,
+        bravais_list,
+        None,
+        timeout=timeout,
+        M20_min=m20_min,
+        X20_max=x20_max)
   except FloatingPointError: #this raises "invalid value encountered in double_scalars" sometimes
     print("############################################################\n"*10,
         "crash in search for {}".format(bravais))
@@ -287,8 +295,8 @@ class Script(object):
           powder_pattern.append((float(x), float(y)))
     else:
       powder_pattern = None
+
     d_min = params.validate.d_min
-    wavl = params.search.wavl
     timeout = params.search.timeout
 
     lattices_todo = []
@@ -300,7 +308,7 @@ class Script(object):
 
     candidates = easy_mp.parallel_map(
         call_gsas,
-        [(d_spacings, bravais, powder_pattern, d_min, wavl, timeout) 
+        [(params, bravais, d_spacings, powder_pattern)
             for bravais in lattices_todo],
         processes=params.multiprocessing.nproc)
 
