@@ -119,7 +119,7 @@ class Script(object):
 
   def run(self):
     params, options = self.parser.parse_args(show_diff_phil=False)
-    run_with_preparsed(params, options)
+    self.run_with_preparsed(params, options)
 
 
   def run_with_preparsed(self, params, options):
@@ -149,14 +149,14 @@ class Script(object):
     d_inv_low, d_inv_high = 1/d_max, 1/d_min
     unit_wt = (params.peak_weighting == "unit")
 
+    refls = params.input.reflections[0].data
+    expts = params.input.experiments[0].data
 
     # TODO: get n_panels from expt
     n_panels = len(expts[0].detector)
     panelsums = [flex.double(params.n_bins) for _ in range(n_panels)]
     d_table = []
 
-    refls = params.input.reflections[0].data
-    expts = params.input.experiments[0].data
 
     detector = expts[0].detector
     if not np.allclose(params.xyz_offset, [0,0,0]):
