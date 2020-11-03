@@ -1,23 +1,14 @@
 
 # LIBTBX_SET_DISPATCHER_NAME cctbx.xfel.powder_from_spots
+import copy
 import logging
+
 from iotbx.phil import parse
-
-from scitbx.array_family import flex
-
 from dials.util import log
 from dials.util import show_mail_on_error
 from dials.util.options import OptionParser
 from dials.util.version import dials_version
-
-from dxtbx.model.experiment_list import DetectorComparison
-
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.ticker as tick
-
-import pickle
-import copy
+from xfel.small_cell.spotfinder_radial_average import Spotfinder_radial_average
 
 logger = logging.getLogger("dials.command_line.powder_from_spots")
 
@@ -105,6 +96,9 @@ output {
 )
 
 
+
+
+
 class Script(object):
   def __init__(self):
     usage = "$ cctbx.xfel.powder_from_spots EXPERIMENTS REFLECTIONS [options]"
@@ -119,114 +113,10 @@ class Script(object):
 
   def run(self):
     params, options = self.parser.parse_args(show_diff_phil=False)
-    self.run_with_preparsed(params, options)
+    averager = Spotfinder_radial_average(params)
+    averager.calculate()
+    averager.plot()
 
-
-  def run_with_preparsed(self, params, options):
-
-    def _process_pixel(params, panelsums, i_panel, s0, panel, xy, value):
-      value -= params.downweight_weak
-      d_max_inv = 1/params.d_max
-      d_min_inv = 1/params.d_min
-      res_inv = 1 / panel.get_resolution_at_pixel(s0, xy)
-      n_bins = params.n_bins
-      i_bin = int(
-          n_bins * (res_inv - d_inv_low) / (d_inv_high - d_inv_low)
-          )
-      if i_bin < 0 or i_bin >= n_bins: return
-      panelsums[i_panel][i_bin] += value
-
-    log.config(verbosity=options.verbose, logfile=params.output.log)
-    logger.info(dials_version())
-
-    # TODO: flatten_xxxx
-    assert len(params.input.reflections)==1, "Please supply 1 reflections file"
-    assert len(params.input.experiments)==1, "Please supply 1 experiments file"
-
-    # setup limits and bins
-    n_bins = params.n_bins
-    d_max, d_min = params.d_max, params.d_min
-    d_inv_low, d_inv_high = 1/d_max, 1/d_min
-    unit_wt = (params.peak_weighting == "unit")
-
-    refls = params.input.reflections[0].data
-    expts = params.input.experiments[0].data
-
-    # TODO: get n_panels from expt
-    n_panels = len(expts[0].detector)
-    panelsums = [flex.double(params.n_bins) for _ in range(n_panels)]
-    d_table = []
-
-
-    detector = expts[0].detector
-    if not np.allclose(params.xyz_offset, [0,0,0]):
-      ref_detector = copy.deepcopy(detector)
-      hierarchy = detector.hierarchy()
-      fast = hierarchy.get_local_fast_axis()
-      slow = hierarchy.get_local_slow_axis()
-      origin = hierarchy.get_local_origin()
-      corrected_origin = (
-              origin[0] + params.xyz_offset[0],
-              origin[1] + params.xyz_offset[1],
-              origin[2] + params.xyz_offset[2]
-              )
-      hierarchy.set_local_frame(fast, slow, corrected_origin)
-    else:
-      ref_detector = detector
-
-    compare_detector = DetectorComparison()
-    for expt in expts:
-      if expt.detector is detector: continue
-      assert compare_detector(ref_detector, expt.detector)
-      expt.detector = detector
-
-    for i, expt in enumerate(expts):
-      if i % 1000 == 0: print("experiment ", i)
-      s0 = expt.beam.get_s0()
-      sel = refls['id'] == i
-      refls_sel = refls.select(sel)
-      xyzobses = refls_sel['xyzobs.px.value']
-      intensities = refls_sel['intensity.sum.value']
-      panels = refls_sel['panel']
-      shoeboxes = refls_sel['shoebox']
-
-      for i_refl in range(len(refls_sel)):
-        i_panel = panels[i_refl]
-        panel = expt.detector[i_panel]
-        
-        peak_height = intensities[i_refl]
-        if params.peak_position=="xyzobs":
-          xy = xyzobses[i_refl][0:2]
-          if params.peak_weighting == "intensity":
-            value = intensities[i_refl]
-          else:
-            value = 1
-          _process_pixel(params, panelsums, i_panel, s0, panel, xy, value)
-        if params.peak_position=="shoebox":
-          sb = shoeboxes[i_refl]
-          sbpixels = zip(sb.coords(), sb.values())
-          for (x,y,_), value in sbpixels:
-            _process_pixel(params, panelsums, i_panel, s0, panel, (x,y), value)
-
-    xvalues = np.linspace(d_inv_low, d_inv_high, n_bins)
-    fig, ax = plt.subplots()
-    if params.split_panels:
-      # TODO: better way to stack the split patterns
-      offset = 0.5*max(np.array(panelsums[0]))
-      for i_sums, sums in enumerate(panelsums):
-        yvalues = np.array(sums)
-        plt.plot(xvalues, yvalues+0.5*i_sums*offset)
-    else:
-      yvalues = sum(panelsums)
-      plt.plot(xvalues, yvalues)
-    ax.get_xaxis().set_major_formatter(tick.FuncFormatter(
-      lambda x, _: "{:.3f}".format(1/x)))
-
-    if params.output.xy_file:
-      with open(params.output.xy_file, 'w') as f:
-        for x,y in zip(xvalues, yvalues):
-          f.write("{:.6f}\t{}\n".format(1/x, y))
-    plt.show()
 
 if __name__ == "__main__":
   with show_mail_on_error():
