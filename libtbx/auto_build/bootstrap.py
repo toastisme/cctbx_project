@@ -475,7 +475,7 @@ class Toolbox(object):
     destpath, destdir = os.path.split(destination)
 
     # default to using ssh for private phenix repositories
-    if module in ['phenix', 'solve_resolve', 'phaser_voyager']:
+    if module in ['phenix', 'solve_resolve', 'phaser_voyager', 'phasertng']:
       use_ssh = True
 
     if os.path.exists(destination):
@@ -914,7 +914,7 @@ class phasertng_module(SourceModule):
 
 class phaser_voyager_module(SourceModule):
   module = 'phaser_voyager'
-  anonymous = ['git',
+  anonymous = ['git', '-b distribution',
                'git@gitlab.developers.cam.ac.uk:scm/haematology/readgroup/phaser_voyager.git',
                'https://gitlab.developers.cam.ac.uk/scm/haematology/readgroup/phaser_voyager.git']
 

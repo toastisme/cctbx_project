@@ -5,6 +5,7 @@ import mmtbx.model
 import iotbx.pdb
 import boost_adaptbx.boost.python as bp
 from libtbx.utils import null_out
+from libtbx import group_args
 from cctbx.array_family import flex
 from collections import OrderedDict
 #
@@ -15,9 +16,15 @@ ext = bp.import_ext("cctbx_geometry_restraints_ext")
 # ==============================================================================
 
 def mon_lib_query(residue, mon_lib_srv):
-    get_func = getattr(mon_lib_srv, "get_comp_comp_id", None)
-    if (get_func is not None): return get_func(comp_id=residue)
-    return mon_lib_srv.get_comp_comp_id_direct(comp_id=residue)
+    md, ani = mon_lib_srv.get_comp_comp_id_and_atom_name_interpretation(
+      residue_name=residue.resname,
+      atom_names=residue.atoms().extract_name())
+    return md
+    # print(md)
+    # print(ani)
+    # get_func = getattr(mon_lib_srv, "get_comp_comp_id", None)
+    # if (get_func is not None): return get_func(comp_id=residue)
+    # return mon_lib_srv.get_comp_comp_id_direct(comp_id=residue)
 
 # ==============================================================================
 
@@ -109,18 +116,25 @@ class place_hydrogens():
     if sel_h.count(True) == 0:
       return
 
+    # get rid of isolated H atoms.
+    #For example when heavy atom is missing, H needs not to be placed
+    sel_isolated = self.model.isolated_atoms_selection()
+    self.sel_lone_H = sel_h & sel_isolated
+    self.model = self.model.select(~self.sel_lone_H)
+
+    # get riding H manager --> parameterize all H atoms
+    sel_h = self.model.get_hd_selection()
     self.model.setup_riding_h_manager(use_ideal_dihedral = True)
     sel_h_in_para = flex.bool(
       [bool(x) for x in self.model.riding_h_manager.h_parameterization])
     sel_h_not_in_para = sel_h_in_para.exclusive_or(sel_h)
-    #
     self.site_labels_no_para = [atom.id_str().replace('pdb=','').replace('"','')
       for atom in self.model.get_hierarchy().atoms().select(sel_h_not_in_para)]
     #
     self.model = self.model.select(~sel_h_not_in_para)
 
     self.exclude_H_on_disulfides()
-    self.exclude_h_on_coordinated_S()
+    #self.exclude_h_on_coordinated_S()
 
   #  f = open("intermediate2.pdb","w")
   #  f.write(model.model_as_pdb())
@@ -129,6 +143,8 @@ class place_hydrogens():
     self.model.reset_adp_for_hydrogens(scale = self.adp_scale)
     self.model.reset_occupancy_for_hydrogens_simple()
     self.model.idealize_h_riding()
+
+    self.exclude_h_on_coordinated_S()
     #
     self.n_H_final = self.model.get_hd_selection().count(True)
 
@@ -162,7 +178,7 @@ class place_hydrogens():
             if(get_class(name=ag.resname) == "common_water"): continue
             actual = [a.name.strip().upper() for a in ag.atoms()]
             #
-            mlq = mon_lib_query(residue=ag.resname, mon_lib_srv=mon_lib_srv)
+            mlq = mon_lib_query(residue=ag, mon_lib_srv=mon_lib_srv)
             #if (get_class(name=ag.resname) in ['modified_rna_dna', 'other']):
             if mlq is None:
               self.no_H_placed_mlq.append(ag.resname)
@@ -285,9 +301,12 @@ The following H atoms were not placed because they could not be parameterized
   def get_model(self):
     return self.model
 
-
-
-
+  def get_counts(self):
+    return group_args(
+      number_h_final  = self.n_H_final,
+      no_H_placed_mlq = self.no_H_placed_mlq,
+      site_labels_disulfides = self.site_labels_disulfides,
+      site_labels_no_para = self.site_labels_no_para)
 
 # ==============================================================================
 
