@@ -1,6 +1,6 @@
 from __future__ import absolute_import, division, print_function
 
-import sys
+import sys, math
 from cctbx.array_family import flex
 from six.moves import range
 from six.moves import zip
@@ -1014,6 +1014,48 @@ d_min   rmsFc
 0.9998  1206.6
 """
 
+def get_expected_ssqr_list(
+      n_bins = None,
+      d_min = None, # minimum resolution of data to use
+      expected_ssqr_list_rms = None,
+      map_model_manager = None,
+      out = sys.stdout):
+
+  assert n_bins is not None
+  assert d_min is not None
+  assert expected_ssqr_list_rms is not None
+
+  if str(expected_ssqr_list_rms) == 'Auto':
+    expected_ssqr_list_rms = 0.25 * d_min
+
+  # Estimate E**2 vs resolution based on rms error expected_ssqr_list_rms
+  # Assume constant total error, amplitudes fall off exp(-b_eff sthol2)
+  #  b_eff = (8 * 3.14159**2/3.) * expected_ssqr_list_rms**2
+  #  sigmaa = exp(-b_eff sthol2)
+  #  E**2 = 1/(1-sigmaa**2)
+
+  map_coeffs = map_model_manager.get_any_map_manager(
+     ).map_as_fourier_coefficients(d_min = d_min)
+  from iotbx.map_model_manager import get_map_coeffs_as_fp_phi
+  f_array_info = get_map_coeffs_as_fp_phi(
+    map_coeffs, d_min= d_min, n_bins = n_bins)
+  f_array = f_array_info.f_array
+  # Approx fall-off with resolution based on rms in A ...as in sigmaa
+  b_eff = (8 * 3.14159**2/3.) * expected_ssqr_list_rms**2
+
+  dsd = f_array.d_spacings().data()
+  ssqr_list = flex.double()
+  for i_bin in f_array.binner().range_used():
+    sel       = f_array.binner().selection(i_bin)
+    d         = dsd.select(sel)
+    d_avg     = flex.mean(d)
+
+    sthol2 = 0.25/d_avg**2
+    sigmaa = math.exp(max(-20.,min(20., -b_eff * sthol2)))
+    ssqr = (1-sigmaa**2)/max(1.e-10,sigmaa**2)
+    ssqr_list.append(ssqr)
+  return ssqr_list
+
 class approx_amplitude_vs_resolution:
   def __init__(self,
       n_bins = 1000,
@@ -1024,7 +1066,7 @@ class approx_amplitude_vs_resolution:
       generate_mock_rms_fc_list = True,
       k_sol = None,
       b_sol = None,
-      optimize_k_sol_b_sol = True,
+      find_k_sol_b_sol = True,
       map_id_for_optimization = 'map_manager',
       out = sys.stdout):
     #  If d_min and map_model_manager supplied and generate_mock_rms_fc_list,
@@ -1041,7 +1083,7 @@ class approx_amplitude_vs_resolution:
         model.set_xray_structure(model.get_xray_structure())
 
       assert d_min and map_model_manager
-      if optimize_k_sol_b_sol and map_model_manager.get_map_manager_by_id(
+      if find_k_sol_b_sol and map_model_manager.get_map_manager_by_id(
          map_id_for_optimization):
         from cctbx.maptbx.refine_sharpening import get_effective_b
         rms_fo_info = map_model_manager.get_rms_f_list(
@@ -1054,54 +1096,53 @@ class approx_amplitude_vs_resolution:
         # Figure out k_sol and b_sol so that rms_f vs resolution from model
         #  is related by simple Wilson B to rms_f vs resolution from map
         #  Use grid search to not take very long and get approx answer
-        kb_list= [ [0,0], [0.1,0], [0.1,20], [0.1,50],[0.2,50],[0.3,50]]
-        kb_offset_list= [ [0.05,0],[-0.05,0],[0,-10],[0,10]]
-        if k_sol and b_sol:
-          kb_list.append([k_sol,b_sol])
-        full_kb_offset_list = len(kb_list)*[None]+kb_offset_list
-        kb_list+=len(kb_offset_list)*['offset']
-        kb_list.append(None)
-        full_kb_offset_list.append(None)
+        if (k_sol is None) and (b_sol is None):
+          kb_list= [ [0,0], [0.1,20], [0.1,50],
+                      [0.2,20], [0.2,50],
+                      [0.3,20], [0.3,50],
+                   ]
 
-        best_kb = None
-        best_rms = None
-        for kb,kb_offset in zip(kb_list,full_kb_offset_list):
-          if kb is None: # use best so far
-            k_sol,b_sol = best_kb
-          elif kb == 'offset':
-            k_sol,b_sol = best_kb
-            k_sol_offset,b_sol_offset = kb_offset
-            k_sol+=k_sol_offset
-            b_sol+=b_sol_offset
+          best_rms = None
+          best_kb = None
+          best_rms_fc_list = None
+          for k_sol,b_sol in kb_list:
+            self.generate_mock_rms_fc_list(n_bins, d_min , map_model_manager,
+              model = model,
+              k_sol = k_sol,
+              b_sol = b_sol,)
 
-          else:
-            k_sol,b_sol = kb
-          self.generate_mock_rms_fc_list(n_bins, d_min , map_model_manager,
-            model = model,
-            k_sol = k_sol,
-            b_sol = b_sol,)
-
-          ratio_list = rms_fo_info.rms_f_list/self.rms_fc_list
-          info = get_effective_b(values = ratio_list,
-            sthol2_values = rms_fo_info.sthol2_list)
-          scaled_fc_list = self.rms_fc_list * info.calc_values
-          rms = ((flex.pow2(rms_fo_info.rms_f_list[:n_bins_use] -
+            ratio_list = rms_fo_info.rms_f_list/self.rms_fc_list
+            info = get_effective_b(values = ratio_list,
+              sthol2_values = rms_fo_info.sthol2_list)
+            scaled_fc_list = self.rms_fc_list * info.calc_values
+            rms = ((flex.pow2(rms_fo_info.rms_f_list[:n_bins_use] -
               scaled_fc_list[:n_bins_use])).min_max_mean().mean)**0.5
-          if best_rms is None or rms < best_rms:
-            best_rms = rms
-            best_kb = [k_sol,b_sol]
-          if kb is None: # last one
-            print("Overall approximate B-value: "+
-              "%.2f A**2 (Scale = %.1f  rms = %.1f)" %( info.effective_b,
-              info.b_zero,
-              rms,), file = out)
+            if best_rms is None or rms < best_rms:
+              best_rms_fc_list = rms_fc_list
+              best_rms = rms
+              best_kb = [k_sol,b_sol]
+          k_sol, b_sol = best_kb
+          if len(kb_list) > 1:  # redo calculation
+            self.generate_mock_rms_fc_list(n_bins, d_min , map_model_manager,
+              model = model,
+              k_sol = k_sol,
+              b_sol = b_sol,)
+          print("Overall approximate B-value: "+
+             "%.2f A**2 \n(rms = %.1f, k_sol=%.2f  b_sol=%.2f)" %(
+             info.effective_b, rms,k_sol,b_sol,
+              ), file = out)
+          self.k_sol = k_sol
+          self.b_sol = b_sol
+          self.rms_fc_list = best_rms_fc_list
 
-
+      # Othewise just generate the list
       self.generate_mock_rms_fc_list(n_bins, d_min , map_model_manager,
         model = model,
         k_sol = k_sol,
         b_sol = b_sol,
         n_bins_use = n_bins_use)
+      self.k_sol = k_sol
+      self.b_sol = b_sol
 
 
     else:
@@ -1190,6 +1231,12 @@ class approx_amplitude_vs_resolution:
 
   def maximum_d_value(self):
     return self.d_min_values[-1]
+
+  def get_k_sol_b_sol(self):
+    if not hasattr(self,'k_sol'):
+      return None,None
+    else:
+      return self.k_sol,self.b_sol
 
   def get_target_scale_factors(self, f_array = None):
     if self.rms_fc_list:

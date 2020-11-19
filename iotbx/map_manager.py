@@ -349,6 +349,7 @@ class map_manager(map_reader, write_ccp4_map):
     self._experiment_type = experiment_type
     self._scattering_table = scattering_table
     self._resolution = resolution
+    self._minimum_resolution = None
     self._set_up_experiment_type_and_scattering_table_and_resolution()
 
 
@@ -1298,6 +1299,23 @@ class map_manager(map_reader, write_ccp4_map):
   def experiment_type(self):
     return self._experiment_type
 
+  def minimum_resolution(self, set_minimum_resolution = True):
+    '''
+      Get minimum resolution.  If set previously, use that value
+    '''
+    if self._minimum_resolution:
+      return self._minimum_resolution
+
+    from cctbx.maptbx import d_min_from_map
+    minimum_resolution = d_min_from_map(
+           map_data=self.map_data(),
+           unit_cell=self.crystal_symmetry().unit_cell())
+
+    if set_minimum_resolution:
+      self._minimum_resolution = minimum_resolution
+
+    return minimum_resolution
+
   def resolution(self, force = False, method = 'd99', set_resolution = True):
     ''' Get nominal resolution
         Return existing if present unless force is True
@@ -1327,9 +1345,7 @@ class map_manager(map_reader, write_ccp4_map):
       working_resolution = getattr(d99_object.result,method,-1)
 
     from cctbx.maptbx import d_min_from_map  # get this to check
-    d_min_estimated_from_map = d_min_from_map(
-           map_data=self.map_data(),
-           unit_cell=self.crystal_symmetry().unit_cell())
+    d_min_estimated_from_map = self.minimum_resolution()
 
     if working_resolution < d_min_estimated_from_map:  # we didn't get it or want to use d_min
       working_resolution = d_min_estimated_from_map
@@ -1398,7 +1414,8 @@ class map_manager(map_reader, write_ccp4_map):
     assert isinstance(wrapping_value, bool)
     self._wrapping = wrapping_value
     if self._wrapping:
-      assert self.is_full_size()
+      if not self.is_full_size():
+        raise Sorry("You cannot set wrapping=True for a map that is not full size")
 
   def wrapping(self):
     '''
@@ -1761,10 +1778,21 @@ class map_manager(map_reader, write_ccp4_map):
     if hasattr(self,'_ncs_cc'):
        return self._ncs_cc
 
-  def absolute_center_cart(self):
-    '''  Return center of map (absolute position) in Cartesian coordinates'''
-    return tuple([0.5*a - o for a,o in zip(
+  def absolute_center_cart(self, use_assumed_end = False):
+    '''
+     Return center of map (absolute position) in Cartesian coordinates
+     A little tricky because for example the map goes from 0 to nx-1, not nx
+       If use_assumed_end, go to nx
+     Also map could start at non-zero origin
+    '''
+    if use_assumed_end:
+      n_end = 0
+    else:
+      n_end = 1
+    return tuple([a*(0.5*(n-n_end)/n + o/n)  - sc for a,n,o,sc in zip(
       self.crystal_symmetry().unit_cell().parameters()[:3],
+      self.map_data().all(),
+      self.map_data().origin(),
       self.shift_cart())])
 
   def map_map_cc(self, other_map_manager):
@@ -1836,12 +1864,10 @@ class map_manager(map_reader, write_ccp4_map):
 
     if symmetry_center is None:
       # Most likely map center is (1/2,1/2,1/2) in full grid
-      full_unit_cell=self.unit_cell_crystal_symmetry(
-            ).unit_cell().parameters()[:3]
-      symmetry_center=[]
-      for x, sc in zip(full_unit_cell, self.shift_cart()):
-        symmetry_center.append(0.5*x + sc)
-      symmetry_center = tuple(symmetry_center)
+      symmetry_center = self.absolute_center_cart(use_assumed_end=True)
+      # Our map is already shifted, so subtract off shift_cart
+      symmetry_center = tuple(
+        flex.double(symmetry_center) + flex.double(self.shift_cart()))
 
     params = get_params(args=[],
       symmetry = symmetry,
@@ -1953,6 +1979,9 @@ class map_manager(map_reader, write_ccp4_map):
      target_for_boxes = 24,
      box_cushion = 3,
      get_unique_set_for_boxes = None,
+     dist_min = None,
+     do_not_go_over_target = None,
+     target_xyz_center_list = None,
        ):
     '''
      Return a group_args object with a list of lower_bounds and upper_bounds
@@ -1963,6 +1992,8 @@ class map_manager(map_reader, write_ccp4_map):
      Also return boxes with cushion of box_cushion
      If get_unique_set_for_boxes is set, try to use map symmetry to identify
        duplicates and set ncs_object
+     If target_xyz_center_list is set, use these points as centers but try
+      to use standard box size.
     '''
     assert self.origin_is_zero()
     cushion_nx_ny_nz = tuple([int(0.5 + x * n) for x,n in
@@ -1976,14 +2007,19 @@ class map_manager(map_reader, write_ccp4_map):
        crystal_symmetry = self.crystal_symmetry(),
        cushion_nx_ny_nz = cushion_nx_ny_nz,
        wrapping = self.wrapping(),
+       do_not_go_over_target = do_not_go_over_target,
+       target_xyz_center_list = target_xyz_center_list,
      )
     box_info.ncs_object = None
-
     if get_unique_set_for_boxes:
+      if dist_min:
+         max_distance = dist_min
+      else:
+         max_distance = self.resolution()
       n_before = len(box_info.lower_bounds_list)
       box_info = self._get_unique_box_info(
          box_info = box_info,
-         max_distance = 0.25*self.resolution())
+         max_distance = max_distance)
 
     return box_info
 
@@ -2162,7 +2198,6 @@ class map_manager(map_reader, write_ccp4_map):
      absolute_rt_info = absolute_rt_info)
 
   def _get_unique_box_info(self, box_info, max_distance = 1):
-
     if self.ncs_object() is None:
       # try to get map symmetry but do not try too hard..
       try:
@@ -2193,7 +2228,7 @@ class map_manager(map_reader, write_ccp4_map):
       #    map_data with origin at (0,0,0).  Our ncs_object is also
       #    relative to this same origin
 
-      xyz = tuple([ a * 0.5*(lb+ub) / n for a, lb, ub, n in zip(
+      xyz = tuple([ a * 0.5*(lb+ub-1) / n for a, lb, ub, n in zip(
          self.crystal_symmetry().unit_cell().parameters()[:3],
          lower_bounds,
          upper_bounds,

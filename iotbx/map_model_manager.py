@@ -2,6 +2,9 @@ from __future__ import absolute_import, division, print_function
 import sys, os
 from libtbx.utils import Sorry
 from cctbx import maptbx
+from cctbx import crystal
+from cctbx import uctbx
+from cctbx import miller
 from libtbx import group_args
 from cctbx.array_family import flex
 from scitbx.matrix import col
@@ -12,6 +15,7 @@ from libtbx.utils import null_out
 from libtbx.test_utils import approx_equal
 from copy import deepcopy
 from cctbx import adptbx
+from mmtbx_tls_ext import tlso, uaniso_from_tls_one_group
 
 # Reserved phil scope for MapModelManager
 map_model_phil_str = '''
@@ -123,17 +127,16 @@ class map_model_manager(object):
     self.set_verbose(verbose)
 
     # Initialize
-    self._nproc = None
-    self._multiprocessing = None
+    self._nproc = 1
+    self._multiprocessing = 'multiprocessing'
     self._queue_run_command = None
     self._resolution = None
+    self._minimum_resolution = None
     self._map_dict={}
     self._model_dict = {}
     self._force_wrapping = wrapping
     self._warning_message = None
-
-
-
+    self._scattering_table = None
 
     # If no map_manager now, do not do anything and make sure there
     #    was nothing else supplied except possibly a model
@@ -178,6 +181,20 @@ class map_model_manager(object):
        extra_map_manager_list:
       if m:
         m.set_wrapping(wrapping)
+
+    # if the incoming model is simply shifted relative to the maps...make them
+    #  match by adjusting the model shift
+
+    if model and map_manager and model.crystal_symmetry() and \
+        model.shift_cart() and model.shift_cart() != map_manager.shift_cart():
+      if extra_model_list:  # make sure extras have same shift as model
+        for m in extra_model_list:
+          assert m.shift_cart() == model.shift_cart() # all models same shift
+      # Shift everything to match map
+      map_manager.shift_model_to_match_map(model)
+      if extra_model_list:
+        for m in extra_model_list:
+          map_manager.shift_model_to_match_map(m)
 
     # if ignore_symmetry_conflicts, take all symmetry information from
     #  any_map_manager and apply it to everything
@@ -411,6 +428,7 @@ class map_model_manager(object):
   # prevent pickling error in Python 3 with self.log = sys.stdout
   # unpickling is limited to restoring sys.stdout
   def __getstate__(self):
+    import io
     pickle_dict = self.__dict__.copy()
     if isinstance(self.log, io.TextIOWrapper):
       pickle_dict['log'] = None
@@ -655,10 +673,23 @@ class map_model_manager(object):
       return None
 
   def scattering_table(self):
-    if self.map_manager():
+    if self._scattering_table:
+      return self._scattering_table
+    elif self.map_manager():
       return self.map_manager().scattering_table()
     else:
       return None
+
+  def minimum_resolution(self):
+    '''
+     Return d_min, normally minimum available but if set, return
+     value of d_min
+    '''
+    if not self._minimum_resolution:
+      # get it and set it and return it
+      self._minimum_resolution = self.map_manager().minimum_resolution()
+
+    return self._minimum_resolution
 
   def resolution(self,
     use_fsc_if_no_resolution_available_and_maps_available = True,
@@ -683,7 +714,7 @@ class map_model_manager(object):
       if (not resolution) and self.map_manager():
         # get resolution from map_manager
         resolution = self.map_manager().resolution()
-        print("\nMinimum resolution obtained from map_manager: %.3f A " %(
+        print("\nResolution obtained from map_manager: %.3f A " %(
           resolution), file = self.log)
       if resolution:
         self.set_resolution(resolution)
@@ -699,6 +730,9 @@ class map_model_manager(object):
     if nproc:
       self._nproc = nproc
 
+      if nproc > 1 and (multiprocessing is None):
+        multiprocessing = 'multiprocessing'
+
     if multiprocessing:
       assert multiprocessing in ['multiprocessing','sge','lsf','pbs',
          'condor','pbspro','slurm']
@@ -711,11 +745,21 @@ class map_model_manager(object):
     ''' Set nominal resolution '''
     self._resolution = resolution
 
+  def set_minimum_resolution(self, d_min):
+    ''' Set minimum resolution used in calculations'''
+    self._minimum_resolution = minimum_resolution
+
   def set_scattering_table(self, scattering_table):
-    ''' Set nominal scattering_table '''
-    # Must already have a map_manager
-    assert self.map_manager() is not None
-    self.map_manager().set_scattering_table(scattering_table)
+    '''
+     Set nominal scattering_table. Overrides anything in map_managers
+       electron:  cryo_em
+       n_gaussian x-ray (standard)
+       wk1995:    x-ray (alternative)
+       it1992:    x-ray (alternative)
+       neutron:   neutron scattering
+    '''
+    if scattering_table is not None:
+      self._scattering_table = scattering_table
 
   def set_experiment_type(self, experiment_type):
     ''' Set nominal experiment_type '''
@@ -787,7 +831,7 @@ class map_model_manager(object):
     '''
     Return any map manager
     '''
-    keys = self.map_dict().keys()
+    keys = list(self.map_dict().keys())
     if not keys:
       return
     else:
@@ -1406,6 +1450,8 @@ class map_model_manager(object):
     extract_box = False):
 
     '''
+       Finish copying information to boxed map_model_manager
+
        If extract_box is False, modify this object in place.
        If extract_box is True , create a new object of same type and return it
     '''
@@ -1431,11 +1477,17 @@ class map_model_manager(object):
     for id in model_info.other_model_id_list:
       other._model_dict[id] = box.apply_to_model(self._model_dict[id])
 
+    # Copy default information over
+    name = '%s_boxed' %(self.name)
+    self._set_default_parameters(other, name = name)
+
     if extract_box:
       return other
 
   def merge_split_maps_and_models(self,
-      box_info = None):
+      box_info = None,
+      replace_coordinates = True,
+      replace_u_aniso = False):
     '''
       Replaces coordinates in working model with those from the
         map_model_managers in box_info.  The box_info object should
@@ -1447,18 +1499,39 @@ class map_model_manager(object):
       len(box_info.selection_list)), file = self.log)
 
     i = 0
-    for selection, mmm in zip (box_info.selection_list, box_info.mmm_list):
+    if not hasattr(box_info,'tlso_list'):
+       box_info.tlso_list = len(box_info.mmm_list) * [None]
+    for selection, mmm, tlso_value in zip (
+      box_info.selection_list, box_info.mmm_list, box_info.tlso_list):
       i += 1
       model_to_merge = self.get_model_from_other(mmm)
-      sites_cart = self.model().get_sites_cart()
-      new_coords=model_to_merge.get_sites_cart()
-      original_coords=sites_cart.select(selection)
-      rmsd=new_coords.rms_difference(original_coords)
-      print("RMSD for %s coordinates in model %s: %.3f A" %(
-         original_coords.size(), i, rmsd), file = self.log)
-      sites_cart.set_selected(selection, new_coords)
-      self.model().set_crystal_symmetry_and_sites_cart(sites_cart = sites_cart,
-        crystal_symmetry = self.model().crystal_symmetry())
+
+      if replace_coordinates:
+        sites_cart = self.model().get_sites_cart()  # all sites
+        #  Sites to merge from this model
+        new_coords=model_to_merge.get_sites_cart()
+        original_coords=sites_cart.select(selection)
+        rmsd=new_coords.rms_difference(original_coords)
+        print("RMSD for %s coordinates in model %s: %.3f A" %(
+           original_coords.size(), i, rmsd), file = self.log)
+        sites_cart.set_selected(selection, new_coords)
+        self.model().set_crystal_symmetry_and_sites_cart(
+          sites_cart = sites_cart,
+          crystal_symmetry = self.model().crystal_symmetry())
+
+      if replace_u_aniso and tlso_value: # calculate aniso U from
+        print("Replacing u_cart values based on TLS info",file = self.log)
+        xrs=self.model().get_xray_structure()
+        xrs.convert_to_anisotropic()
+        uc = xrs.unit_cell()
+        sites_cart = xrs.sites_cart()
+        u_cart=xrs.scatterers().extract_u_cart(uc)
+        new_anisos= uaniso_from_tls_one_group(tlso = tlso_value,
+         sites_cart = sites_cart.select(selection),
+         zeroize_trace=False)
+        u_cart.set_selected(selection, new_anisos)
+        xrs.set_u_cart(u_cart)
+        self.model().set_xray_structure(xrs)
 
   def split_up_map_and_model_by_chain(self,
     skip_waters = False,
@@ -1594,11 +1667,13 @@ class map_model_manager(object):
     masked_value = -10,
     skip_empty_boxes = True,
     apply_box_info = True,
+    mask_id = None,
+    exclude_points_outside_density = None,
      ):
     '''
      Split up the map, creating boxes that time the entire map.
 
-     Try to get about target_for_boxes boxes.
+     Try to get about target_for_boxes boxes. Do not go over this target
 
      If select_final_boxes_based_on_model then make the final boxes just go
        around the selected parts of the model with cushion defined by
@@ -1624,6 +1699,7 @@ class map_model_manager(object):
 
        skip_waters and skip_hetero define whether waters and hetero atoms are
         ignored
+
     '''
 
     return self._split_up_map_and_model(
@@ -1637,6 +1713,8 @@ class map_model_manager(object):
       mask_radius = mask_radius,
       masked_value = masked_value,
       apply_box_info = apply_box_info,
+      mask_id = mask_id,
+      exclude_points_outside_density = exclude_points_outside_density,
       write_files = write_files)
 
   def _split_up_map_and_model(self,
@@ -1648,11 +1726,14 @@ class map_model_manager(object):
     select_final_boxes_based_on_model = True,
     skip_empty_boxes = True,
     mask_around_unselected_atoms = None,
+    mask_all_maps_around_edges = None,
     mask_radius = 3,
     masked_value = -10,
     write_files = False,
     box_cushion = 3,
     apply_box_info = True,
+    mask_id = None,
+    exclude_points_outside_density = None,
      ):
     '''
        Create a set of overlapping boxes and non-overlapping parts of
@@ -1679,15 +1760,19 @@ class map_model_manager(object):
       not tile the map.
     If skip_empty_boxes then skip anything with no model.
 
-    if mask_around_unselected_atoms is set, then mask within each box
+    If mask_around_unselected_atoms is set, then mask within each box
      around all the atoms that are not selected (including waters/hetero)
      with a mask_radius of mask_radius and set the value inside the mask to
       masked_value
 
+     If exclude_points_outside_density and boxes method is selected,
+       try to add boxes inside density (basically add the proportional
+       number of boxes but put them definitely inside the density instead
+       of evenly spaced.
+
     '''
     print ("Splitting up map and model into overlapping boxes (%s method)" %(
        selection_method), file = self.log)
-
     # Get selections and boxes
     box_info = get_selections_and_boxes_to_split_model(
         map_model_manager = self,
@@ -1700,9 +1785,19 @@ class map_model_manager(object):
         skip_empty_boxes = skip_empty_boxes,
         box_cushion = box_cushion,
         mask_around_unselected_atoms = mask_around_unselected_atoms,
+        mask_all_maps_around_edges = mask_all_maps_around_edges,
         mask_radius = mask_radius,
         masked_value = masked_value,
+        mask_id = mask_id,
+        exclude_points_outside_density = exclude_points_outside_density,
+        log = self.log,
       )
+    if mask_id and exclude_points_outside_density:
+      print("Total of %s boxes considered inside density..." %(
+        len(box_info.selection_list)), file = self.log)
+    else:
+      print("Total of %s boxes considered..." %(len(box_info.selection_list)),
+        file = self.log)
     if (not apply_box_info):
       return box_info  #  run get_split_maps_and_models later
 
@@ -1753,7 +1848,6 @@ class map_model_manager(object):
           from gridding)
         If soft mask is set, mask_atoms_atom_radius increased by
 
-      Optionally use any mask specified by mask_id
     '''
     if soft_mask:
       if not soft_mask_radius:
@@ -1761,7 +1855,8 @@ class map_model_manager(object):
     self.create_mask_around_atoms(
          soft_mask = soft_mask,
          soft_mask_radius = soft_mask_radius,
-         mask_atoms_atom_radius = mask_atoms_atom_radius)
+         mask_atoms_atom_radius = mask_atoms_atom_radius,
+         mask_id = mask_id)
     self.apply_mask_to_maps(mask_id = mask_id,
          set_outside_to_mean_inside = \
            set_outside_to_mean_inside)
@@ -1775,7 +1870,6 @@ class map_model_manager(object):
 
       NOTE: Does not change the gridding or shift_cart of the maps and model
     '''
-
     self.create_mask_around_edges(soft_mask_radius = soft_mask_radius,
       mask_id = mask_id)
     self.apply_mask_to_maps(mask_id = mask_id)
@@ -1908,6 +2002,7 @@ class map_model_manager(object):
       map_id = mask_id)
 
   def create_mask_around_atoms(self,
+     model = None,
      mask_atoms_atom_radius = 3,
      soft_mask = False,
      soft_mask_radius = None,
@@ -1934,9 +2029,12 @@ class map_model_manager(object):
         soft_mask_radius = self.resolution()
       mask_atoms_atom_radius += soft_mask_radius
 
+    if not model:
+      model = self.model()
+
     from cctbx.maptbx.mask import create_mask_around_atoms
     cm = create_mask_around_atoms(map_manager = self.map_manager(),
-      model = self.model(),
+      model = model,
       mask_atoms_atom_radius = mask_atoms_atom_radius)
 
     if soft_mask: # Make the create_mask object contain a soft mask
@@ -2220,7 +2318,8 @@ class map_model_manager(object):
 
   # Methods for sharpening and comparing maps, models and calculating FSC values
 
-  def get_rms_f_list(self,map_id = 'map_manager',
+  def get_rms_f_list(self,
+      map_id = 'map_manager',
       d_min = None,  # minimum resolution for calculations
       n_bins = None,
       resolution = None,  # nominal resolution
@@ -2229,28 +2328,30 @@ class map_model_manager(object):
     assert d_min and n_bins
     from cctbx.maptbx.segment_and_split_map import map_coeffs_to_fp
     map_coeffs=self.get_map_manager_by_id(
-      map_id).map_as_fourier_coefficients( d_min = d_min)
+      map_id).map_as_fourier_coefficients(d_min = d_min)
     f_array = get_map_coeffs_as_fp_phi(map_coeffs, n_bins = n_bins,
-          d_min = d_min).f_array
-    rms_f_list=flex.double()
-    sthol2_list=flex.double()
+      d_min = d_min).f_array
+    rms_f_list = flex.double()
+    sthol2_list = flex.double()
     dsd = f_array.d_spacings().data()
-
     n_bins_use = min(n_bins,max(3,n_bins//3))
     for i_bin in f_array.binner().range_used():
-      sel       = f_array.binner().selection(i_bin)
-      f        = map_coeffs.select(sel)
-      f_array_f=map_coeffs_to_fp(f)
-      rms_f=f_array_f.data().norm()
+      sel = f_array.binner().selection(i_bin)
+      f = map_coeffs.select(sel)
+      f_array_f = map_coeffs_to_fp(f)
+      rms_f = f_array_f.data().norm()
       rms_f_list.append(rms_f)
-      d         = dsd.select(sel)
-      d_avg     = flex.mean(d)
-      sthol2=0.25/d_avg**2
-      sthol2_list.append(sthol2)
-      if i_bin-1 > n_bins_use and (
-          (not resolution) or (d_avg >= resolution)):
-         n_bins_use = i_bin - 1
-
+      d = dsd.select(sel)
+      if d.size() < 0:
+        d_avg = flex.mean(d)
+        sthol2 = 0.25/d_avg**2
+        sthol2_list.append(sthol2)
+        if i_bin-1 > n_bins_use and ((not resolution) or (d_avg >= resolution)):
+          n_bins_use = i_bin - 1
+      elif i_bin > 1:
+        sthol2_list.append(sthol2_list[-1])
+      else:
+        sthol2_list.append(0)
     return group_args(
        rms_f_list = rms_f_list,
        sthol2_list = sthol2_list,
@@ -2303,6 +2404,200 @@ class map_model_manager(object):
 
     return local_kw
 
+  def find_k_sol_b_sol(self,
+    model = None,
+    d_min = None,
+    model_map_id = None,
+    comparison_map_id = None,
+    n_bins = 5):
+
+    ''' Routine to guess k_sol and b_sol by low-resolution Fc calculation'''
+
+    if model_map_id is None:
+      model_map_id = 'map_from_model'
+    if comparison_map_id is None:
+      comparison_map_id = 'map_manager'
+
+    kb_list= [ [0,0],
+                      [0.1,20], [0.1,50],
+                      [0.2,20], [0.2,50],
+                      [0.3,20], [0.3,50],
+                      [0.15,20], [0.15,50],
+                      [0.15,30], [0.15,40],
+                      [0.15,10], [0.15,60],
+                      [0.15,0], [0.15,5],
+             ]
+
+    from cctbx.development.create_models_or_maps import generate_model, \
+       generate_map_coefficients
+
+    target_map_coeffs = self.get_map_manager_by_id(
+       comparison_map_id).map_as_fourier_coefficients( d_min = d_min)
+    (d_max,d_min)=target_map_coeffs.d_max_min(
+       d_max_is_highest_defined_if_infinite=True)
+    target_map_coeffs.setup_binner(n_bins = n_bins,
+      d_max=d_max,
+      d_min=d_min)
+    best_kb = None
+    best_cc = None
+    for k_sol,b_sol in kb_list:
+      map_coeffs = generate_map_coefficients(model = model,
+        d_min = d_min,
+        k_sol = k_sol,
+        b_sol = b_sol,
+        scattering_table = self.scattering_table(),
+        f_obs_array = target_map_coeffs,
+        log = null_out())
+      sum_cc = flex.double()
+      for i_bin in target_map_coeffs.binner().range_used():
+        sel       = target_map_coeffs.binner().selection(i_bin)
+        cc1 = map_coeffs.select(sel).map_correlation(
+           target_map_coeffs.select(sel))
+        sum_cc.append(cc1)
+      cc = sum_cc.min_max_mean().mean
+
+      if best_cc is None or cc > best_cc:
+        best_cc = cc
+        best_kb = [k_sol,b_sol]
+    return group_args(
+      k_sol = best_kb[0],
+      b_sol = best_kb[1],
+      cc = best_cc)
+
+
+  def tls_from_map(self,
+    map_id_1 = None,
+    map_id_2 = None,
+    map_id = None,
+    model_id = None,
+    mask_id = None,
+    tls_by_chain = True,
+    apply_tls_to_model = True,
+    iterations = 2,
+    skip_waters = True,
+    skip_hetero = True,
+    coordinate_shift_to_apply_before_tlso = None,
+    core_box_size_ratio = None,
+    box_cushion_ratio = None,
+    exclude_points_outside_density = True,
+    d_min = None,
+      **kw):
+    if iterations:
+      from libtbx import adopt_init_args
+      kw_obj = group_args()
+      adopt_init_args(kw_obj, locals())
+      all_kw = kw_obj() # save calling parameters in kw as dict
+      del all_kw['adopt_init_args'] # REQUIRED
+      del all_kw['kw_obj']  # REQUIRED
+
+      all_kw.update(kw)
+      del all_kw['kw']
+      all_kw['iterations'] = None
+      all_kw_use = deepcopy(all_kw)
+      print("\nRunning total of %s iterations of TLS from map " %(iterations),
+        file = self.log)
+      for iter in range(iterations-1):
+        print("\nRunning iteration %s of %s of TLS from map" %(
+         iter+1,iterations), file = self.log)
+        result = self.tls_from_map(**all_kw_use)
+      print("\nDone running extra iterations of TLS from map ",file = self.log)
+
+    # Save all keywords we want to pass on in kw
+    kw['map_id_1'] = map_id_1
+    kw['map_id_2'] = map_id_2
+    kw['map_id'] = map_id
+    kw['model_id'] = model_id
+    kw['exclude_points_outside_density'] = exclude_points_outside_density
+    kw['d_min'] = d_min
+
+    # Set up list of maps to be scaled and kw
+    kw = self.set_map_id_lists(kw)
+
+    kw['local_sharpen'] = True
+    kw['anisotropic_sharpen'] = True
+    kw['get_scale_as_aniso_u'] = True
+    kw['get_tls_info_only'] = True
+    kw['replace_aniso_with_tls_equiv'] = False
+    kw['overall_sharpen_before_and_after_local'] = False
+    kw['coordinate_shift_to_apply_before_tlso'] =\
+        coordinate_shift_to_apply_before_tlso
+
+    print("\nRunning tls_from_map...\n",
+       file = self.log)
+    if kw.get('map_id_1') and kw.get('map_id_2'):
+      print("\nTLS will be determined by comparison of %s and %s " %(
+       kw['map_id_1'],kw['map_id_2']), file = self.log)
+      method = self.half_map_sharpen
+      del kw['model_id']
+      del kw['map_id']
+    elif kw.get('map_id') and kw.get('model_id'):
+      print("\nTLS will be determined by comparison of %s and %s " %(
+       kw['map_id'],kw['model_id']), file = self.log)
+      method = self.model_sharpen
+      del kw['map_id_1']
+      del kw['map_id_2']
+    else:
+      raise Sorry("Need two half-maps or map and model for get_tls_from_map")
+
+    # Run by chain if requested
+    if tls_by_chain:
+      print("TLS will be determined for each chain", file = self.log)
+      box_info = self._split_up_map_and_model(
+        selection_method = 'by_chain',
+        skip_waters = skip_waters,
+        skip_hetero = skip_hetero,
+        mask_all_maps_around_edges = False,)
+      tlso_list = []
+      for mmm in box_info.mmm_list:
+        # working shift_cart is shift from original to working xyz
+        #  box shift_cart is original to box
+        #  to get coords in working frame, take box xyz and subtract box shift
+        #    then add working shift
+        coordinate_shift = tuple(
+         [working_shift - box_shift for working_shift,box_shift in zip(
+           self.map_manager().shift_cart(), mmm.map_manager().shift_cart())]
+         )
+        kw['coordinate_shift_to_apply_before_tlso'] = coordinate_shift
+
+        box_info =  mmm.tls_from_map(
+         core_box_size_ratio = core_box_size_ratio,
+         box_cushion_ratio = box_cushion_ratio,
+         tls_by_chain = False,
+         apply_tls_to_model = False,
+         iterations = None,
+          **kw)
+        for tlso in box_info.tlso_list:
+          tlso_list.append(tlso)
+      box_info.tlso_list = tlso_list
+
+    else:
+      print("TLS will be determined for entire model as one group",
+         file = self.log)
+      if core_box_size_ratio and (not kw.get('core_box_size')):
+        kw['core_box_size'] = core_box_size_ratio * self.resolution()  # in A,
+      if box_cushion_ratio and (not kw.get('box_cushion')):
+        kw['box_cushion'] = box_cushion_ratio * self.resolution()  # in  A
+
+      tls_info = method(**kw)
+          # run overall sharpening
+      tlso_list = [tls_info.tlso]
+      mmm_list = [self]
+      box_info = group_args(
+       selection_list = None,
+       selection_as_text_list = None,
+       tlso_list = tlso_list,
+       mmm_list = [self])
+
+    if apply_tls_to_model and self.model():  # set the values in the model using
+      if not box_info.selection_list:
+        box_info.selection_list = [self.model().selection('all')]
+        box_info.selection_as_text_list = ['all']
+
+      self.merge_split_maps_and_models(
+        box_info = box_info,
+        replace_coordinates = False,
+        replace_u_aniso = True)
+    return box_info
 
   def _sharpen_overall_local_overall(self, kw, method):
 
@@ -2387,12 +2682,14 @@ class map_model_manager(object):
 
   def set_map_id_lists(self,kw):
 
-    if kw['map_id_to_be_scaled_list'] is None:
+    if kw.get('map_id') is None:
+      kw['map_id'] = 'map_manager'
+    if kw.get('map_id_to_be_scaled_list') is None:
       kw['map_id_to_be_scaled_list'] = [kw['map_id']]
       if kw.get('map_id_1') and kw.get('map_id_2'): # half-map sharpening
          kw['map_id_to_be_scaled_list'].append(kw['map_id_1'])
          kw['map_id_to_be_scaled_list'].append(kw['map_id_2'])
-    if kw['map_id_scaled_list'] is None:
+    if kw.get('map_id_scaled_list') is None:
       kw['map_id_scaled_list'] = []
       for id in kw['map_id_to_be_scaled_list']:
          kw['map_id_scaled_list'].append("%s_scaled" %(id))
@@ -2403,7 +2700,11 @@ class map_model_manager(object):
       map_id_external_map = 'external_map',
       map_id_to_be_scaled_list = None,
       map_id_scaled_list = None,
+      exclude_points_outside_density = None,
       resolution = None,
+      d_min = None,
+      k_sol = None,
+      b_sol = None,
       n_bins = None,
       n_boxes = None,
       core_box_size = None,
@@ -2411,11 +2712,14 @@ class map_model_manager(object):
       smoothing_radius = None,
       local_sharpen = None,
       anisotropic_sharpen = None,
-      overall_sharpen_before_and_after_local = True,
+      expected_ssqr_list = None,
+      expected_ssqr_list_rms = None,
+      tlso_group_info = None,
+      overall_sharpen_before_and_after_local = False,
       get_scale_as_aniso_u = None,
       use_dv_weighting = None,
       n_direction_vectors = None,
-      run_analyze_anisotropy = None,
+      run_analyze_anisotropy = True,
       nproc = None,
     ):
     '''
@@ -2451,7 +2755,7 @@ class map_model_manager(object):
     kw['is_external_based'] = True
     del kw['map_id_external_map']
 
-    self._sharpen_map( **kw)
+    self._sharpen_map(**kw)
 
   def half_map_sharpen(self,
       map_id = 'map_manager',
@@ -2459,7 +2763,11 @@ class map_model_manager(object):
       map_id_2 = 'map_manager_2',
       map_id_scaled_list = None,
       map_id_to_be_scaled_list = None,
+      exclude_points_outside_density = None,
       resolution = None,
+      d_min = None,
+      k_sol = None,
+      b_sol = None,
       n_bins = None,
       n_boxes = None,
       core_box_size = None,
@@ -2472,16 +2780,21 @@ class map_model_manager(object):
       get_scale_as_aniso_u = None,
       use_dv_weighting = None,
       n_direction_vectors = None,
-      run_analyze_anisotropy = None,
+      run_analyze_anisotropy = True,
       spectral_scaling = True,
       expected_rms_fc_list = None,
-      model_for_rms_fc = None,
+      expected_ssqr_list = None,
+      expected_ssqr_list_rms = None,
+      tlso_group_info = None,
+      model_id_for_rms_fc = None,
       replace_aniso_with_tls_equiv = None,
       max_abs_b = None,
       nproc = None,
       optimize_b_eff = None,
       equalize_power = None,
-      overall_sharpen_before_and_after_local = True,
+      overall_sharpen_before_and_after_local = False,
+      get_tls_info_only = None,
+      coordinate_shift_to_apply_before_tlso = None,
     ):
     '''
      Scale map_id with scale factors identified from map_id_1 vs map_id_2
@@ -2525,14 +2838,23 @@ class map_model_manager(object):
     # Now get scaling from comparison of the two half-maps
     #  apply the scaling to map_id_to_be_scaled
 
-    self._sharpen_map(**kw)
+    if get_tls_info_only:
+      return self._sharpen_map(**kw)
+    else:
+      self._sharpen_map(**kw)
 
   def model_sharpen(self,
       map_id = 'map_manager',
       model_id = 'model',
       map_id_scaled_list = None,
       map_id_to_be_scaled_list = None,
+      exclude_points_outside_density = True,
       resolution = None,
+      d_min = None,
+      k_sol = None,
+      b_sol = None,
+      find_k_sol_b_sol = True,
+      d_min_for_k_sol_b_sol = 6.,
       n_bins = None,
       n_boxes = None,
       core_box_size = None,
@@ -2545,10 +2867,14 @@ class map_model_manager(object):
       get_scale_as_aniso_u = None,
       use_dv_weighting = None,
       n_direction_vectors = None,
-      run_analyze_anisotropy = None,
+      run_analyze_anisotropy = True,
       spectral_scaling = True,
       expected_rms_fc_list = None,
-      model_for_rms_fc = None,
+      expected_ssqr_list = None,
+      expected_ssqr_list_rms = None,
+      tlso_group_info = None,
+      find_tls_from_model = None,
+      model_id_for_rms_fc = None,
       replace_aniso_with_tls_equiv = None,
       max_abs_b = None,
       nproc = None,
@@ -2556,8 +2882,10 @@ class map_model_manager(object):
       equalize_power = None,
       map_id_model_map = 'model_map_for_scaling',
       optimize_with_model = None,
-      overall_sharpen_before_and_after_local = True,
+      overall_sharpen_before_and_after_local = False,
       mask_around_model = True,
+      get_tls_info_only = None,
+      coordinate_shift_to_apply_before_tlso = None,
     ):
     '''
      Scale map_id with scale factors identified from map_id vs model
@@ -2606,18 +2934,49 @@ class map_model_manager(object):
     print("Scaled map will be in '%s' in map_model_manager '%s'" %(
       str(kw['map_id_scaled_list']),self.name),file = self.log)
 
-    if model_for_rms_fc is None:
-      kw['model_for_rms_fc'] = self.get_model_by_id(kw['model_id'])
+    if model_id_for_rms_fc is None:
+      kw['model_id_for_rms_fc'] = kw['model_id']
+
+
+    if tlso_group_info:  # convert to lists
+      #tlso_group_info.tlso_selection_list,
+      # tlso_group_info.tlso_shift_cart_list,):
+      tlso_group_info.T_list = []
+      tlso_group_info.L_list = []
+      tlso_group_info.S_list = []
+      tlso_group_info.O_list = []
+      for tlso in tlso_group_info.tlso_list:
+        tlso_group_info.T_list.append(tlso.t)
+        tlso_group_info.L_list.append(tlso.l)
+        tlso_group_info.S_list.append(tlso.s)
+        tlso_group_info.O_list.append(tlso.origin)
+      tlso_group_info.tlso_list = None
+      tlso_group_info.tlso_selection_list = \
+         tlso_group_info.selection_as_text_list
+      tlso_group_info.tlso_shift_cart_list = len(
+         tlso_group_info.tlso_selection_list) *[None]
+    elif find_tls_from_model:
+      # If we are going to use TLS groups from the model, check them here
+      if not self.model():
+        raise Sorry("Need model for find_tls_from_model")
+      tlso_group_info = get_tlso_group_info_from_model(
+         self.model(),
+         nproc = nproc,
+         log = self.log)
+      kw['tlso_group_info'] = tlso_group_info
 
     # Allow sharpening globally before and after local sharpening
     if local_sharpen and overall_sharpen_before_and_after_local:
       return self._sharpen_overall_local_overall(kw = kw,
         method = self.model_sharpen)
 
+    del kw['find_k_sol_b_sol']  # REQUIRED
+    del kw['d_min_for_k_sol_b_sol']  # REQUIRED
     del kw['mask_around_model']  # REQUIRED
     del kw['model_id']  # REQUIRED
     del kw['map_id_model_map']  # REQUIRED
     del kw['optimize_with_model']  # REQUIRED
+    del kw['find_tls_from_model']  # REQUIRED
     del kw['overall_sharpen_before_and_after_local']  # REQUIRED
 
 
@@ -2627,7 +2986,8 @@ class map_model_manager(object):
     working_mmm.set_name('working_mmm')
 
     # Working resolution is resolution * d_min_ratio
-    d_min = working_mmm._get_d_min_from_resolution(resolution)
+    if d_min is None:
+      d_min = working_mmm._get_d_min_from_resolution(resolution)
     print ("High-resolution limit: "+
       "%5.2f A based on nominal resolution of %5.2f A" %(
       d_min, resolution if resolution else working_mmm.resolution()),
@@ -2649,10 +3009,34 @@ class map_model_manager(object):
     # Generate map from model using existing possibly anisotropic B
     model=working_mmm.get_model_by_id(model_id)
 
+    if find_k_sol_b_sol and (k_sol is None) and (b_sol is None):
+      # Find k_sol and b_sol
+      local_mmm = working_mmm.extract_all_maps_around_model()
+      local_mmm.mask_all_maps_around_atoms(
+         mask_atoms_atom_radius = 2.* d_min,
+         soft_mask =True)
+      d_min_for_k_sol_b_sol = max(d_min, d_min_for_k_sol_b_sol)
+      kb_info = local_mmm.find_k_sol_b_sol(local_mmm.model(),
+        d_min = d_min_for_k_sol_b_sol,
+        model_map_id = map_id_model_map,
+        comparison_map_id = map_id)
+      if kb_info is not None:
+        print("\nOptimized k_sol=%.2f  b_sol=%.1f CC=%.3f (d_min= %.2f A)" %(
+         kb_info.k_sol, kb_info.b_sol, kb_info.cc, d_min_for_k_sol_b_sol),
+            file = self.log)
+        k_sol = kb_info.k_sol
+        b_sol = kb_info.b_sol
+        kw['k_sol'] = k_sol
+        kw['b_sol'] = b_sol
+
+
     working_mmm.generate_map(model=model,
        gridding=working_mmm.get_any_map_manager().map_data().all(),
        d_min=d_min,
-       map_id = map_id_model_map)
+       map_id = map_id_model_map,
+       k_sol = k_sol,
+       b_sol = b_sol)
+
 
     # Save unmodified copy of map to be scaled
     mm_dc_list = []
@@ -2681,7 +3065,10 @@ class map_model_manager(object):
     # Now get scaling from comparison of working_map_id_to_be_scaled and
     #   map_id_model_map, and
     #  apply the scaling to  unmasked_map_id_list
-    working_mmm._sharpen_map(**kw)
+    if get_tls_info_only:
+      return working_mmm._sharpen_map(**kw)
+    else:
+      working_mmm._sharpen_map(**kw)
 
     # And set this map_manager
     for id in kw['map_id_scaled_list']:
@@ -2706,8 +3093,12 @@ class map_model_manager(object):
       map_id_2 = 'map_manager_2',
       map_id_to_be_scaled_list = None,
       map_id_scaled_list = None,
+      exclude_points_outside_density = None,
       equalize_power = None,
       resolution = None,
+      d_min = None,
+      k_sol = None,
+      b_sol = None,
       n_bins = None,
       n_boxes = None,
       core_box_size = None,
@@ -2729,9 +3120,14 @@ class map_model_manager(object):
       run_analyze_anisotropy = None,
       spectral_scaling = None,
       expected_rms_fc_list = None,
-      model_for_rms_fc = None,
+      expected_ssqr_list = None,
+      expected_ssqr_list_rms = None,
+      tlso_group_info = None,
+      model_id_for_rms_fc = None,
       replace_aniso_with_tls_equiv = None,
       max_abs_b = None,
+      get_tls_info_only = None,
+      coordinate_shift_to_apply_before_tlso = None,
       overall_sharpen_before_and_after_local = None, # ignored
     ):
     '''
@@ -2780,15 +3176,28 @@ class map_model_manager(object):
        self.get_map_manager_by_id(map_id_2))
 
     # remove any extra models and maps to speed up boxing and not modify orig
+    map_id_list = [map_id,map_id_1,map_id_2]
     working_mmm = self._get_map_model_manager_with_selected(
-      map_id_list=[map_id,map_id_1,map_id_2],deep_copy=True)
+      map_id_list = map_id_list, deep_copy=True)
     working_mmm.set_log(self.log)
+    if is_model_based and self.model():
+      working_mmm.add_model_by_id(model_id = 'model', model = self.model()) # maybe use model_id
 
     # Note the map that is going to be scaled
     assert kw['map_id_to_be_scaled_list']
     assert kw['map_id_scaled_list']
     assert len(kw['map_id_to_be_scaled_list']) == len(kw['map_id_scaled_list'])
 
+    if exclude_points_outside_density:  # Set up mask
+      kw['mask_id'] = self._generate_new_map_id(prefix = 'mask_around_density')
+      print("\nSetting up soft mask around density as '%s' " %(kw['mask_id']),
+         file = self.log)
+      working_mmm.create_mask_around_density(
+        soft_mask  = True,
+        mask_id = kw['mask_id'],
+        map_id = map_id)
+    else:
+      kw['mask_id'] = None
 
     print("\nMaps in '%s' to be scaled will come from '%s'" %(
        self.name,str(kw['map_id_to_be_scaled_list'])),
@@ -2809,7 +3218,10 @@ class map_model_manager(object):
       if n_bins is None: # set it here
         kw['n_bins'] = n_bins_default_local
 
-      working_mmm._local_sharpen(**kw)
+      if get_tls_info_only:
+        return working_mmm._local_sharpen(**kw)
+      else:
+        working_mmm._local_sharpen(**kw)
 
       for id, previous_id in zip(
           kw['map_id_scaled_list'],
@@ -2840,6 +3252,7 @@ class map_model_manager(object):
     # Get basic info including minimum_resolution (cutoff for map_coeffs)
     setup_info = working_mmm._get_box_setup_info(map_id_1, map_id_2,
       resolution,
+      d_min,
       smoothing_radius = smoothing_radius,
       skip_boxes = True)
     if spectral_scaling and (not expected_rms_fc_list):
@@ -2849,11 +3262,23 @@ class map_model_manager(object):
            d_min = setup_info.minimum_resolution,
            resolution = setup_info.resolution,
            n_bins = n_bins,
+           k_sol = k_sol,
+           b_sol = b_sol,
            map_model_manager = working_mmm,
-           model = model_for_rms_fc,
+           model = working_mmm.get_model_by_id(model_id=model_id_for_rms_fc),
            out = self.log)
         expected_rms_fc_list = aavr.get_target_scale_factors()
         n_bins_use = aavr.n_bins_use # number of bins to resolution
+
+    if expected_ssqr_list_rms and not expected_ssqr_list:
+        from cctbx.development.approx_amplitude_vs_resolution import \
+          get_expected_ssqr_list
+        expected_ssqr_list = get_expected_ssqr_list(
+           d_min = setup_info.minimum_resolution,
+           n_bins = n_bins,
+           expected_ssqr_list_rms = expected_ssqr_list_rms,
+           map_model_manager = working_mmm,
+           out = self.log)
 
     resolution = setup_info.resolution
     working_mmm.set_resolution(resolution)
@@ -2861,7 +3286,9 @@ class map_model_manager(object):
     print ("Nominal resolution of map: %.2f A  Minimum resolution: %.2f A" %(
         resolution,d_min),
       file = self.log)
-    working_mmm.mask_all_maps_around_edges(soft_mask_radius=resolution)
+    mask_all_maps_around_edges = True
+    if mask_all_maps_around_edges:
+      working_mmm.mask_all_maps_around_edges(soft_mask_radius=resolution)
 
     map_coeffs = working_mmm.get_map_manager_by_id(
        map_id).map_as_fourier_coefficients( d_min = d_min)
@@ -2907,18 +3334,28 @@ class map_model_manager(object):
         n_direction_vectors = n_direction_vectors,
         run_analyze_anisotropy = run_analyze_anisotropy,
         expected_rms_fc_list = expected_rms_fc_list,
-        model_for_rms_fc = model_for_rms_fc,
+        expected_ssqr_list = expected_ssqr_list,
+        expected_ssqr_list_rms = expected_ssqr_list_rms,
+        tlso_group_info = tlso_group_info,
+        model_id_for_rms_fc = model_id_for_rms_fc,
         replace_aniso_with_tls_equiv = replace_aniso_with_tls_equiv,
         )
-    # scaling_group_info group_args object has direction vectors, list of si:
-    #  scaling_group_info.direction_vectors
-    #  scaling_group_info.overall_u_cart_to_remove  aniso scale factor (u_cart)
-    #  scaling_group_info.scaling_info_list: one si entry per direction vector
-    #    si.target_scale_factors
-    #    si.target_sthol2
-    #    si.d_min_list
-    #    si.cc_list
-    #    si.low_res_cc # low-res average
+    """
+    scaling_group_info group_args object:
+      direction_vectors: direction vectors dv for anisotropy calculations
+      scaling_info_list: si (scaling_info) objects, one for each dv
+        each si:  si.target_scale_factors   # scale factors vs sthol2
+                  si.target_sthol2 # sthol2 values  d = 0.25/sthol2**0.5
+                  si.d_min_list
+                  si.cc_list
+                  si.low_res_cc # low-res average
+      ss_b_cart_as_u_cart: anisotropic part of overall correction factor
+      overall_scale: radial part of overall correction factor
+      overall_scale_as_u_cart: overall_scale represented as u_cart
+      overall_u_cart_to_apply:  total aniso scale to apply as u_cart
+                                 ss_b_cart_as_u_cart + overall_scale_as_u_cart
+      NOTE: total scale = total aniso scale * overall_scale[0]
+    """
 
 
     #  Now apply scaling to map_id_to_be_scaled
@@ -2935,18 +3372,23 @@ class map_model_manager(object):
           file = self.log)
         assert len(scaling_group_info.scaling_info_list) == len(
          direction_vectors)
+
       if get_scale_as_aniso_u and \
-           hasattr(scaling_group_info,'overall_u_cart_to_remove') and \
-          scaling_group_info.overall_u_cart_to_remove:
+           hasattr(scaling_group_info,'overall_u_cart_to_apply') and \
+          scaling_group_info.overall_u_cart_to_apply:
         print ("\nApplying scale factors by removing anisotropy ",
          file = self.log)
 
         new_map_manager = working_mmm.remove_anisotropy(
           map_coeffs = map_coeffs_to_be_scaled,
           d_min = None,
-         overall_u_cart_to_remove = scaling_group_info.overall_u_cart_to_remove)
+          overall_u_cart_to_apply = scaling_group_info.ss_b_cart_as_u_cart,
+          overall_scale=scaling_group_info.overall_scale)
 
       else: # usual
+        print ("\nApplying scale factors directly",
+         file = self.log)
+
         new_map_manager = working_mmm._apply_scale_factors_in_shells(
           map_coeffs_to_be_scaled,
           n_bins,
@@ -2967,7 +3409,9 @@ class map_model_manager(object):
         map_coeffs = None,
         u_cart_to_remove = None,
         u_cart_to_add = None,
+        overall_u_cart_to_apply = None,
         overall_u_cart_to_remove = None,
+        overall_scale= None,
         map_id = 'map_manager'):
    '''
    Remove anisotropy from map, optionally remove anisotropy specified by
@@ -2982,27 +3426,43 @@ class map_model_manager(object):
    if not d_min:
      d_min = map_coeffs.d_min()
 
+   if (overall_u_cart_to_apply is not None):
+     overall_u_cart_to_remove = tuple(-1*flex.double(
+        overall_u_cart_to_apply))
+
+   if (overall_u_cart_to_apply is not None) and overall_scale:
+     n_bin = overall_scale.size()
+   else:
+     n_bin = 1 # don't need it
    from cctbx.maptbx.refine_sharpening import analyze_aniso_object
-   f_array_info = get_map_coeffs_as_fp_phi(map_coeffs, n_bins = 1,
-          d_min = self.resolution())
+   f_array_info = get_map_coeffs_as_fp_phi(map_coeffs, n_bins = n_bin,
+          d_min = d_min)
    f_array = f_array_info.f_array
-   if (not overall_u_cart_to_remove) and (not u_cart_to_remove):
+   if (not overall_u_cart_to_apply) and (not u_cart_to_remove):
      # Get anisotropy if not supplied and apply it
      analyze_aniso = analyze_aniso_object()
      analyze_aniso.set_up_aniso_correction(f_array=f_array)
      print(" Finding and removing anisotropy (positive is sharpening) "+
         "b_cart = %s " %( str(analyze_aniso.b_cart)), file = self.log)
      scaled_f_array = analyze_aniso.apply_aniso_correction(f_array=f_array)
-   else:  # apply overall_u_cart_to_remove
+   else:  # remove overall_u_cart_to_remove
      from mmtbx.scaling import absolute_scaling
      if overall_u_cart_to_remove:
        print(" Removing anisotropy (positive is sharpening).b_cart = %s " %(
-         str(adptbx.u_as_b(tuple(col(overall_u_cart_to_remove))))),
+         str(adptbx.u_as_b(tuple(col(overall_u_cart_to_apply))))),
          file = self.log)
        u_star= adptbx.u_cart_as_u_star(
          f_array.unit_cell(), overall_u_cart_to_remove)
        scaled_f_array = absolute_scaling.anisotropic_correction(
         f_array,0.0, u_star ,must_be_greater_than=-0.0001)
+       if overall_scale:  # Apply overall resolution-dependent scale factors
+         print("Applying resolution-dependent scale factor overall_scale",
+             file = self.log)
+         scale_array=f_array.binner().interpolate(
+            overall_scale, 1) # d_star_power=1
+         scaled_f_array=scaled_f_array.customized_copy(
+            data=scaled_f_array.data()*scale_array)
+
      else: # remove and add
        u_star= adptbx.u_cart_as_u_star(
          f_array.unit_cell(), u_cart_to_remove)
@@ -3100,6 +3560,10 @@ class map_model_manager(object):
     other.set_verbose(self.verbose)
     if self._resolution:
       other.set_resolution(self._resolution)
+    if self._minimum_resolution:
+      other.set_minimum_resolution(self._minimum_resolution)
+    if self._scattering_table:
+      other.set_scattering_table(self._scattering_table)
 
 
   def _get_map_model_manager_with_selected(self,
@@ -3163,15 +3627,22 @@ class map_model_manager(object):
       scaling_group_info = None,
       direction_vectors= None,
       ):
-
-    # scaling_group_info group_args object has direction vectors, list of si:
-    #  scaling_group_info.direction_vectors
-    #  scaling_group_info.scaling_info_list: one si entry per direction vector
-    #    si.target_scale_factors
-    #    si.target_sthol2
-    #    si.d_min_list
-    #    si.cc_list
-    #    si.low_res_cc # low-res average
+    """
+    scaling_group_info group_args object:
+      direction_vectors: direction vectors dv for anisotropy calculations
+      scaling_info_list: si (scaling_info) objects, one for each dv
+        each si:  si.target_scale_factors   # scale factors vs sthol2
+        si.target_sthol2 # sthol2 values  d = 0.25/sthol2**0.5
+                  si.d_min_list
+                  si.cc_list
+                  si.low_res_cc # low-res average
+      ss_b_cart_as_u_cart: anisotropic part of overall correction factor
+      overall_scale: radial part of overall correction factor
+      overall_scale_as_u_cart: overall_scale represented as u_cart
+      overall_u_cart_to_apply:  total aniso scale to apply as u_cart
+                                 ss_b_cart_as_u_cart + overall_scale_as_u_cart
+      NOTE: total scale = total aniso scale * overall_scale[0]
+    """
 
     f_array_info = get_map_coeffs_as_fp_phi(map_coeffs, n_bins = n_bins,
         d_min = d_min)
@@ -3251,7 +3722,10 @@ class map_model_manager(object):
      n_direction_vectors = None,
      run_analyze_anisotropy = None,
      expected_rms_fc_list = None,
-     model_for_rms_fc = None,
+     expected_ssqr_list = None,
+     expected_ssqr_list_rms = None,
+     tlso_group_info = None,
+     model_id_for_rms_fc = None,
      replace_aniso_with_tls_equiv = None,
      ):
     '''
@@ -3344,10 +3818,12 @@ class map_model_manager(object):
       direction_vectors = direction_vectors,
       smooth_fsc = False, # XXX may change
       cutoff_after_last_high_point = True,
-      get_scale_as_aniso_u = True, # always get it; use if get_scale_as_aniso_u
       use_dv_weighting = use_dv_weighting,
       run_analyze_anisotropy = run_analyze_anisotropy,
       expected_rms_fc_list = expected_rms_fc_list,
+      expected_ssqr_list = expected_ssqr_list,
+      expected_ssqr_list_rms = expected_ssqr_list_rms,
+      tlso_group_info = tlso_group_info,
       resolution = resolution, # nominal resolution
       out = self.log)
     if not hasattr(result,'scaling_info_list'):  # result is one si
@@ -3363,16 +3839,22 @@ class map_model_manager(object):
           file = self.log)
         si.target_scale_factors = None
 
-    # result to be returned is a group_args object with
-    #   direction vectors and list of si as scaling_info_list:
-    #  result.direction_vectors
-    #  result.scaling_info_list:
-    #    si.target_scale_factors
-    #    si.target_sthol2
-    #    si.d_min_list
-    #    si.cc_list
-    #    si.low_res_cc # low-res average
-    #    si.expected_rms_fc_list  # as supplied
+    """
+    scaling_group_info group_args object:
+      direction_vectors: direction vectors dv for anisotropy calculations
+      scaling_info_list: si (scaling_info) objects, one for each dv
+        each si:  si.target_scale_factors   # scale factors vs sthol2
+        si.target_sthol2 # sthol2 values  d = 0.25/sthol2**0.5
+                  si.d_min_list
+                  si.cc_list
+                  si.low_res_cc # low-res average
+      ss_b_cart_as_u_cart: anisotropic part of overall correction factor
+      overall_scale: radial part of overall correction factor
+      overall_scale_as_u_cart: overall_scale represented as u_cart
+      overall_u_cart_to_apply:  total aniso scale to apply as u_cart
+                                 ss_b_cart_as_u_cart + overall_scale_as_u_cart
+      NOTE: total scale = total aniso scale * overall_scale[0]
+    """
     return result
 
   def _remove_temp_dir(self,temp_dir):
@@ -3399,86 +3881,394 @@ class map_model_manager(object):
 
     if max_abs_b is None:  # set default
       max_abs_b = 100 * (self.resolution()/4)**2  # about 100 at 4 A
+    print("Updating scale factor info from aniso U values.  \n"+
+      "Maximum B correction allowed: %.2f" %(
+     max_abs_b),file = self.log)
     map_coeffs = self.get_any_map_manager(
          ).map_as_fourier_coefficients(d_min = self.resolution())
     from cctbx.maptbx.segment_and_split_map import map_coeffs_as_fp_phi
     from cctbx.maptbx.refine_sharpening import get_nearest_lattice_points
     f_array,phases=map_coeffs_as_fp_phi(map_coeffs)
+    if scale_factor_info.value_list and \
+       scale_factor_info.value_list[0].overall_scale and (not f_array.binner()):
+      f_array.setup_binner(
+       n_bins = scale_factor_info.value_list[0].overall_scale.size(),
+       d_min = scale_factor_info.d_min)
 
     # scale_factor_info.value_list is a set of scaling_group_info objects.
     # scale_factor_info.xyz_list are the coordinates where these apply
     # scale_factor_info.n_bins is number of bins
     # value_list is a set of scaling_group_info objects, one per xyz.
-    #  scaling_group_info group_args object has direction vectors, list of si:
-    #   scaling_group_info.direction_vectors
-    #   scaling_group_info.scaling_info_list: one si entry per direction
-    #    si.target_scale_factors
-    #    si.target_sthol2
-    #    si.d_min_list
-    #    si.cc_list
+
+    """
+    scaling_group_info group_args object:
+      direction_vectors: direction vectors dv for anisotropy calculations
+      scaling_info_list: si (scaling_info) objects, one for each dv
+        each si:  si.target_scale_factors   # scale factors vs sthol2
+        si.target_sthol2 # sthol2 values  d = 0.25/sthol2**0.5
+                  si.d_min_list
+                  si.cc_list
+                  si.low_res_cc # low-res average
+      ss_b_cart_as_u_cart: anisotropic part of overall correction factor
+      overall_scale: radial part of overall correction factor
+      overall_scale_as_u_cart: overall_scale represented as u_cart
+      overall_u_cart_to_apply:  total aniso scale to apply as u_cart
+                                 ss_b_cart_as_u_cart + overall_scale_as_u_cart
+      NOTE: total scale = total aniso scale * overall_scale[0]
+    """
+
     xyz_list = scale_factor_info.xyz_list
     value_list = scale_factor_info.value_list
     for xyz, scaling_group_info in zip(xyz_list,value_list):
       direction_vectors = scaling_group_info.direction_vectors
       scaling_info_list = scaling_group_info.scaling_info_list
-      overall_u_cart_to_remove = scaling_group_info.overall_u_cart_to_remove
+      if scaling_group_info.overall_scale:
+        # if overall_scale are supplied, multiply by interpolated scale factor
+        u_cart_to_apply = tuple(scaling_group_info.ss_b_cart_as_u_cart)
+        overall_scale = scaling_group_info.overall_scale
+      elif scaling_group_info.overall_u_cart_to_apply:
+        u_cart_to_apply = tuple(scaling_group_info.overall_u_cart_to_apply)
+        overall_scale = None
+      elif scale_factor_info.default_uaniso:
+        u_cart_to_apply = tuple(scale_factor_info.default_uaniso)
+        overall_scale = None
+      else: # nothing to do
+        continue
       for si,dv in zip(scaling_info_list,direction_vectors):
         if not si.target_scale_factors:
           continue
         target_sthol2 = si.target_sthol2
         # Now recalculate target_scale_factors from aniso_u_cart and dv
-
         recip_space_vectors = flex.vec3_double()
         scale_values = flex.double()
         for sthol2 in target_sthol2:
           s = (sthol2/0.25)**0.5
           recip_space_vectors.append(col(dv) * s)
           scale_values.append(1.)
+
+        # Create dummy array with fine spacing (will never contain much)
+        #  so that there will be a lattice point very near any point in s-space
+        local_f_array = create_fine_spacing_array(
+          f_array.crystal_symmetry().unit_cell())
+
         indices = flex.miller_index(tuple(get_nearest_lattice_points(
-            f_array.unit_cell(),recip_space_vectors)))
-        scale_values_array = f_array.customized_copy(
+            local_f_array.unit_cell(),recip_space_vectors)))
+        scale_values_array = local_f_array.customized_copy(
+              # just n_bins numbers
           data = scale_values,
           indices = indices)
         from mmtbx.scaling import absolute_scaling
         b_iso = abs(flex.double(adptbx.u_as_b(
-            overall_u_cart_to_remove))[:3].min_max_mean().mean)
+            u_cart_to_apply))[:3].min_max_mean().mean)
 
         if max_abs_b and abs(b_iso) > max_abs_b:
           ratio = max_abs_b/abs(b_iso)
-          overall_u_cart_to_remove = tuple(ratio * col(
-              overall_u_cart_to_remove))
+          u_cart_to_apply = tuple(ratio * col(
+              u_cart_to_apply))
         u_star= adptbx.u_cart_as_u_star(
-          scale_values_array.unit_cell(),tuple(col(overall_u_cart_to_remove)))
+          scale_values_array.unit_cell(),tuple(-col(u_cart_to_apply)))
         scaled_f_array = absolute_scaling.anisotropic_correction(
           scale_values_array,0.0, u_star ,must_be_greater_than=-0.0001)
-        if 0:
-          print("TARGET: BISO %.2f" %(b_iso),"BCART",str(overall_u_cart_to_remove),
-            "".join(["%.2f " %(ts) for ts in si.target_scale_factors]))
-          print("FITTED: ",
-            "".join(["%.2f " %(sf) for sf in scaled_f_array.data()]))
+
+        if overall_scale:  # Apply overall
+            #resolution-dependent scale factors
+          scaled_f_array=scaled_f_array.customized_copy(
+            data=scaled_f_array.data()*scaling_group_info.overall_scale)
         # Now extract our values as target_scale_factors
         si.target_scale_factors = scaled_f_array.data()
 
-  def _analyze_aniso(self, scale_factor_info, map_id = None,
+    print("Done updating scale factors from aniso u values", file = self.log)
+
+
+  def _analyze_aniso_replace_with_supplied(self,
+     scale_factor_info,
+     tlso_group_info = None,
+     map_id = None,
+    ):
+
+    # Replace aniso information with values from tlso_group_info
+    # Get uaniso in middle of molecule
+    tlso_value = tlso(
+           t = tlso_group_info.T_list[0],
+           l = tlso_group_info.L_list[0],
+           s = tlso_group_info.S_list[0],
+           origin = tlso_group_info.O_list[0],
+             )
+    sites_cart = flex.vec3_double()
+    sites_cart.append(scale_factor_info.xyz_list.mean())
+
+    center_uanisos= uaniso_from_tls_one_group(
+         tlso = tlso_value,
+         sites_cart = sites_cart,
+         zeroize_trace=False)
+
+    average_dd_b_cart_as_u_cart = flex.double((0,0,0,0,0,0))
+    average_overall_scale_as_u_cart = flex.double((0,0,0,0,0,0))
+    average_overall_scale = None
+    value_list = scale_factor_info.value_list
+    for values in value_list:  # find a std value to us
+      if not average_overall_scale:
+        average_overall_scale = flex.double(values.overall_scale.size(),0)
+      average_overall_scale += values.overall_scale
+      average_overall_scale_as_u_cart += flex.double(
+         values.overall_scale_as_u_cart)
+      average_dd_b_cart_as_u_cart += flex.double(
+         values.dd_b_cart_as_u_cart)
+    average_overall_scale_as_u_cart = tuple(average_overall_scale_as_u_cart/
+        len(value_list))
+    average_dd_b_cart_as_u_cart = tuple(average_dd_b_cart_as_u_cart/
+        len(value_list))
+    average_overall_scale = average_overall_scale/len(value_list)
+    center_overall_u_cart = tuple(-flex.double(center_uanisos[0]) )
+    for values in value_list:
+      values.overall_u_cart_to_apply = center_overall_u_cart
+      # NOTE: keep values.overall_scale
+
+
+    # Get a standard values so we can edit it later
+    # Could be better to use closest value
+    std_values = group_args(
+      dd_b_cart_as_u_cart = tuple(
+      2.*flex.double(average_dd_b_cart_as_u_cart)),  # square for TLS from model
+      ss_b_cart_as_u_cart = (0,0,0,0,0,0),
+      overall_u_cart_to_apply = None,
+      overall_scale_as_u_cart = (0,0,0,0,0,0),
+      overall_scale = None,
+           )
+    for values in value_list:  # find a std value to us
+      if values.scaling_info_list and values.scaling_info_list[0].target_sthol2:
+        std_si_list = []
+        for si in values.scaling_info_list:
+          target_sthol2 = si.target_sthol2
+          std_si_list.append (
+            group_args(
+              target_sthol2 = target_sthol2,
+              target_scale_factors = flex.double(target_sthol2.size(),1.),
+           ) )
+        std_values.scaling_info_list = std_si_list
+        std_values.direction_vectors = values.direction_vectors
+
+    print("\nUsing values from TLS to set target scale factors",file = self.log)
+    if self.verbose:
+      print("\nOverall scale as U: %s" %str(average_overall_scale_as_u_cart),
+          file = self.log)
+      print("\nOverall correction factor as U: %s" %str(
+        average_dd_b_cart_as_u_cart),
+          file = self.log)
+    for T,L,S,origin,selection,other_shift_cart in zip(
+       tlso_group_info.T_list,
+       tlso_group_info.L_list,
+       tlso_group_info.S_list,
+       tlso_group_info.O_list,
+       tlso_group_info.tlso_selection_list,
+       tlso_group_info.tlso_shift_cart_list,):
+      # Get mask representing this TLS
+      mask_map_manager = self._create_mask_from_selection_as_string(
+        map_id = map_id,
+        selection_string=selection)
+
+      working_scale_factor_info = self._get_scale_factor_info_inside_mask(
+         scale_factor_info,
+         mask_map_manager,
+         inside = True,
+         skip_u_cart_of_zero = True)
+
+      xyz_list = working_scale_factor_info.xyz_list
+      print("\nAdding info from tls for %s" %(selection), file = self.log)
+
+      if xyz_list.size() >= 1:
+        print("Total of %s grid points inside this selection" %(
+          xyz_list.size()), file = self.log)
+
+        value_list = working_scale_factor_info.value_list
+        if other_shift_cart:
+          xyz_list_use = xyz_list + tuple([sc - other_sc for sc,other_sc in zip(
+            self.shift_cart(), other_shift_cart)]) # XXX CHECK
+        else:
+          xyz_list_use = xyz_list
+
+        print("Using TLS information from tlso_group_info", file = self.log)
+        tlso_value = tlso(
+             t = tlso_group_info.T_list[0],
+             l = tlso_group_info.L_list[0],
+             s = tlso_group_info.S_list[0],
+             origin = tlso_group_info.O_list[0],
+               )
+
+        anisos_from_tls = uaniso_from_tls_one_group(
+           tlso = tlso_value,
+           sites_cart = xyz_list_use,
+           zeroize_trace=False)
+
+        for i in range(xyz_list.size()):
+          u_cart_from_tls = tuple(-flex.double(anisos_from_tls[i]))
+          values = working_scale_factor_info.value_list[i]
+          #  values.dd_b_cart_as_u_cart are anisotropic corrections for
+          #      scaling errors
+          #   new ss_b_cart_as_u_cart =  u_cart_from_tls - overall_scale_as_u_cart
+          values.overall_u_cart_to_apply = tuple(
+            flex.double(u_cart_from_tls) +
+            flex.double(values.dd_b_cart_as_u_cart) )
+          values.ss_b_cart_as_u_cart = tuple(
+            flex.double(u_cart_from_tls) -
+            flex.double(values.overall_scale_as_u_cart))
+          if self.verbose:
+            print("\n   XYZ",xyz_list[i],
+              file = self.log)
+            print("   U from TLS:%s"  %str(u_cart_from_tls),
+              file = self.log)
+            print("  local scale as U: %s" %str(values.overall_scale_as_u_cart),
+              file = self.log)
+            print("   DD correction: %s" %str(values.dd_b_cart_as_u_cart),
+              file = self.log)
+            print("   U to apply:  %s" %str(values.overall_u_cart_to_apply),
+              file = self.log)
+            print("   U aniso (ss):  %s" %str(values.ss_b_cart_as_u_cart),
+              file = self.log)
+
+        if self.verbose:
+          print("\nMean anisotropy as TLS:",file = self.log)
+          print("T: %s" %(str(T)),file = self.log)
+          print("L: %s" %(str(L)), file = self.log)
+          print("S: %s" %(str(S)), file = self.log)
+
+      else:
+        print("Total of %s grid points inside this selection" %(
+          xyz_list.size()), file = self.log)
+
+      # Tack on values from model
+      if self.model():
+        new_xyz_list = self.model().apply_selection_string(
+           selection).get_sites_cart()
+        print("\nAdding %s u_cart values from TLS and model directly" %(
+           new_xyz_list.size()), file = self.log)
+        new_anisos_from_tls = uaniso_from_tls_one_group(
+           tlso = tlso_value,
+           sites_cart = new_xyz_list,
+           zeroize_trace=False)
+        for xyz,aniso in zip(new_xyz_list,new_anisos_from_tls):
+          u_cart_from_tls = tuple(-flex.double(aniso))
+          values = deepcopy(std_values)
+          values.overall_u_cart_to_apply = tuple(
+            flex.double(u_cart_from_tls) +
+            flex.double(values.dd_b_cart_as_u_cart) )
+          values.ss_b_cart_as_u_cart = tuple(
+            flex.double(u_cart_from_tls) -
+            flex.double(values.overall_scale_as_u_cart))
+
+          scale_factor_info.value_list.append(values)
+          scale_factor_info.xyz_list.append(xyz)
+          if self.verbose:
+            print("\n   XYZ from sites ",xyz,
+              file = self.log)
+            print("   U from TLS:%s"  %str(u_cart_from_tls),
+              file = self.log)
+            print("  local scale as U: %s" %str(values.overall_scale_as_u_cart),
+              file = self.log)
+            print("   DD correction: %s" %str(values.dd_b_cart_as_u_cart),
+              file = self.log)
+            print("   U to apply:  %s" %str(values.overall_u_cart_to_apply),
+              file = self.log)
+            print("   U aniso (ss):  %s" %str(values.ss_b_cart_as_u_cart),
+              file = self.log)
+
+    tls_info = group_args(
+         tlso = None,
+         default_aniso = center_overall_u_cart
+     )
+
+    print("Done updating scale factor info from aniso U values.",
+      file = self.log)
+    return tls_info
+
+  def _create_mask_from_selection_as_string(self,
+      map_id = None,
+      selection_string= None):
+      '''
+        Create a mask around density corresponding to atoms selected by
+       selection_string.  If no model, just create a mask around all density
+      '''
+
+      mask_id = self._generate_new_map_id(prefix = 'mask_around_density')
+      if self.model():
+        print("Creating mask around selection '%s' " %(selection_string),
+          file = self.log)
+        # Make a mask around the selected atoms
+        self.create_mask_around_atoms(
+          model = self.model().apply_selection_string(selection_string),
+          mask_atoms_atom_radius = 5,
+         mask_id = mask_id)
+        # multiply by density
+        self.get_map_manager_by_id(map_id=mask_id).set_map_data(
+          self.get_map_manager_by_id(map_id=mask_id).map_data() *
+          self.get_map_manager_by_id(map_id=map_id).map_data() )
+        old_mask_id = mask_id
+        mask_id=old_mask_id+"_masked"
+        self.create_mask_around_density(
+          soft_mask  = True,
+          mask_id = mask_id,
+          map_id = old_mask_id)
+        self.get_map_manager_by_id(map_id=mask_id).write_map('new_mask.ccp4')
+      else:  # just make mask around density
+        print("Creating mask around density",
+          file = self.log)
+        self.create_mask_around_density(
+          soft_mask  = True,
+          mask_id = mask_id,
+          map_id = map_id)
+        self.get_map_manager_by_id(map_id=mask_id).write_map('new_mask.ccp4')
+
+      mask_map_manager = self.get_map_manager_by_id(map_id = mask_id)
+      return mask_map_manager
+
+  def _analyze_aniso(self,
+     scale_factor_info,
+     tlso_group_info = None,
+     map_id = None,
+     mask_id = None,
      replace_inside = None,
      replace_boundary = None,
-     replace_outside = None):
+     replace_outside = None,
+     coordinate_shift_to_apply_before_tlso = None,
+     require_positive_definite = False,
+     everything_is_inside = False,
+    ):
 
-    # Get a mask around the map
-    mask_id = self._generate_new_map_id()
-    self.create_mask_around_density(
-      soft_mask  = True,
-      mask_id = mask_id,
-      map_id = map_id)
-    mask_map_manager = self.get_map_manager_by_id(mask_id)
+    # Apply external values if supplied
+    if tlso_group_info:
+       return self._analyze_aniso_replace_with_supplied(
+         scale_factor_info,
+         map_id = map_id,
+         tlso_group_info = tlso_group_info)
+
+    # Get a mask around the map if not already supplied as mask_id
+    if (not everything_is_inside):
+      if (not mask_id) or (not self.get_map_manager_by_id(mask_id)):
+        mask_id = self._generate_new_map_id(prefix = 'mask_around_density')
+        self.create_mask_around_density(
+          soft_mask  = True,
+          mask_id = mask_id,
+          map_id = map_id)
+      mask_map_manager = self.get_map_manager_by_id(mask_id)
+    else:
+      mask_map_manager = None
+
+    tls_info = group_args(
+       tlso = None,
+       default_uaniso = None,
+     )
 
     # Analyze u_cart values in relation to mask
     mean_u_cart_dict={}
     mean_u_cart_dict_n={}
-    for inside,cutoff_low,cutoff_high in zip(
-      [True,False,None],
-      [0.9,None,0.1],
-      [None,0.1,0.9],):
+    inside_dict={True:'Inside mask',False:'Outside mask',None:'Edge of mask'}
+    if everything_is_inside:
+      inside_list = [True]
+    else:
+      inside_list = [True,False,None]
+    for inside in inside_list:
+      cutoff_low = cutoff_values(inside).cutoff_low
+      cutoff_high = cutoff_values(inside).cutoff_high
 
       print("\nLocal B-cart by XYZ with inside_mask = %s:" %(
         inside), file = self.log)
@@ -3487,40 +4277,45 @@ class map_model_manager(object):
       mean_u_cart_dict[inside] = col((0,0,0,0,0,0,))
       mean_u_cart_dict_n[inside] = 0
       working_scale_factor_info = self._get_scale_factor_info_inside_mask(
-         scale_factor_info, mask_map_manager,
-         cutoff_low = cutoff_low, cutoff_high = cutoff_high,
+         scale_factor_info,
+         mask_map_manager,
+         inside = inside,
+         everything_is_inside = everything_is_inside,
          skip_u_cart_of_zero = True)
       xyz_list = working_scale_factor_info.xyz_list
       if xyz_list.size() < 1: continue
       value_list = working_scale_factor_info.value_list
       uanisos = flex.sym_mat3_double()
+      xyz_list_use = flex.vec3_double()
       for i in range(xyz_list.size()):
 
         values = working_scale_factor_info.value_list[i]
-        aniso_u_cart = values.overall_u_cart_to_remove
-        uanisos.append(aniso_u_cart)
-        b_cart = adptbx.u_as_b(aniso_u_cart)
+        #  overall_u_cart_to_apply:  total aniso scale to apply as u_cart
+        #                        ss_b_cart_as_u_cart + overall_scale_as_u_cart
+        #  NOTE: total scale = total aniso scale * overall_scale[0]
+        #  NOTE: overall_scale_as_u_cart may vary by location
+        #  So for each location: get overall_u_cart_to_apply
+        #    Then use these to generate TLS
+        #    Then use TLS to generate new_u_cart
+        #    new ss_b_cart_as_u_cart =  new_u_cart - overall_scale_as_u_cart
+        #  and get new target_scale_factors from ss_b_cart_as_u_cart
+        #    and overall_scale_as_u_cart
+
+        aniso_u_cart = values.overall_u_cart_to_apply
+        if not aniso_u_cart:  # missing
+          continue
         xyz=xyz_list[i]
-
-        direction_vectors = values.direction_vectors
-        scaling_info_list = values.scaling_info_list
-        if 0:
-          print ("XYZ (%7.1f,%7.1f,%7.1f) " %(tuple(xyz)),file=self.log)
-          for dv,si in zip(direction_vectors,scaling_info_list):
-           print("DV: (%7.1f,%7.1f,%7.1f)" %(dv) +
-            " B (CC*): %.3f" %(si.effective_b),
-            " B (FOBS): %.3f" %(si.effective_b_f_obs),file = self.log)
-
-
+        # we want anisotropy, not the correction
+        uanisos.append(tuple(-flex.double(aniso_u_cart)))
+        xyz_list_use.append(xyz)
         mean_u_cart_dict[inside]+=col(aniso_u_cart)
         mean_u_cart_dict_n[inside]+=1
-        if 0:
-          print ("XYZ: "+
-         "(%7.1f,%7.1f,%7.1f) B-cart:(%6.1f,%6.1f,%6.1f,%6.1f,%6.1f,%6.1f) " %(
-          tuple(list(xyz)+list( b_cart))),
-          file = self.log)
+      if xyz_list_use.size() < 1: continue
+      if coordinate_shift_to_apply_before_tlso:
+        xyz_list_use += coordinate_shift_to_apply_before_tlso
+
       from mmtbx.tls import tools
-      cm = xyz_list.mean()
+      cm = xyz_list_use.mean()
       result = tools.tls_from_uaniso_minimizer(
         uaniso         = uanisos,
         T_initial      = [0,0,0,0,0,0],
@@ -3530,18 +4325,48 @@ class map_model_manager(object):
         refine_L       = True,
         refine_S       = True,
         origin         = cm,
-        sites          = xyz_list,
+        sites          = xyz_list_use,
         max_iterations = 100)
-
-      T=result.T_min
-      L=result.L_min
+      if require_positive_definite:
+        # Make sure they are positive definite
+        T = adptbx.eigenvalue_filtering(result.T_min)
+        L = adptbx.eigenvalue_filtering(result.L_min)
+      else:
+        T = result.T_min
+        L = result.L_min
       S=result.S_min
 
-      from mmtbx_tls_ext import tlso, uaniso_from_tls_one_group
-      tlso_value = tlso(t = T, l = L, s = S, origin = cm)
-      new_anisos= uaniso_from_tls_one_group(tlso = tlso_value,
-         sites_cart = xyz_list,
-         zeroize_trace=False)
+      # Decide what aniso to apply. Usually the one we just calculated
+
+      if tlso_group_info:
+        print("TLS information from tlso_group_info", file = self.log)
+        tlso_value = tlso(
+           t = tlso_group_info.T_list[0],
+           l = tlso_group_info.L_list[0],
+           s = tlso_group_info.S_list[0],
+           origin = tlso_group_info.O_list[0],
+             )
+      else:  # usual
+        print("TLS information from TLS analysis", file = self.log)
+        tlso_value = tlso(t = T, l = L, s = S, origin = cm)
+
+      if inside:
+        tls_info.tlso = tlso_value
+
+      if coordinate_shift_to_apply_before_tlso:
+        shift = col(coordinate_shift_to_apply_before_tlso)
+      else:
+        shift = col((0,0,0))
+
+      new_anisos_as_anisotropy= uaniso_from_tls_one_group(tlso = tlso_value,
+          sites_cart = xyz_list + shift, # xyz_list, not xyz_list_use
+          zeroize_trace=False)
+
+      # we want correction not aniso:
+      new_anisos = []
+      for u in new_anisos_as_anisotropy:
+        new_anisos.append(tuple(-flex.double(u)))
+
       if inside and replace_inside:
         replace_u_cart_to_remove = True
         print("\nReplacing values inside mask with TLS-derived scale factors",
@@ -3550,31 +4375,29 @@ class map_model_manager(object):
         replace_u_cart_to_remove = False
       for i in range(xyz_list.size()):
         values = working_scale_factor_info.value_list[i]
-        aniso_u_cart = values.overall_u_cart_to_remove
+        aniso_u_cart = values.overall_u_cart_to_apply
         new_u_cart = new_anisos[i]
         if replace_u_cart_to_remove:
-          values.overall_u_cart_to_remove = new_u_cart
-        if 0:
-          b_cart = adptbx.u_as_b(aniso_u_cart)
-          new_b_cart = adptbx.u_as_b(new_u_cart)
-          xyz=xyz_list[i]
-          print ("NEW: "+
-          "(%7.1f,%7.1f,%7.1f) B-cart:(%6.1f,%6.1f,%6.1f,%6.1f,%6.1f,%6.1f) " %(
-           tuple(list(xyz)+list( new_b_cart))),
-           file = self.log)
+        #    new ss_b_cart_as_u_cart =  new_u_cart - overall_scale_as_u_cart
+          values.overall_u_cart_to_apply = new_u_cart
+          values.ss_b_cart_as_u_cart = tuple(
+              flex.double(new_u_cart) -
+              flex.double(values.overall_scale_as_u_cart))
       print("\nMean anisotropy as TLS:",file = self.log)
       print("T: %s" %(str(T)),file = self.log)
       print("L: %s" %(str(L)), file = self.log)
       print("S: %s" %(str(S)), file = self.log)
 
-
     print("\nOverall average b_cart by region:",file = self.log)
-    for inside in [True,False,None]:
+    for inside in inside_list:
+      where = inside_dict[inside]
       mean_u_cart_dict[inside] /= max(1,mean_u_cart_dict_n[inside])
       b_cart = adptbx.u_as_b(mean_u_cart_dict[inside])
       print("%6s   (n = %4s)   (%6.1f,%6.1f,%6.1f,%6.1f,%6.1f,%6.1f) " %(
-        tuple([inside]+[mean_u_cart_dict_n[inside]]+list(b_cart))),
+        tuple([where]+[mean_u_cart_dict_n[inside]]+list(b_cart))),
         file = self.log)
+    return tls_info
+
 
   def _run_group_of_anisotropic_sharpen(self,
       map_id  = 'map_manager',
@@ -3582,7 +4405,12 @@ class map_model_manager(object):
       map_id_2 = 'map_manager_2',
       map_id_to_be_scaled_list = None,
       map_id_scaled_list = None,
+      mask_id = None,
+      exclude_points_outside_density = None,
       resolution = None,
+      d_min = None,
+      k_sol = None,
+      b_sol = None,
       n_bins = None,
       n_boxes = None,
       core_box_size = None,
@@ -3600,16 +4428,20 @@ class map_model_manager(object):
       run_analyze_anisotropy = None,
       spectral_scaling = None,
       expected_rms_fc_list = None,
-      model_for_rms_fc = None,
+      expected_ssqr_list = None,
+      expected_ssqr_list_rms = None,
+      tlso_group_info = None,
+      model_id_for_rms_fc = None,
       replace_aniso_with_tls_equiv = None,
       minimum_low_res_cc = None,
       max_abs_b = None,
+      get_tls_info_only = None,
+      coordinate_shift_to_apply_before_tlso = None,
       temp_dir = 'TEMP_ANISO_LOCAL',
      ):
     '''
     Run local sharpening in groups with focus on reflections along
     direction vectors. Then combine results
-
     Summary of method:
 
     A map of one scale factor is the scale factor to apply in real space
@@ -3648,6 +4480,7 @@ class map_model_manager(object):
 
     setup_info = self._get_box_setup_info(map_id_1, map_id_2,
       resolution,
+      d_min,
       smoothing_radius = smoothing_radius,
       skip_boxes = True)
 
@@ -3662,10 +4495,20 @@ class map_model_manager(object):
         aavr = approx_amplitude_vs_resolution(
            d_min = setup_info.minimum_resolution,
            n_bins = n_bins,
+           k_sol = k_sol,
+           b_sol = b_sol,
            map_model_manager = self,
-           model = model_for_rms_fc)
+           model = self.get_model_by_id(model_id=model_id_for_rms_fc))
         kw['expected_rms_fc_list'] = aavr.get_target_scale_factors()
-
+    if expected_ssqr_list_rms and not expected_ssqr_list:
+        from cctbx.development.approx_amplitude_vs_resolution import \
+          get_expected_ssqr_list
+        kw['expected_ssqr_list'] = get_expected_ssqr_list(
+           d_min = setup_info.minimum_resolution,
+           n_bins = n_bins,
+           expected_ssqr_list_rms = expected_ssqr_list_rms,
+           map_model_manager = self,
+           out = self.log)
     # Get list of direction vectors (based on anisotropy of map)
     direction_vectors = self._get_aniso_direction_vectors(map_id,
       n_direction_vectors = n_direction_vectors)
@@ -3686,49 +4529,53 @@ class map_model_manager(object):
     # scale_factor_info.xyz_list are the coordinates where these apply
     # scale_factor_info.n_bins is number of bins
     # value_list is a set of scaling_group_info objects, one per xyz.
-    #  scaling_group_info group_args object has direction vectors, list of si:
-    #   scaling_group_info.direction_vectors
-    #   scaling_group_info.scaling_info_list: one si entry per direction
-    #    si.target_scale_factors
-    #    si.target_sthol2
-    #    si.d_min_list
-    #    si.cc_list
-    #    si.low_res_cc # low-res average
-    #    si.effective_b # B for fall-off of cc*
-    #    si.effective_b_fobs  # B for fall-off of amplitudes of Fobs
+    """
+    scaling_group_info group_args object:
+      direction_vectors: direction vectors dv for anisotropy calculations
+      scaling_info_list: si (scaling_info) objects, one for each dv
+        each si:  si.target_scale_factors   # scale factors vs sthol2
+        si.target_sthol2 # sthol2 values  d = 0.25/sthol2**0.5
+                  si.d_min_list
+                  si.cc_list
+                  si.low_res_cc # low-res average
+      ss_b_cart_as_u_cart: anisotropic part of overall correction factor
+      overall_scale: radial part of overall correction factor
+      overall_scale_as_u_cart: overall_scale represented as u_cart
+      overall_u_cart_to_apply:  total aniso scale to apply as u_cart
+                                 ss_b_cart_as_u_cart + overall_scale_as_u_cart
+      NOTE: total scale = total aniso scale * overall_scale[0]
+    """
 
-    #  Have a look at scale values vs resolution along direction_vectors
     xyz_list = scale_factor_info.xyz_list
-    if 0:
-     for dv_id in range(direction_vectors.size()):
-      print("\nScale for direction vector (%5.2f, %5.2f, %5.2f)" %(
-        direction_vectors[dv_id]))
-      for i in range(xyz_list.size()):
-        xyz=xyz_list[i]
-        print ("XYZ = (%7.1f, %7.1f, %7.1f)" %(xyz))
-        values=flex.double()
-        for i_bin in range(1,scale_factor_info.n_bins+1,3):
-          scale_value_list,xyz_used_list = self._get_scale_values_for_bin(
-            xyz_list=xyz_list,
-            i_bin = i_bin,
-            scale_factor_info = scale_factor_info,
-            dv_id = dv_id)
-          if scale_value_list.size() > 0:
-            values.append(
-              scale_value_list[max(0,min(
-              i,scale_value_list.size()-1))]) # position i in xyz_list
-          else:
-            values.append(0)
-        for value in values:
-          print("%5.2f "  %(value), end="")
-        print()
-    self._analyze_aniso(scale_factor_info,map_id=map_id,
-      replace_inside = (replace_aniso_with_tls_equiv and get_scale_as_aniso_u))
-    if get_scale_as_aniso_u: # Summarize U vs xyz and vs inside/outside
+    if exclude_points_outside_density and (
+       not scale_factor_info.exclude_points_outside_density):
+      print("Points inside density are filled in so all points are now inside",
+          file = self.log)
+      everything_is_inside = True
+    else:
+      everything_is_inside = None
+
+    # Summarize U vs xyz and vs inside/outside
+    tls_info = self._analyze_aniso(scale_factor_info,
+      tlso_group_info = tlso_group_info,
+      map_id=map_id,
+      mask_id=mask_id,  # can supply mask_id
+      replace_inside = (replace_aniso_with_tls_equiv and get_scale_as_aniso_u),
+      coordinate_shift_to_apply_before_tlso =
+           coordinate_shift_to_apply_before_tlso,
+      everything_is_inside = everything_is_inside,
+     )
+    if get_tls_info_only:
+      return tls_info
+
+    if get_scale_as_aniso_u:
       self._update_scale_factor_info_from_aniso(scale_factor_info,
         max_abs_b = max_abs_b)
 
     setup_info.kw = kw
+
+    print("Applying interpolated scale factors (resolution and direction)",
+     file = self.log)
 
     # Apply interpolated scale_factors (vs resolution and direction). Split
     # into groups by direction
@@ -3783,6 +4630,10 @@ class map_model_manager(object):
 
       self.add_map_manager_by_id(map_id = new_id,
           map_manager = new_map_manager)
+    print("Done applying interpolated scale factors",
+     file = self.log)
+
+    return tls_info
 
   def _local_sharpen(self,
       map_id  = 'map_manager',
@@ -3790,7 +4641,12 @@ class map_model_manager(object):
       map_id_2 = 'map_manager_2',
       map_id_to_be_scaled_list = None,
       map_id_scaled_list = None,
+      mask_id = None,
+      exclude_points_outside_density = None,
       resolution = None,
+      d_min = None,
+      k_sol = None,
+      b_sol = None,
       n_bins = None,
       n_boxes = None,
       core_box_size = None,
@@ -3808,11 +4664,16 @@ class map_model_manager(object):
       run_analyze_anisotropy = None,
       spectral_scaling = None,
       expected_rms_fc_list = None,
-      model_for_rms_fc = None,
+      expected_ssqr_list = None,
+      expected_ssqr_list_rms = None,
+      tlso_group_info = None,
+      model_id_for_rms_fc = None,
       replace_aniso_with_tls_equiv = None,
       anisotropic_sharpen = None,
       minimum_low_res_cc = None,
       max_abs_b = None,
+      get_tls_info_only = None,
+      coordinate_shift_to_apply_before_tlso = None,
      ):
 
     '''
@@ -3849,10 +4710,9 @@ class map_model_manager(object):
 
     # NOTE: map starts out overall-sharpened.  Therefore approximate scale
     # factors in all resolution ranges are about 1.  use that as default
-
     if anisotropic_sharpen:  # run N times with different direction vectors
-      self._run_group_of_anisotropic_sharpen(**kw)
-      return
+      tls_info = self._run_group_of_anisotropic_sharpen(**kw)
+      return tls_info  # tlso for region inside mask
 
     # Get scale factors vs resolution and location
     scale_factor_info = self.local_fsc(
@@ -3862,19 +4722,29 @@ class map_model_manager(object):
     # scale_factor_info.value_list is a set of scaling_group_info objects.
     # scale_factor_info.xyz_list are the coordinates where these apply
     # value_list is a set of scaling_group_info objects, one per xyz.
-    #  scaling_group_info group_args object has direction vectors, list of si:
-    #   scaling_group_info.direction_vectors
-    #   scaling_group_info.scaling_info_list: one si entry per direction
-    #    si.target_scale_factors
-    #    si.target_sthol2
-    #    si.d_min_list
-    #    si.cc_list
-    #    si.low_res_cc # low-res average
+    """
+    scaling_group_info group_args object:
+      direction_vectors: direction vectors dv for anisotropy calculations
+      scaling_info_list: si (scaling_info) objects, one for each dv
+        each si:  si.target_scale_factors   # scale factors vs sthol2
+        si.target_sthol2 # sthol2 values  d = 0.25/sthol2**0.5
+                  si.d_min_list
+                  si.cc_list
+                  si.low_res_cc # low-res average
+      ss_b_cart_as_u_cart: anisotropic part of overall correction factor
+      overall_scale: radial part of overall correction factor
+      overall_scale_as_u_cart: overall_scale represented as u_cart
+      overall_u_cart_to_apply:  total aniso scale to apply as u_cart
+                                 ss_b_cart_as_u_cart + overall_scale_as_u_cart
+      NOTE: total scale = total aniso scale * overall_scale[0]
+    """
 
     xyz_list = scale_factor_info.xyz_list
     d_min = scale_factor_info.d_min
     smoothing_radius = scale_factor_info.setup_info.smoothing_radius
     assert n_bins == scale_factor_info.n_bins # must match
+
+    average_scale_factors = get_average_scale_factors(scale_factor_info)
 
     # Get Fourier coefficients for maps based on map_id_to_be_scaled
     for id, new_id in zip(map_id_to_be_scaled_list, map_id_scaled_list):
@@ -3903,11 +4773,12 @@ class map_model_manager(object):
           scale_factor_info = scale_factor_info,)
 
         # Get a map that has scale factor for this resolution vs xyz
+        default_value = average_scale_factors[i_bin-1]
         weight_mm = self._create_full_size_map_manager_with_value_list(
           xyz_list = xyz_used_list,
           value_list = scale_value_list,
           smoothing_radius = smoothing_radius,
-          default_value = scale_value_list.min_max_mean().mean)
+          default_value = default_value)
 
         # Multiply shell map data by weights
         weights_top_hat_shell = get_weights_for_unit_binning(
@@ -3929,21 +4800,28 @@ class map_model_manager(object):
           map_manager = new_map_manager)
 
   def _get_scale_factor_info_inside_mask(self,
-     scale_factor_info, mask_map_manager, cutoff_low = 0.5,
-     cutoff_high = None, skip_u_cart_of_zero = None):
+     scale_factor_info,
+     mask_map_manager,
+     inside = True,
+     everything_is_inside = None,
+     skip_u_cart_of_zero = None):
     new_xyz_list = flex.vec3_double()
     new_value_list = []
     for xyz, value in zip (scale_factor_info.xyz_list,
        scale_factor_info.value_list):
-      if skip_u_cart_of_zero and flex.pow2(flex.double(
-       tuple(value.overall_u_cart_to_remove))).min_max_mean().max ==0:
+      if everything_is_inside:
+          new_xyz_list.append(xyz)
+          new_value_list.append(value)
+      elif skip_u_cart_of_zero and value.overall_u_cart_to_apply and \
+          flex.pow2(flex.double(
+          tuple(value.overall_u_cart_to_apply))).min_max_mean().max ==0:
          pass
       else: #check if inside
         site_frac=mask_map_manager.crystal_symmetry(
           ).unit_cell().fractionalize(xyz)
-        xx = mask_map_manager.map_data().tricubic_interpolation(site_frac)
-        if ((cutoff_low is None) or (xx >= cutoff_low)) and \
-         ((cutoff_high is None) or (xx < cutoff_high)):
+        if is_inside_mask(mask_map_manager,
+            site_frac = site_frac,
+            inside = inside):
           new_xyz_list.append(xyz)
           new_value_list.append(value)
     scale_factor_info_dict = scale_factor_info()
@@ -3983,7 +4861,6 @@ class map_model_manager(object):
     #    si.cc_list
     #    si.low_res_cc # low-res average
 
-
     # scale_factor_info.value_list has one scaling_group_info object per xyz
     # value_list:  [ [scale_factor_info_1, scale_factor_info_2....12],[...]]
 
@@ -4005,7 +4882,12 @@ class map_model_manager(object):
       map_id_2 = 'map_manager_2',
       map_id_to_be_scaled_list = None, # NOTE: not used, just allows it in call
       map_id_scaled_list = None, # NOTE: not used, just allows it in call
+      mask_id = None,
+      exclude_points_outside_density = None,
       resolution = None,
+      d_min = None,
+      k_sol = None,
+      b_sol = None,
       max_resolution_ratio = None,
       min_bin_width = 20,
       n_bins = None,
@@ -4029,9 +4911,14 @@ class map_model_manager(object):
       run_analyze_anisotropy = None,
       spectral_scaling = None,
       expected_rms_fc_list = None,
-      model_for_rms_fc = None,
+      expected_ssqr_list = None,
+      expected_ssqr_list_rms = None,
+      tlso_group_info = None,
+      model_id_for_rms_fc = None,
       replace_aniso_with_tls_equiv = None,
       max_abs_b = None,
+      get_tls_info_only = None,
+      coordinate_shift_to_apply_before_tlso = None,
       n_bins_default = 2000):
 
     '''
@@ -4061,7 +4948,9 @@ class map_model_manager(object):
 
     # Get basic info including minimum_resolution (cutoff for map_coeffs)
     setup_info = self._get_box_setup_info(map_id_1, map_id_2,
-      resolution, box_cushion,
+      resolution,
+      d_min,
+      box_cushion,
       n_boxes,
       core_box_size,
       smoothing_radius = smoothing_radius)
@@ -4072,16 +4961,28 @@ class map_model_manager(object):
         aavr = approx_amplitude_vs_resolution(
            d_min = setup_info.minimum_resolution,
            n_bins = n_bins,
+           k_sol = k_sol,
+           b_sol = b_sol,
            map_model_manager = self,
-           model = model_for_rms_fc)
+           model = self.get_model_by_id(model_id=model_id_for_rms_fc))
         expected_rms_fc_list = aavr.get_target_scale_factors()
-
+    if expected_ssqr_list_rms and not expected_ssqr_list:
+        from cctbx.development.approx_amplitude_vs_resolution import \
+          get_expected_ssqr_list
+        expected_ssqr_list = get_expected_ssqr_list(
+           d_min = setup_info.minimum_resolution,
+           n_bins = n_bins,
+           expected_ssqr_list_rms = expected_ssqr_list_rms,
+           map_model_manager = self,
+           out = self.log)
     box_info = self.split_up_map_and_model_by_boxes(
       target_for_boxes = setup_info.n_boxes,
       box_cushion = setup_info.box_cushion,
       skip_empty_boxes = False,
       select_final_boxes_based_on_model = False, # required
       apply_box_info = False,
+      mask_id = mask_id,
+      exclude_points_outside_density = exclude_points_outside_density,
       )
 
     # Hold some things in box_info
@@ -4105,7 +5006,10 @@ class map_model_manager(object):
     box_info.n_direction_vectors = n_direction_vectors
     box_info.run_analyze_anisotropy = run_analyze_anisotropy
     box_info.expected_rms_fc_list = expected_rms_fc_list
-    box_info.model_for_rms_fc = model_for_rms_fc
+    box_info.expected_ssqr_list = expected_ssqr_list
+    box_info.expected_ssqr_list_rms = expected_ssqr_list_rms
+    box_info.tlso_group_info = tlso_group_info
+    box_info.model_id_for_rms_fc = model_id_for_rms_fc
     box_info.replace_aniso_with_tls_equiv = replace_aniso_with_tls_equiv
 
     log_hold = self.log
@@ -4117,17 +5021,27 @@ class map_model_manager(object):
     self.set_log(log_hold)
     # results.value_list is a set of scaling_group_info objects.
     # results.xyz_list are the coordinates where these apply
-    #  scaling_group_info group_args object has direction vectors, list of si:
-    #   scaling_group_info.direction_vectors
-    #   scaling_group_info.scaling_info_list: one si entry per direction
-    #    si.target_scale_factors
-    #    si.target_sthol2
-    #    si.d_min_list
-    #    si.cc_list
-    #    si.low_res_cc # low-res average
+    """
+    scaling_group_info group_args object:
+      direction_vectors: direction vectors dv for anisotropy calculations
+      scaling_info_list: si (scaling_info) objects, one for each dv
+        each si:  si.target_scale_factors   # scale factors vs sthol2
+        si.target_sthol2 # sthol2 values  d = 0.25/sthol2**0.5
+                  si.d_min_list
+                  si.cc_list
+                  si.low_res_cc # low-res average
+      ss_b_cart_as_u_cart: anisotropic part of overall correction factor
+      overall_scale: radial part of overall correction factor
+      overall_scale_as_u_cart: overall_scale represented as u_cart
+      overall_u_cart_to_apply:  total aniso scale to apply as u_cart
+                                 ss_b_cart_as_u_cart + overall_scale_as_u_cart
+      NOTE: total scale = total aniso scale * overall_scale[0]
+    """
 
 
     results.setup_info = setup_info
+    results.exclude_points_outside_density = \
+        box_info.exclude_points_outside_density  # are we going to exclude them
     if return_scale_factors:
       return results
 
@@ -4198,30 +5112,37 @@ class map_model_manager(object):
   def _get_box_setup_info(self,
       map_id_1, map_id_2,
       resolution,
+      d_min,
       box_cushion=None,
       n_boxes=None,
       core_box_size=None,
       smoothing_radius=None,
       skip_boxes = None,
+      box_size_ratio = 6, # full box never smaller than this ratio to resolution
       ):
+    volume = self.crystal_symmetry().unit_cell().volume()
     if not resolution:
       resolution = self.resolution()
 
-    if not box_cushion:
-      box_cushion = 1.5 * resolution
-
-    if (not core_box_size):
+    if (n_boxes is not None) or (not core_box_size):  # n_boxes overrides
       if n_boxes:
-        volume = self.crystal_symmetry().unit_cell().volume()
         core_box_size=int(0.5+ volume/n_boxes)**0.33
       else:
-        core_box_size = max(11, 3 * resolution)
+        core_box_size = int(0.5+ 3 * resolution)
 
-    if (not skip_boxes) and (not n_boxes):
-      volume = self.crystal_symmetry().unit_cell().volume()
-      n_boxes = int(0.5+volume/(core_box_size)**3)
-      print ("Target core_box_size: %.2s A  Target boxes: %s" %(
-        core_box_size, n_boxes),file = self.log)
+    if not box_cushion:
+      box_cushion = max(2.5 * resolution,
+        0.5*max(0,box_size_ratio * resolution))
+
+    core_box_size = max(
+       resolution,
+       box_size_ratio * resolution - 2 * box_cushion,
+       core_box_size)
+
+    if (not skip_boxes): # changed 2020-11-06 to recalculate n_boxes
+      n_boxes = max(1,int(0.5+volume/(core_box_size)**3))
+      print ("Target core_box_size: %.2s A  Target boxes: %s Box cushion: %s" %(
+        core_box_size, n_boxes, box_cushion),file = self.log)
 
     if (not smoothing_radius) and (not skip_boxes):
       smoothing_radius = 0.5 * \
@@ -4231,6 +5152,8 @@ class map_model_manager(object):
 
     # Working resolution is resolution * d_min_ratio
     minimum_resolution = self._get_d_min_from_resolution(resolution)
+    if d_min and (minimum_resolution < d_min):
+      minimum_resolution = d_min
 
     return group_args(
      resolution = resolution,
@@ -4285,14 +5208,22 @@ class map_model_manager(object):
     # scale_factor_info.xyz_list are the coordinates where these apply
     # scale_factor_info.n_bins is number of bins
     # value_list is a set of scaling_group_info objects, one per xyz.
-    #  scaling_group_info group_args object has direction vectors, list of si:
-    #   scaling_group_info.direction_vectors
-    #   scaling_group_info.scaling_info_list: one si entry per direction
-    #    si.target_scale_factors
-    #    si.target_sthol2
-    #    si.d_min_list
-    #    si.cc_list
-    #    si.low_res_cc # low-res average
+    """
+    scaling_group_info group_args object:
+      direction_vectors: direction vectors dv for anisotropy calculations
+      scaling_info_list: si (scaling_info) objects, one for each dv
+        each si:  si.target_scale_factors   # scale factors vs sthol2
+        si.target_sthol2 # sthol2 values  d = 0.25/sthol2**0.5
+                  si.d_min_list
+                  si.cc_list
+                  si.low_res_cc # low-res average
+      ss_b_cart_as_u_cart: anisotropic part of overall correction factor
+      overall_scale: radial part of overall correction factor
+      overall_scale_as_u_cart: overall_scale represented as u_cart
+      overall_u_cart_to_apply:  total aniso scale to apply as u_cart
+                                 ss_b_cart_as_u_cart + overall_scale_as_u_cart
+      NOTE: total scale = total aniso scale * overall_scale[0]
+    """
 
     all_results = None
     for scale_factor_info in results:
@@ -4425,6 +5356,7 @@ class map_model_manager(object):
    assert map1 and map2
 
    # Get the selection if any
+   # Get mask if we set one up (excluding positions outside mask)
    mask_map_manager = self.get_map_manager_by_id(mask_id)
    if mask_map_manager:
      assert mask_map_manager.is_mask()
@@ -4687,7 +5619,7 @@ class map_model_manager(object):
       original_origin=original_origin_grid_units)
 
 
-  def _generate_new_map_id(self):
+  def _generate_new_map_id(self, prefix = 'temp'):
     '''
      Create a unique map_id
     '''
@@ -4695,18 +5627,18 @@ class map_model_manager(object):
     i = 0
     while True:
       i += 1
-      id = "temp_%s" %(i)
+      id = "%s_%s" %(prefix,i)
       if not id in used_id_list:
         return id
 
-  def _generate_new_model_id(self):
+  def _generate_new_model_id(self,prefix = 'temp'):
     '''
      Create a unique model_id
     '''
     used_id_list = self.model_id_list()
     i = 0
     while (True):
-      id = "temp_%s" %(i)
+      id = "%s_%s" %(prefix,i)
       if not id in used_id_list:
         return id
 
@@ -4820,13 +5752,13 @@ class map_model_manager(object):
       k_sol = None,
       b_sol = None,
       box_cushion = 5,
-      scattering_table = 'electron',
+      scattering_table = None,
       fractional_error = 0.0,
       gridding = None,
       wrapping = False,
       map_id = None,
+      f_obs_array = None,
      ):
-
     '''
       Simple interface to cctbx.development.generate_map allowing only
       a small subset of keywords. Useful for quick generation of models, map
@@ -4875,6 +5807,10 @@ class map_model_manager(object):
     '''
 
 
+    #  Choose scattering table
+    if not scattering_table:
+      scattering_table = self.scattering_table()
+
     # Set the resolution now if not already set
     if d_min and self.map_manager() and (not self.resolution()):
       self.set_resolution(d_min)
@@ -4916,11 +5852,13 @@ class map_model_manager(object):
         box_cushion = box_cushion,
         space_group_number = 1,
         log = null_out())
+
     map_coeffs = generate_map_coefficients(model = model,
         d_min = d_min,
         k_sol = k_sol,
         b_sol = b_sol,
         scattering_table = scattering_table,
+        f_obs_array = f_obs_array,
         log = null_out())
 
     mm = generate_map_data(
@@ -5472,6 +6410,179 @@ class match_map_model_ncs(object):
 
 #   Misc methods
 
+def get_average_scale_factors(scale_factor_info):
+  average_scale_factors = None
+  n = 0
+  n_bins = None
+  for sgi in scale_factor_info.value_list:
+    if sgi and hasattr(sgi,'overall_scale') and sgi.overall_scale:
+       if not average_scale_factors:
+         average_scale_factors = flex.double(sgi.overall_scale.size(),0)
+       average_scale_factors += sgi.overall_scale
+       n+=1
+    elif sgi and hasattr(sgi,'scaling_info_list') and sgi.scaling_info_list \
+      and hasattr(sgi.scaling_info_list[0],'target_sthol2'):
+     n_bins = sgi.scaling_info_list[0].target_sthol2.size()
+  if n == 0:
+    if n_bins:
+      return flex.double(n_bins, 1.0)
+    else:
+      return None
+  else:
+    average_scale_factors = average_scale_factors/n
+    return average_scale_factors
+
+def get_tlso_group_info_from_model(model, nproc = 1, log = sys.stdout):
+  ''' Extract tlso_group_info from aniso records in model'''
+  print("\nExtracting tlso_group_info from model", file = log)
+  model_use=model.deep_copy()  # this routine overwrites...
+
+
+  xrs=model_use.get_xray_structure()
+  u_iso  = xrs.extract_u_iso_or_u_equiv() # to check for positivity
+
+  sel1 = (u_iso >= 0)
+  model_use = model_use.select(sel1)
+
+  xrs=model_use.get_xray_structure()
+  uc = xrs.unit_cell()
+  sites_cart = xrs.sites_cart()
+  u_cart = xrs.scatterers().extract_u_cart(uc)
+  u_iso  = xrs.extract_u_iso_or_u_equiv() # to check for positivity
+  pdb_hierarchy = model_use.get_hierarchy()
+
+  ok = False
+  for u in u_cart:
+    if tuple(u_cart) != (0,0,0,0,0,0) and tuple(u_cart) != (-1,-1,-1,-1,-1,-1):
+      ok = True
+  if not ok:
+    raise Sorry("Aniso U values from model are all zero or missing...cannot get TLS")
+
+
+  # Get the groups in this file
+  from mmtbx.command_line.find_tls_groups import find_tls, master_phil
+  working_phil = master_phil.fetch()
+  params = working_phil.extract()
+  params.nproc = nproc
+
+  selections = find_tls(
+    params,
+    pdb_hierarchy,
+    xrs,
+    return_as_list=True,
+    ignore_pdb_header_groups=False,
+    out=log)
+
+  from mmtbx.tls import tools
+  T_list = []
+  L_list = []
+  S_list = []
+  O_list = []
+  tlso_selection_list= []
+  tlso_shift_cart_list = []
+
+  print("\nTLS GROUPS FOUND ", file = log)
+
+  for selection in selections:
+    sel = model_use.selection(selection)
+    cm = sites_cart.select(sel).mean()
+
+    result = tools.tls_from_uaniso_minimizer(
+      uaniso         = u_cart.select(sel),
+      T_initial      = [0,0,0,0,0,0],
+      L_initial      = [0,0,0,0,0,0],
+      S_initial      = [0,0,0,0,0,0,0,0,0],
+      refine_T       = True,
+      refine_L       = True,
+      refine_S       = True,
+      origin         = cm,
+      sites          = sites_cart.select(sel),
+      max_iterations = 100)
+
+    print("Selection: %s " %selection, file = log)
+    print("T: %s" %(str(result.T_min)),file = log)
+    print("L: %s" %(str(result.L_min)), file = log)
+    print("S: %s" %(str(result.S_min)), file = log)
+    print("Origin: %s" %(str(cm)), file = log)
+
+    rms = get_tlso_resid(
+       result.T_min,result.L_min,result.S_min,cm,u_cart,sites_cart.select(sel))
+
+    print("Final RMS fit of u_cart with TLS: %.2f " %(rms))
+    T_list.append(result.T_min)
+    L_list.append(result.L_min)
+    S_list.append(result.S_min)
+    O_list.append(cm)
+    tlso_selection_list.append(selection)
+    tlso_shift_cart_list.append(
+       model_use.shift_cart() if model_use.shift_cart() else (0,0,0) )
+
+  return group_args(
+     T_list = T_list,
+     L_list = L_list,
+     S_list = S_list,
+     O_list = O_list,
+     tlso_selection_list = tlso_selection_list,
+     tlso_shift_cart_list = tlso_shift_cart_list)
+
+def get_tlso_resid(T,L,S,cm,u_cart,xyz):
+
+    tlso_value = tlso( t = tuple(T), l = tuple(L),
+         s = tuple(S), origin = tuple(cm),)
+
+    uanisos= uaniso_from_tls_one_group(
+         tlso = tlso_value,
+         sites_cart = xyz,
+         zeroize_trace=False)
+    u_list = flex.double()
+    v_list = flex.double()
+    i=0
+    for u,v in zip(u_cart,uanisos):
+      i+=1
+      u_list.extend(flex.double(u))
+      v_list.extend(flex.double(v))
+    diffs = u_list - v_list
+    rms = diffs.rms()
+    return rms
+
+def create_fine_spacing_array(unit_cell, cell_ratio = 10):
+  new_params= 10*flex.double(unit_cell.parameters()[:3])
+  new_params.extend(flex.double(unit_cell.parameters()[3:]))
+  new_params=tuple(new_params)
+  from cctbx import sgtbx
+  xs = crystal.symmetry(
+    unit_cell = uctbx.unit_cell(new_params),
+    space_group_info=sgtbx.space_group_info(symbol='p1'))
+  mi = flex.miller_index()
+  return miller.array(miller.set(xs,mi))
+
+def cutoff_values(inside = True):
+  inside_dict = {
+      True: group_args(
+        cutoff_low = 0.9,
+        cutoff_high = None),
+      False: group_args(
+        cutoff_low = None,
+        cutoff_high = 0.1),
+      None: group_args(
+        cutoff_low = 0.1,
+        cutoff_high = 0.9),
+      }
+  return inside_dict[inside]
+
+def is_inside_mask(mask_map_manager, site_frac = None,
+    inside = True):
+  if inside not in [True, False, None]:
+    return True
+  cutoff_low = cutoff_values(inside).cutoff_low
+  cutoff_high = cutoff_values(inside).cutoff_high
+  xx = mask_map_manager.map_data().tricubic_interpolation(site_frac)
+  if ((cutoff_low is None) or (xx >= cutoff_low)) and \
+         ((cutoff_high is None) or (xx < cutoff_high)):
+    return True
+  else:
+    return False
+
 def get_weights_for_unit_binning(f_array, i_bin):
     ''' get weighting for each reflection in a scheme for
      interpolating a top-hat function over bins
@@ -5511,18 +6622,26 @@ def apply_ncs_to_dv_results(
 
   # Produce a set of xyz and a set of scaling_group_info objects
 
-  #   scaling_group_info is group_args object.
-  #   scaling_group_info.direction_vectors
-  #   scaling_group_info.scaling_info_list: one si entry per direction
-  #    si.target_scale_factors
-  #    si.target_sthol2
-  #    si.d_min_list
-  #    si.cc_list
-  #    si.low_res_cc # low-res average
+  """
+    scaling_group_info group_args object:
+      direction_vectors: direction vectors dv for anisotropy calculations
+      scaling_info_list: si (scaling_info) objects, one for each dv
+        each si:  si.target_scale_factors   # scale factors vs sthol2
+        si.target_sthol2 # sthol2 values  d = 0.25/sthol2**0.5
+                  si.d_min_list
+                  si.cc_list
+                  si.low_res_cc # low-res average
+      ss_b_cart_as_u_cart: anisotropic part of overall correction factor
+      overall_scale: radial part of overall correction factor
+      overall_scale_as_u_cart: overall_scale represented as u_cart
+      overall_u_cart_to_apply:  total aniso scale to apply as u_cart
+                                 ss_b_cart_as_u_cart + overall_scale_as_u_cart
+      NOTE: total scale = total aniso scale * overall_scale[0]
+  """
 
   # If direction vectors are None then NCS operation just multiplies all the
   #   entries without changing them
-  if not direction_vectors:
+  if not direction_vectors or direction_vectors==[None]:
     new_sites = ncs_object.apply_ncs_to_sites(xyz)
     new_scaling_group_info_list = []
     for i in range(ncs_object.max_operators()):
@@ -5595,10 +6714,9 @@ def get_pointer_to_old_dv_id_dict(working_dv_list = None, dv_list = None,
     pointer_to_old_dv_id_dict[i] = None
     for j in range(n):
       dot_dict[i][j]=0.
-
   for i in range(n):
     x,y,z = working_dv_list[i]
-    for j in range(n):
+    for j in range(dv_list.size()):
       x1,y1,z1 = dv_list[j]
       dot = abs(x*x1+y*y1+z*z1)/((x**2+y**2+z**2)*(x1**2+y1**2+z1**2))**0.5
       dot_dict[i][j] = dot  # dot of working_dv_list[i] to dv_list[j]
@@ -5747,6 +6865,9 @@ def get_split_maps_and_models(
   '''
 
   from iotbx.map_model_manager import map_model_manager as MapModelManager
+  if hasattr(box_info,'tlso_group_info') and box_info.tlso_group_info:
+    # cannot pickle tlso values
+    box_info.tlso_group_info.tlso_list = None
   box_info = deepcopy(box_info)
   if first_to_use is not None and last_to_use is not None:
     for x in ['lower_bounds_with_cushion_list','upper_bounds_with_cushion_list',
@@ -5791,6 +6912,9 @@ def get_split_maps_and_models(
         mask_mm = nnn.get_map_manager_by_id(map_id = 'mask')
         s = (mask_mm.map_data() > 0.5)
         mmm.map_manager().map_data().set_selected(s,box_info.masked_value)
+    elif box_info.mask_all_maps_around_edges:  # mask around edges
+      mmm.mask_all_maps_around_edges()
+
     if model_to_keep:
       mmm.set_model(model_to_keep)
     mmm_list.append(mmm)
@@ -5808,9 +6932,14 @@ def get_selections_and_boxes_to_split_model(
         select_final_boxes_based_on_model = None,
         skip_empty_boxes = True,
         mask_around_unselected_atoms = None,
+        mask_all_maps_around_edges = None,
         mask_radius = 3,
         masked_value = -10,
         get_unique_set_for_boxes = True,
+        mask_id = None,
+        exclude_points_outside_density = None,
+        minimum_boxes_inside_density = 25,
+        log = sys.stdout,
          ):
 
   '''
@@ -5826,6 +6955,13 @@ def get_selections_and_boxes_to_split_model(
       not tile the map.
     If skip_empty_boxes then skip anything with no model.
     if get_unique_set_for_boxes then get a unique set for 'boxes' method
+    If mask_id is set and exclude_points_outside_density , skip boxes
+      outside of mask for boxes method
+     If exclude_points_outside_density,
+       try to add boxes inside density (basically add the proportional
+       number of boxes but put them definitely inside the density instead
+       of evenly spaced.
+
   '''
 
   # Checks
@@ -5847,6 +6983,7 @@ def get_selections_and_boxes_to_split_model(
 
   # Get the selections
   box_info = group_args(
+    selection_as_text_list = [],
     selection_list = [],
     lower_bounds_list = [],
     upper_bounds_list = [],
@@ -5864,17 +7001,19 @@ def get_selections_and_boxes_to_split_model(
     selection = model.selection('%s' %(info.no_water_or_het))
     if (not skip_empty_boxes) or (selection.count(True) > 0):
       box_info.selection_list = [selection]
+      box_info.selection_as_text_list=[info.no_water_or_het]
   elif selection_method == 'by_chain':
     from mmtbx.secondary_structure.find_ss_from_ca import get_chain_ids
     for chain_id in get_chain_ids(model.get_hierarchy(), unique_only=True):
       if chain_id.replace(" ",""):
-        selection = model.selection(" %s (chain %s) " %(
-         info.no_water_or_het_with_and,chain_id))
+        selection_as_text = " %s (chain %s) " %(
+         info.no_water_or_het_with_and,chain_id)
       else:
-        selection = model.selection(" %s " %(
-         info.no_water_or_het))
+        selection_as_text = " %s " %(info.no_water_or_het)
+      selection = model.selection(selection_as_text)
       if (not skip_empty_boxes) or (selection.count(True) > 0):
         box_info.selection_list.append(selection)
+        box_info.selection_as_text_list.append(selection_as_text)
   elif selection_method == 'by_segment':
     selection_strings= get_selections_for_segments(model,
     no_water_or_het_with_and = info.no_water_or_het_with_and)
@@ -5882,24 +7021,61 @@ def get_selections_and_boxes_to_split_model(
       selection = model.selection(selection_string)
       if (not skip_empty_boxes) or (selection.count(True) > 0):
         box_info.selection_list.append(selection)
+        box_info.selection_as_text_list.append(selection_string)
+
   elif selection_method == 'boxes':
     if info.no_water_or_het and info.no_water_or_het != 'all':
       overall_selection = model.selection("not (%s) " %(info.no_water_or_het))
     else:
       overall_selection = None
 
+    # Select inside boxes without cushion and create cushion too
+    if mask_id and exclude_points_outside_density:
+      mask_map_manager = map_model_manager.get_map_manager_by_id(mask_id)
+    else:
+      mask_map_manager = None
+
+    if exclude_points_outside_density and mask_map_manager:
+      inside = (mask_map_manager.map_data() > 0.5)
+      fraction_inside = inside.count(True)/inside.size()
+      target_n = max(minimum_boxes_inside_density,
+        int(0.5+ fraction_inside * target_for_boxes))
+      volume_inside = fraction_inside * mask_map_manager.crystal_symmetry(
+         ).unit_cell().volume()
+      dist_min = (volume_inside/target_n)**0.33  # approximate spacing
+      target_xyz_center_list = mask_map_manager.trace_atoms_in_map(
+         dist_min, target_n)
+      if len(target_xyz_center_list) < target_n/2:  # try with smaller grid
+        dist_min = dist_min/2.
+        target_xyz_center_list = mask_map_manager.trace_atoms_in_map(
+           dist_min, target_n)
+      exclude_points_outside_density = False  # no longer need it
+      print("Using %s points inside density as target_centers " %(
+         target_xyz_center_list.size()),file = log)
+      dist_min = max(map_model_manager.resolution(),
+         dist_min*0.5) # keep those > this dist
+
+    else:
+      target_xyz_center_list = None
+      dist_min = None
+
     # Get boxes without and with cushion (cushion may be None)
     box_info = map_manager.get_boxes_to_tile_map(
       target_for_boxes = target_for_boxes,
+      do_not_go_over_target = True,
       box_cushion = box_cushion,
-      get_unique_set_for_boxes = get_unique_set_for_boxes)
+      get_unique_set_for_boxes = get_unique_set_for_boxes,
+      dist_min = dist_min,
+      target_xyz_center_list = target_xyz_center_list,
+      )
 
-    # Select inside boxes without cushion and create cushion too
     box_info = get_selections_from_boxes(
        box_info = box_info,
        model = model,
        overall_selection = overall_selection,
-       skip_empty_boxes = skip_empty_boxes)
+       skip_empty_boxes = skip_empty_boxes,
+       exclude_points_outside_density = exclude_points_outside_density,
+       mask_map_manager = mask_map_manager)
 
   if select_final_boxes_based_on_model or (
      not box_info.lower_bounds_list): # get bounds now:
@@ -5919,8 +7095,12 @@ def get_selections_and_boxes_to_split_model(
       box_info.upper_bounds_list.append(info.upper_bounds)
     box_info.lower_bounds_with_cushion_list = [] # not using these
     box_info.upper_bounds_with_cushion_list = []
-
+  if not box_info.get('selection_as_text_list') or (
+       not box_info.selection_as_text_list):
+    box_info.selection_as_text_list = [None] * len(box_info.selection_list)
+  box_info.exclude_points_outside_density = exclude_points_outside_density
   box_info.mask_around_unselected_atoms = mask_around_unselected_atoms
+  box_info.mask_all_maps_around_edges = mask_all_maps_around_edges
   box_info.mask_radius = mask_radius
   box_info.masked_value = masked_value
   return box_info
@@ -5931,6 +7111,8 @@ def get_selections_from_boxes(box_info = None,
     model = None,
     overall_selection = None,
     skip_empty_boxes = None,
+    mask_map_manager = None,
+    exclude_points_outside_density = None,
    ):
   '''
     Generate a list of selections that covers all the atoms in model,
@@ -5956,7 +7138,21 @@ def get_selections_from_boxes(box_info = None,
      crystal_symmetry = box_info.crystal_symmetry)
     if sel and overall_selection:
       sel = (sel & overall_selection)
-    if (not sel) or (not skip_empty_boxes) or (sel.count(True) > 0):
+
+    # Decide if center of this box is inside mask if supplied
+    inside_mask = True
+    if mask_map_manager and exclude_points_outside_density:
+      center_frac = get_center_of_box_frac(
+        lower_bounds = lower_bounds_with_cushion,
+        upper_bounds = upper_bounds_with_cushion,
+        n_real = box_info.n_real,
+        crystal_symmetry = box_info.crystal_symmetry)
+      # Value of mask map here
+      if not is_inside_mask(mask_map_manager, site_frac = center_frac):
+        inside_mask = False
+
+    if inside_mask and (
+        (not sel) or (not skip_empty_boxes) or (sel.count(True) > 0)):
       selection_list.append(sel)
       new_lower_bounds_list.append(lower_bounds)
       new_upper_bounds_list.append(upper_bounds)
@@ -5971,6 +7167,21 @@ def get_selections_from_boxes(box_info = None,
      lower_bounds_with_cushion_list = new_lower_bounds_with_cushion_list,
      upper_bounds_with_cushion_list = new_upper_bounds_with_cushion_list,
      )
+
+def get_center_of_box_frac(
+     lower_bounds = None,
+     upper_bounds = None,
+     n_real = None,
+     crystal_symmetry = None):
+  '''
+   get center of this box
+  '''
+
+  lower_bounds_frac = tuple([lb / x for lb,x in zip(lower_bounds, n_real)])
+  upper_bounds_frac = tuple([ub / x for ub,x in zip(upper_bounds, n_real)])
+  average_bounds_frac = tuple ([
+     0.5*(lbf+ubf) for lbf,ubf in zip (lower_bounds_frac,upper_bounds_frac)])
+  return average_bounds_frac
 
 def get_selection_inside_box(
      lower_bounds = None,
@@ -6125,16 +7336,23 @@ class run_anisotropic_scaling_as_class:
 
     # scale_factor_info.value_list is a set of scaling_group_info objects.
     # scale_factor_info.xyz_list are the coordinates where these apply
-    # scale_factor_info.n_bins is number of bins
-    # value_list is a set of scaling_group_info objects, one per xyz.
-    #  scaling_group_info group_args object has direction vectors, list of si:
-    #   scaling_group_info.direction_vectors
-    #   scaling_group_info.scaling_info_list: one si entry per direction
-    #    si.target_scale_factors
-    #    si.target_sthol2
-    #    si.d_min_list
-    #    si.cc_list
-    #    si.low_res_cc # low-res average
+    """
+    scaling_group_info group_args object:
+      direction_vectors: direction vectors dv for anisotropy calculations
+      scaling_info_list: si (scaling_info) objects, one for each dv
+        each si:  si.target_scale_factors   # scale factors vs sthol2
+        si.target_sthol2 # sthol2 values  d = 0.25/sthol2**0.5
+                  si.d_min_list
+                  si.cc_list
+                  si.low_res_cc # low-res average
+      ss_b_cart_as_u_cart: anisotropic part of overall correction factor
+      overall_scale: radial part of overall correction factor
+      overall_scale_as_u_cart: overall_scale represented as u_cart
+      overall_u_cart_to_apply:  total aniso scale to apply as u_cart
+                                 ss_b_cart_as_u_cart + overall_scale_as_u_cart
+      NOTE: total scale = total aniso scale * overall_scale[0]
+    """
+
 
     xyz_list = scale_factor_info.xyz_list
     d_min = scale_factor_info.d_min
@@ -6175,6 +7393,8 @@ class run_anisotropic_scaling_as_class:
     normalization_data = get_normalization_data_for_unit_binning(
       f_array_info.f_array)
 
+    average_scale_factors = get_average_scale_factors(scale_factor_info)
+
     for i_bin in f_array_info.f_array.binner().range_used():
       # Get scale values for i_bin at all points xyz for dv i
 
@@ -6186,12 +7406,14 @@ class run_anisotropic_scaling_as_class:
         i_bin = i_bin,
         scale_factor_info = scale_factor_info,
         dv_id = i)
+      default_value = average_scale_factors[i_bin-1]
       weight_mm = \
          map_model_manager._create_full_size_map_manager_with_value_list(
         xyz_list = xyz_used_list,
         value_list = scale_value_list,
         smoothing_radius = smoothing_radius,
-        default_value = scale_value_list.min_max_mean().mean)
+        default_value = default_value,
+      )
 
       # Get weights on each Fourier coeff, emphasizing this bin
       weights_top_hat_shell = get_weights_for_unit_binning(
@@ -6262,7 +7484,6 @@ class run_fsc_as_class:
          ).absolute_center_cart()
 
       mmm.mask_all_maps_around_edges(soft_mask_radius=self.box_info.resolution)
-
       # Two choices for methods to get fsc:  _get_weights_in_shells or
       #   _map_map_fsc.   The weights_in_shells method is designed for scaling
       #  and map_map_fsc is designed to get local resolution.
@@ -6291,18 +7512,30 @@ class run_fsc_as_class:
            n_direction_vectors = self.box_info.n_direction_vectors,
            run_analyze_anisotropy = self.box_info.run_analyze_anisotropy,
            expected_rms_fc_list = self.box_info.expected_rms_fc_list,
-           model_for_rms_fc = self.box_info.model_for_rms_fc,
+           expected_ssqr_list = self.box_info.expected_ssqr_list,
+           expected_ssqr_list_rms = self.box_info.expected_ssqr_list_rms,
+           tlso_group_info = self.box_info.tlso_group_info,
+           model_id_for_rms_fc = self.box_info.model_id_for_rms_fc,
            replace_aniso_with_tls_equiv =
                 self.box_info.replace_aniso_with_tls_equiv)
         if scaling_group_info:
-          # scaling_group_info group_args object has direction vectors, list of si:
-          #  scaling_group_info.direction_vectors
-          #  scaling_group_info.scaling_info_list: one si entry per direction
-          #    si.target_scale_factors
-          #    si.target_sthol2
-          #    si.d_min_list
-          #    si.cc_list
-          #    si.low_res_cc # low-res average
+          """
+    scaling_group_info group_args object:
+      direction_vectors: direction vectors dv for anisotropy calculations
+      scaling_info_list: si (scaling_info) objects, one for each dv
+        each si:  si.target_scale_factors   # scale factors vs sthol2
+        si.target_sthol2 # sthol2 values  d = 0.25/sthol2**0.5
+                  si.d_min_list
+                  si.cc_list
+                  si.low_res_cc # low-res average
+      ss_b_cart_as_u_cart: anisotropic part of overall correction factor
+      overall_scale: radial part of overall correction factor
+      overall_scale_as_u_cart: overall_scale represented as u_cart
+      overall_u_cart_to_apply:  total aniso scale to apply as u_cart
+                                 ss_b_cart_as_u_cart + overall_scale_as_u_cart
+      NOTE: total scale = total aniso scale * overall_scale[0]
+          """
+
           xyz_list.append(tuple(col(xyz)+col(offset) ))
           value_list.append(scaling_group_info)
 
