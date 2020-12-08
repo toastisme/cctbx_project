@@ -631,6 +631,44 @@ class AdvancedSettingsDialog(BaseDialog):
     self.mp_sizer.Add(self.nproc, flag=wx.EXPAND | wx.ALL, border=10)
 
 
+    # Set nproc individually for index, scale, merge
+    self.nproc_box = wx.StaticBox(self, label='Nproc per job')
+    self.nproc_sizer = wx.StaticBoxSizer(self.nproc_box, wx.HORIZONTAL)
+
+    self.nproc_index = gctr.SpinCtrl(self,
+                                      label='Indexing:',
+                                      label_size=(80, -1),
+                                      label_style='normal',
+                                      ctrl_size=(100, -1),
+                                      ctrl_value='%d'%(params.mp.nproc_index or 1),
+                                      ctrl_min=1,
+                                      ctrl_max=1000)
+    self.nproc_sizer.Add(self.nproc_index, flag=wx.EXPAND | wx.ALL, border=10)
+
+    self.nproc_scale = gctr.SpinCtrl(self,
+                                      label='Scaling:',
+                                      label_size=(80, -1),
+                                      label_style='normal',
+                                      ctrl_size=(100, -1),
+                                      ctrl_value='%d'%(params.mp.nproc_scale or 1),
+                                      ctrl_min=1,
+                                      ctrl_max=1000)
+    self.nproc_sizer.Add(self.nproc_scale, flag=wx.EXPAND | wx.ALL, border=10)
+
+    self.nproc_merge = gctr.SpinCtrl(self,
+                                      label='Merging:',
+                                      label_size=(80, -1),
+                                      label_style='normal',
+                                      ctrl_size=(100, -1),
+                                      ctrl_value='%d'%(params.mp.nproc_merge or 1),
+                                      ctrl_min=1,
+                                      ctrl_max=1000)
+    self.nproc_sizer.Add(self.nproc_merge, flag=wx.EXPAND | wx.ALL, border=10)
+
+    self.mp_sizer.Add(self.nproc_sizer, flag=wx.EXPAND | wx.ALL, border=10)
+
+
+
     self.nnodes = gctr.SpinCtrl(self,
                                 label='Total number of nodes:',
                                 label_size=(240, -1),
@@ -689,6 +727,7 @@ class AdvancedSettingsDialog(BaseDialog):
     self.main_sizer.Add(self.mp_sizer, flag=wx.EXPAND | wx.ALL, border=10)
 
     # Shifter-specific settings
+
 
     self.shifter_nnodes_box = wx.StaticBox(self, label='Nodes per job')
     self.shifter_nnodes_sizer = wx.StaticBoxSizer(self.shifter_nnodes_box, wx.HORIZONTAL)
@@ -866,6 +905,10 @@ class AdvancedSettingsDialog(BaseDialog):
       self.queue.Hide()
       self.nnodes.Hide()
       self.nproc.Show()
+      self.nproc_index.Show()
+      self.nproc_scale.Show()
+      self.nproc_merge.Show()
+      self.nproc_box.Show()
       self.nproc_per_node.Hide()
       self.env_script.Hide()
       self.htcondor_executable_path.Hide()
@@ -886,6 +929,10 @@ class AdvancedSettingsDialog(BaseDialog):
     elif self.mp_option.ctr.GetStringSelection() == 'shifter':
       self.queue.Show()
       self.nproc.Hide()
+      self.nproc_index.Hide()
+      self.nproc_scale.Hide()
+      self.nproc_merge.Hide()
+      self.nproc_box.Hide()
       self.nnodes.Show()
       self.nproc_per_node.Show()
       self.wall_time.Show()
@@ -908,6 +955,10 @@ class AdvancedSettingsDialog(BaseDialog):
     elif self.mp_option.ctr.GetStringSelection() == 'htcondor':
       self.queue.Hide()
       self.nproc.Show()
+      self.nproc_index.Show()
+      self.nproc_scale.Show()
+      self.nproc_merge.Show()
+      self.nproc_box.Show()
       self.nnodes.Hide()
       self.nproc_per_node.Hide()
       self.env_script.Show()
@@ -929,6 +980,10 @@ class AdvancedSettingsDialog(BaseDialog):
     else:
       self.queue.Show()
       self.nproc.Show()
+      self.nproc_index.Show()
+      self.nproc_scale.Show()
+      self.nproc_merge.Show()
+      self.nproc_box.Show()
       self.nnodes.Hide()
       self.nproc_per_node.Hide()
       self.wall_time.Hide()
@@ -955,14 +1010,16 @@ class AdvancedSettingsDialog(BaseDialog):
   def onQueueChoice(self, e):
     queue = self.queue.ctr.GetString(self.queue.ctr.GetSelection())
     if 'neh' in queue or 'feh' in queue:
-      self.nproc.ctr.SetValue(16)
-      self.nproc.ctr.SetIncrement(16)
+      val, inc = 16, 16
     elif 'psana' in queue or 'debug' in queue:
-      self.nproc.ctr.SetValue(12)
-      self.nproc.ctr.SetIncrement(12)
+      val, inc = 12, 12
     else:
-      self.nproc.ctr.SetValue(1)
-      self.nproc.ctr.SetIncrement(1)
+      val, inc = 1, 1
+    for c in [
+        self.nproc, self.nproc_index, self.nproc_scale, self.nproc_merge
+    ]:
+      c.ctr.SetValue(val)
+      c.ctr.SetIncrement(inc)
 
   def onStagingChoice(self, e):
     self.params.mp.shifter.staging = self.staging_methods[self.log_staging.ctr.GetSelection()]
@@ -990,6 +1047,9 @@ class AdvancedSettingsDialog(BaseDialog):
 
     self.params.mp.method = self.mp_option.ctr.GetStringSelection()
     self.params.mp.nproc = int(self.nproc.ctr.GetValue())
+    self.params.mp.nproc_index = int(self.nproc_index.ctr.GetValue())
+    self.params.mp.nproc_scale = int(self.nproc_scale.ctr.GetValue())
+    self.params.mp.nproc_merge = int(self.nproc_merge.ctr.GetValue())
 
     if self.params.facility.name == 'lcls' and self.params.mp.method == "lsf":
       self.params.mp.queue = self.queue.ctr.GetStringSelection()

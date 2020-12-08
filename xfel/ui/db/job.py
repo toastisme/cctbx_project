@@ -190,7 +190,7 @@ class IndexingJob(Job):
       rungroup                  = self.rungroup.rungroup_id,
       experiment_tag            = self.app.params.experiment_tag,
       calib_dir                 = self.rungroup.calib_dir,
-      nproc                     = self.app.params.mp.nproc,
+      nproc                     = self.app.params.mp.nproc_index or self.app.params.mp.nproc,
       nnodes                    = self.app.params.mp.nnodes_index or self.app.params.mp.nnodes,
       nproc_per_node            = self.app.params.mp.nproc_per_node,
       queue                     = self.app.params.mp.queue or None,
@@ -614,7 +614,7 @@ class ScalingJob(Job):
       trial                     = self.trial.trial,
       rungroup                  = self.rungroup.rungroup_id,
       task                      = self.task.id,
-      nproc                     = self.app.params.mp.nproc,
+      nproc                     = self.app.params.mp.nproc_scale or self.app.params.mp.nproc,
       nproc_per_node            = self.app.params.mp.nproc_per_node,
       queue                     = self.app.params.mp.queue or None,
       env_script                = self.app.params.mp.env_script[0] if len(self.app.params.mp.env_script) > 0 and len(self.app.params.mp.env_script[0]) > 0 else None,
@@ -721,6 +721,10 @@ class MergingJob(Job):
     submit_path = os.path.join(output_path, "submit.sh")
 
     params = self.app.params.mp
+    if params.nproc_merge:
+      import copy
+      params = copy.deepcopy(params)
+      params.nproc = params.nproc_merge
     if params.nnodes_merge:
       import copy
       params = copy.deepcopy(params)

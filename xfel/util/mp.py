@@ -21,6 +21,15 @@ mp_phil_str = '''
               specified, the last will be determined by modular arithmetic. \
               If all three are specified, nnodes is ignored. nproc alone is \
               sufficient for most methods.
+    nproc_index = None
+      .type = int
+      .help = If defined, use this many processes for GUI indexing and integration.
+    nproc_scale = None
+      .type = int
+      .help = If defined, use this many processes for GUI scaling.
+    nproc_merge = None
+      .type = int
+      .help = If defined, use this many processes for GUI merging.
     nnodes = 1
       .type = int
       .help = Number of nodes to request
