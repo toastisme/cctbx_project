@@ -1338,9 +1338,9 @@ def enable_cuda_if_possible():
         major = int(cuda_version)
       except (AssertionError, ValueError, IndexError):
         pass
-    if ( (major is None) or (major < 4) ):
+    if ( (major is None) or (major < 5) ):
       raise RuntimeError(
-        'CUDA Toolkit 4.0 and higher is required.'
+        'CUDA Toolkit 5.0 and higher is required.'
         ' Current CUDA version: %s' % line)
     env_etc.enable_cuda = True
 
@@ -1422,7 +1422,9 @@ def enable_cuda_if_possible():
     env_base['NVCCFLAGS'] = arch_flags + \
                              ['-use_fast_math','--shared',
                              '--compiler-options',cc_flags]
+    env_base['NVCCARCHFLAGS'] = arch_flags
 
+    # build and link device code with host code
     shared_object_builder =\
       Builder\
       (action = '$NVCC -c -o $TARGET $_CPPINCFLAGS $NVCCFLAGS $SOURCES',
@@ -1436,8 +1438,28 @@ def enable_cuda_if_possible():
        suffix = '$SHLIBSUFFIX',
        src_suffix = '.o')
 
+    env_base['BUILDERS']['cudaSharedObject'] = shared_object_builder
     env_base['BUILDERS']['cudaSharedLibrary'] = shared_library_builder
     env_base['BUILDERS']['cudaSharedLibrary'].add_src_builder(shared_object_builder)
+
+    # shared device code
+    # https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/index.html#using-separate-compilation-in-cuda
+    shared_device_object_builder = \
+      Builder\
+      (action = '$NVCC --device-c -o $TARGET $_CPPINCFLAGS $NVCCFLAGS $SOURCES',
+       suffix = '.o',
+       src_suffix = '.cu',
+       source_scanner = SCons.Scanner.C.CScanner())
+    shared_device_library_builder = \
+      Builder\
+      (action = '$NVCC -o $TARGET $NVCCSHLINKFLAGS $NVCCARCHFLAGS --device-link' \
+         '$__RPATH $SOURCES $_LIBDIRFLAGS $_LIBFLAGS',
+       suffix = '.o',
+       src_suffix = '.o')
+
+    env_base['BUILDERS']['cudaSharedDeviceObject'] = shared_device_object_builder
+    env_base['BUILDERS']['cudaSharedDeviceLibrary'] = shared_device_library_builder
+    env_base['BUILDERS']['cudaSharedDeviceLibrary'].add_src_builder(shared_device_object_builder)
 
 enable_openmp_if_possible()
 enable_cuda_if_possible()
