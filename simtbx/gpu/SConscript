@@ -30,24 +30,28 @@ if (env_etc.enable_cuda):
   # Flag header to declare the cuda wrapper
   env_bpl.Prepend(NVCCFLAGS=["-DNANOBRAGG_HAVE_CUDA"])
   env_bpl.Prepend(NVCCFLAGS=["-DHAVE_NANOBRAGG_SPOTS_CUDA"])
-  cuda_src = []
-  cuda_src.append("structure_factors.cu")
-  cuda_src.append("detector.cu")
-  cuda_src.append("simulation.cu")
-  cuda_src.append("../nanoBragg/nanoBraggCUDA.cu") # duplicating a target *.o file
+  cuda_src = ["structure_factors.cu",
+              "detector.cu",
+              "simulation.cu"]
 
   env_bpl.Prepend(CPPPATH=[env_etc.boost_adaptbx_include,
     env_etc.boost_include])
 
+  env_bpl.Append(LIBS=["cudadevrt", "cudart", "cuda"])
+  env_bpl.Append(LIBDIR=["/usr/common/software/sles15_cgpu/cuda/10.2.89/lib64"])
+  cuda_obj = env_bpl.cudaSharedDeviceLibrary(
+    target = "#simtbx/gpu/simtbx_gpu.o",
+    source = cuda_src + ["#simtbx/nanoBragg/nanoBraggCUDA.o"]
+  )
+
   cuda_lib = env_bpl.cudaSharedLibrary(
     target = "#lib/libsimtbx_gpu",
-    source = cuda_src)
+    source = cuda_obj)
 
   env.Prepend(LIBS=["simtbx_gpu"])
-
   env.SharedLibrary(
     target="#lib/simtbx_gpu_ext",
     source=[
-      simtbx_gpu_obj,"#simtbx/nanoBragg/nanoBragg"
+      simtbx_gpu_obj,
     ]
   )

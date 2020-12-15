@@ -33,24 +33,31 @@ if (env_etc.enable_cuda):
   # Flag header to declare the cuda wrapper
   env_bpl.Prepend(NVCCFLAGS=["-DNANOBRAGG_HAVE_CUDA"])
 
-  # Guard against possibility that *.cu code is not there
-  if "nanoBraggCUDA.cu" in os.listdir(os.path.join(env_etc.simtbx_dist,"nanoBragg")):
-    env_bpl.Prepend(NVCCFLAGS=["-DHAVE_NANOBRAGG_SPOTS_CUDA"])
-    cuda_src = ["nanoBraggCUDA.cu"]
-  else:  cuda_src = []
-
   env_etc.include_registry.append(
     env=env_bpl,
     paths=[env_etc.simtbx_include, env_etc.dxtbx_include]
   )
   env_bpl.Prepend(CPPPATH=[env_etc.boost_adaptbx_include,
     env_etc.boost_include])
+
+  # Guard against possibility that *.cu code is not there
+  if "nanoBraggCUDA.cu" in os.listdir(os.path.join(env_etc.simtbx_dist,"nanoBragg")):
+    env_bpl.Prepend(NVCCFLAGS=["-DHAVE_NANOBRAGG_SPOTS_CUDA"])
+    cuda_obj = [env_bpl.cudaSharedDeviceLibrary(
+      target = "#simtbx/simtbx_nanoBragg.o",
+      source = ["nanoBraggCUDA.cu"])]
+  else:  cuda_obj = []
+
+  env_bpl.Append(LIBS=["cudadevrt", "cudart", "cuda"])
+  env_bpl.Append(LIBDIR=["/usr/common/software/sles15_cgpu/cuda/10.2.89/lib64"])
   cuda_lib = env_bpl.cudaSharedLibrary(
     target = "#lib/libsimtbx_nanoBraggCUDA",
-    source = cuda_src + ["nanoBragg_cuda.cpp"])
+    source = cuda_obj + ["nanoBragg_cuda.cpp"])
   env.Prepend(LIBS=["simtbx_nanoBraggCUDA"])
 
 env.Prepend(LIBS=["omptbx"])
+env.Append(LIBS=["cudadevrt", "cudart", "cuda"])
+env.Append(LIBDIR=["/usr/common/software/sles15_cgpu/cuda/10.2.89/lib64"])
 env.SharedLibrary(
   target="#lib/simtbx_nanoBragg_ext",
   source=[

@@ -1,7 +1,8 @@
 #ifndef SIMTBX_GPU_SIMULATION_CUH
 #define SIMTBX_GPU_SIMULATION_CUH
 
-#include <simtbx/nanoBragg/nanotypes.h>
+#include <simtbx/nanoBragg/nanoBraggCUDA.cuh>
+
 using simtbx::nanoBragg::shapetype;
 using simtbx::nanoBragg::hklParams;
 
