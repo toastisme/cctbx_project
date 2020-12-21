@@ -988,11 +988,7 @@ class suitename_module(SourceModule):
 
 class reduce_module(SourceModule):
   module = 'reduce'
-<<<<<<< HEAD
   anonymous = ['git', '-b develop',
-=======
-  anonymous = ['git', '-b fixed-pointers',
->>>>>>> Updating the reduce version to point at a new tag to cause regression testing to run again
                'https://github.com/reliasolve/reduce.git']
 
 class king_module(SourceModule):
