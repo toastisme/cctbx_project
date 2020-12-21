@@ -988,7 +988,7 @@ class suitename_module(SourceModule):
 
 class reduce_module(SourceModule):
   module = 'reduce'
-  anonymous = ['git', '-b boost-python-cctbx',
+  anonymous = ['git', '-b fixed-pointers',
                'https://github.com/reliasolve/reduce.git']
 
 class king_module(SourceModule):
