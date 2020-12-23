@@ -5,6 +5,17 @@
 
 namespace cctbx { namespace miller {
 
+
+  match_indices::match_indices(
+    af::shared<index<> > const& miller_indices_1)
+  {
+    miller_indices_[1] = miller_indices_1;
+
+    for(std::size_t i=0;i<miller_indices_[1].size();i++) {
+      lookup_map_[miller_indices_[1][i]] = i;
+    }
+  }
+
   match_indices::match_indices(
     af::shared<index<> > const& miller_indices_0,
     af::shared<index<> > const& miller_indices_1)
@@ -19,26 +30,62 @@ namespace cctbx { namespace miller {
       }
       return;
     }
-    typedef std::map<index<>, std::size_t, fast_less_than<> > lookup_map_type;
-    lookup_map_type lookup_map;
     for(std::size_t i=0;i<miller_indices_[1].size();i++) {
-      lookup_map[miller_indices_[1][i]] = i;
+      lookup_map_[miller_indices_[1][i]] = i;
     }
     std::vector<bool> miller_indices_1_flags(miller_indices_[1].size(), false);
     for(std::size_t i=0;i<miller_indices_[0].size();i++) {
       lookup_map_type::const_iterator
-        l = lookup_map.find(miller_indices_[0][i]);
-      if (l == lookup_map.end()) {
+        l = lookup_map_.find(miller_indices_[0][i]);
+      if (l == lookup_map_.end()) {
         singles_[0].push_back(i);
+        ;
       }
       else {
         pairs_.push_back(af::tiny<std::size_t, 2>(i, l->second));
-        miller_indices_1_flags[l->second] = true;
+        //miller_indices_1_flags[l->second] = true;
       }
     }
     for(std::size_t i=0;i<miller_indices_[1].size();i++) {
       if (!miller_indices_1_flags[i]) singles_[1].push_back(i);
     }
+  }
+
+  void
+  match_indices::match_cached(
+      af::shared<index<> > const& miller_indices_0) 
+  {
+    miller_indices_[0] = miller_indices_0;
+    pairs_.clear();
+    //singles_[0].clear();
+    //singles_[1].clear();
+
+
+    if (miller_indices_[0].id() == miller_indices_[1].id()) {
+      // short-cut if same array
+      pairs_.reserve(miller_indices_[0].size());
+      for(std::size_t i=0;i<miller_indices_[0].size();i++) {
+        pairs_.push_back(af::tiny<std::size_t, 2>(i, i));
+      }
+      return;
+    }
+
+    //std::vector<bool> miller_indices_1_flags(miller_indices_[1].size(), false);
+    for(std::size_t i=0;i<miller_indices_[0].size();i++) {
+      lookup_map_type::const_iterator
+        l = lookup_map_.find(miller_indices_[0][i]);
+      if (l == lookup_map_.end()) {
+        //singles_[0].push_back(i);
+        ;
+      }
+      else {
+        pairs_.push_back(af::tiny<std::size_t, 2>(l->second, i));
+        //miller_indices_1_flags[l->second] = true;
+      }
+    }
+    //for(std::size_t i=0;i<miller_indices_[1].size();i++) {
+      //if (!miller_indices_1_flags[i]) singles_[1].push_back(i);
+    //}
   }
 
   void
