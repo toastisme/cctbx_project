@@ -4,6 +4,7 @@ import sys, time
 import mmtbx.model
 import iotbx.pdb
 import boost_adaptbx.boost.python as bp
+import mmtbx_reduce_ext as reduce
 from libtbx.utils import null_out
 from libtbx import group_args
 from cctbx.array_family import flex
@@ -455,5 +456,64 @@ def optimize(model):
   grm = model.get_restraints_manager()
 
   print("Reduce optimization happens here")
+
+  # @todo Point this at the general location.
+  hetdatabase = reduce.CTab("/usr/local/reduce_wwPDB_het_dict.txt")
+
+  # Set up how we're going to run Reduce; just do the optimization, not the placement.
+  # @todo Be able to specify whether this is done or not, and make command-line arguments
+  # in hydrogenate.py that let us choose to do the placement either inside or outside of
+  # Reduce for comparison.
+  reduce.setRemoveATOMHydrogens(False)
+  reduce.setRemoveOtherHydrogens(False)
+  reduce.setAddWaterHydrogens(False)
+  reduce.setAddOtherHydrogens(False)
+  reduce.setStopBeforeOptimizing(False)
+
+  input = model.model_as_pdb()
+
+  models = reduce.inputModels(input)
+  for m in models:
+    if reduce.getRemoveATOMHydrogens() or reduce.getRemoveOtherHydrogens():
+      reduce.dropHydrogens(m, reduce.getRemoveATOMHydrogens(), reduce.getRemoveOtherHydrogens())
+
+    UseSEGIDasChain = reduce.checkSEGIDs(m)
+
+    dotBucket = reduce.DotSphManager(reduce.getVdwDotDensity())
+
+    xyz = reduce.AtomPositions(2000, reduce.getDoOnlyAltA(), reduce.getUseXplorNames(),
+            reduce.getUseOldNames(), reduce.getBackBoneModel(),
+            reduce.getNBondCutoff(), reduce.getMinRegHBgap(),
+            reduce.getMinChargedHBgap(),
+            reduce.getBadBumpGapCut(), dotBucket,
+            reduce.getProbeRadius(),
+            reduce.getPenaltyMagnitude(), reduce.getOccupancyCutoff(),
+            reduce.getVerbose(), reduce.getShowOrientScore(),
+            reduce.getShowCliqueTicks()
+          )
+
+    infoPtr = m.begin()
+
+    reduce.scanAndGroupRecords(m, xyz, infoPtr)
+
+    adjNotes = reduce.StringVector()
+
+    tally = reduce.getTally()
+    tally._num_adj = 0
+    reduce.setTally(tally)
+
+    reduce.reduceList(hetdatabase, m, xyz, adjNotes)
+
+    if not reduce.getStopBeforeOptimizing():
+      ret = reduce.optimize(xyz, adjNotes)
+
+      if reduce.getOKtoAdjust() and xyz.numChanges() > 0:
+        xyz.describeChanges(m, infoPtr, adjNotes)
+
+  reduce.outputRecords_all(models)
+
+  print("@todo Put the modified structure back into a model.")
+
+  print("Reduce optimization done")
 
   return model
