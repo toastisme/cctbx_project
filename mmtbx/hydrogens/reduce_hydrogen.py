@@ -510,7 +510,8 @@ def optimize(model):
       if reduce.getOKtoAdjust() and xyz.numChanges() > 0:
         xyz.describeChanges(m, infoPtr, adjNotes)
 
-  reduce.outputRecords_all(models)
+  pdbText = reduce.outputRecords_all_string(models)
+  print(pdbText)
 
   print("@todo Put the modified structure back into a model.")
 
