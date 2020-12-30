@@ -437,5 +437,5 @@ def optimize(model):
 
   # @todo Put the modified structure back into a model.
 
-  return pdbString
+  return pdbText
   #return model
