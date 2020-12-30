@@ -448,7 +448,8 @@ def optimize(model):
   Returns
   -------
   model
-      mmtbx model object with optimized H atoms
+      mmtbx model object with optimized H atoms as a string
+      @todo Update the model in place.
   """
   # hierarchy object --> has hierarchy of structure
   pdb_hierarchy = model.get_hierarchy()
@@ -511,10 +512,8 @@ def optimize(model):
         xyz.describeChanges(m, infoPtr, adjNotes)
 
   pdbText = reduce.outputRecords_all_string(models)
-  print(pdbText)
 
-  print("@todo Put the modified structure back into a model.")
+  # @todo Put the modified structure back into a model.
 
-  print("Reduce optimization done")
-
-  return model
+  return pdbString
+  #return model
