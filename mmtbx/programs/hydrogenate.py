@@ -50,7 +50,8 @@ Inputs:
     make_sub_header('Add H atoms', out=self.logger)
     reduce_add_h_obj = reduce_hydrogen.place_hydrogens(
       model = self.model,
-      use_neutron_distances = self.params.use_neutron_distances)
+      use_neutron_distances = self.params.use_neutron_distances,
+      keep_existing_H = self.params.keep_existing_H)
     reduce_add_h_obj.run()
     self.model = reduce_add_h_obj.get_model()
     reduce_add_h_obj.show(log = self.logger)
