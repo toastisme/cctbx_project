@@ -12,6 +12,8 @@ use_neutron_distances = False
   .help = Use neutron distances
 
 keep_existing_H = False
+  .type = bool
+  .help = Do not strip hydrogens from input model
 
 output
   .style = menu_item auto_align
