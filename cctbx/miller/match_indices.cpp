@@ -55,11 +55,12 @@ namespace cctbx { namespace miller {
   match_indices::match_cached(
       af::shared<index<> > const& miller_indices_0) 
   {
+    /*
+     * This function is meant to find matching pairs as quickly as possible.
+     * It does not populate the singles_ arrays.
+     * */
     miller_indices_[0] = miller_indices_0;
     pairs_.clear();
-    //singles_[0].clear();
-    //singles_[1].clear();
-
 
     if (miller_indices_[0].id() == miller_indices_[1].id()) {
       // short-cut if same array
@@ -70,22 +71,13 @@ namespace cctbx { namespace miller {
       return;
     }
 
-    //std::vector<bool> miller_indices_1_flags(miller_indices_[1].size(), false);
     for(std::size_t i=0;i<miller_indices_[0].size();i++) {
       lookup_map_type::const_iterator
         l = lookup_map_.find(miller_indices_[0][i]);
-      if (l == lookup_map_.end()) {
-        //singles_[0].push_back(i);
-        ;
-      }
-      else {
+      if (l != lookup_map_.end()) {
         pairs_.push_back(af::tiny<std::size_t, 2>(l->second, i));
-        //miller_indices_1_flags[l->second] = true;
       }
     }
-    //for(std::size_t i=0;i<miller_indices_[1].size();i++) {
-      //if (!miller_indices_1_flags[i]) singles_[1].push_back(i);
-    //}
   }
 
   void
