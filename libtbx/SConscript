@@ -1437,29 +1437,36 @@ def enable_cuda_if_possible():
           '$_LIBFLAGS',
        suffix = '$SHLIBSUFFIX',
        src_suffix = '.o')
+    static_library_builder =\
+      Builder\
+      (action ='$NVCC --lib -o $TARGET $__RPATH $SOURCES $_LIBDIRFLAGS ' \
+          '$_LIBFLAGS',
+       suffix = '.a',
+       src_suffix = '.o')
 
     env_base['BUILDERS']['cudaSharedObject'] = shared_object_builder
     env_base['BUILDERS']['cudaSharedLibrary'] = shared_library_builder
     env_base['BUILDERS']['cudaSharedLibrary'].add_src_builder(shared_object_builder)
+    env_base['BUILDERS']['cudaStaticLibrary'] = static_library_builder
+    env_base['BUILDERS']['cudaStaticLibrary'].add_src_builder(shared_object_builder)
 
     # shared device code
     # https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/index.html#using-separate-compilation-in-cuda
-    shared_device_object_builder = \
+    shared_device_pre_object_builder = \
       Builder\
-      (action = '$NVCC --device-c -o $TARGET $_CPPINCFLAGS $NVCCFLAGS $SOURCES',
+      (action = '$NVCC --device-c -o $TARGET $NVCCSHLINKFLAGS $_CPPINCFLAGS $NVCCFLAGS $SOURCES',
        suffix = '.o',
        src_suffix = '.cu',
        source_scanner = SCons.Scanner.C.CScanner())
-    shared_device_library_builder = \
+    shared_device_object_builder = \
       Builder\
-      (action = '$NVCC -o $TARGET $NVCCSHLINKFLAGS $NVCCARCHFLAGS --device-link' \
-         '$__RPATH $SOURCES $_LIBDIRFLAGS $_LIBFLAGS',
+      (action = '$NVCC --device-link -o $TARGET $NVCCSHLINKFLAGS $_CPPINCFLAGS $NVCCFLAGS $SOURCES',
        suffix = '.o',
        src_suffix = '.o')
 
+    env_base['BUILDERS']['cudaSharedDevicePreObject'] = shared_device_pre_object_builder
     env_base['BUILDERS']['cudaSharedDeviceObject'] = shared_device_object_builder
-    env_base['BUILDERS']['cudaSharedDeviceLibrary'] = shared_device_library_builder
-    env_base['BUILDERS']['cudaSharedDeviceLibrary'].add_src_builder(shared_device_object_builder)
+    env_base['BUILDERS']['cudaSharedDeviceObject'].add_src_builder(shared_device_pre_object_builder)
 
 enable_openmp_if_possible()
 enable_cuda_if_possible()

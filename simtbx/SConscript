@@ -31,5 +31,56 @@ if not env_etc.no_boost_python:
      "cctbx"])
 
   env_etc.enable_more_warnings(env=env_simtbx)
-  env_simtbx.SConscript("nanoBragg/SConscript",exports={ 'env' : env_simtbx })
-  env_simtbx.SConscript("gpu/SConscript",exports={ 'env' : env_simtbx })
+  # env_simtbx.SConscript("nanoBragg/SConscript",exports={ 'env' : env_simtbx })
+  # env_simtbx.SConscript("gpu/SConscript",exports={ 'env' : env_simtbx })
+
+  # build one shared library with device code
+  # nanoBragg
+  nanoBragg_cuda_src = ['nanoBragg/nanoBraggCUDA.cu']
+
+  # gpu
+  gpu_cuda_src = ["gpu/structure_factors.cu",
+                  "gpu/detector.cu",
+                  "gpu/simulation.cu"]
+
+  env_cuda = env_simtbx.Clone()
+  env_cuda.Prepend(CPPDEFINES=["NANOBRAGG_HAVE_CUDA"])
+  env_cuda.Prepend(NVCCFLAGS=["-DCUDAREAL=double",
+                              "-DNANOBRAGG_HAVE_CUDA",
+                              "-DHAVE_NANOBRAGG_SPOTS_CUDA"])
+  env_cuda.Append(LIBS=["cuda", "cudart", "cudadevrt"])
+
+  cuda_src = nanoBragg_cuda_src + gpu_cuda_src
+
+  # combined cuda device code object
+  cuda_obj = env_cuda.cudaSharedDeviceObject(
+    target = "simtbx_cuda",
+    source = cuda_src)
+
+  # static library with device code
+  # cuda_lib = env_cuda.cudaStaticLibrary(
+  #   target = "#lib/libsimtbx_cuda",
+  #   source = cuda_obj)
+
+  # build nanoBragg extension
+  env_simtbx.Prepend(CPPDEFINES=["NANOBRAGG_HAVE_CUDA"])
+  env_simtbx.Prepend(CPPFLAGS=["-DCUDAREAL=double",
+                               "-DNANOBRAGG_HAVE_CUDA",
+                               "-DHAVE_NANOBRAGG_SPOTS_CUDA"])
+  env_simtbx.Prepend(LIBS=["omptbx"])
+
+  nanoBragg_ext_src = [
+    "nanoBragg/nanoBragg_ext.cpp",
+    "nanoBragg/nanoBragg.cpp",
+    "nanoBragg/nanoBragg_nks.cpp",
+    "nanoBragg/nanoBragg_cuda.cpp"
+  ]
+  env_simtbx.SharedLibrary(
+    target="#lib/simtbx_nanoBragg_ext",
+    source=nanoBragg_ext_src + [cuda_obj])
+
+  # build gpu extension
+  gpu_ext_src = ["gpu/gpu_ext.cpp"]
+  env_simtbx.SharedLibrary(
+    target="#lib/simtbx_gpu_ext",
+    source=gpu_ext_src + [cuda_obj])

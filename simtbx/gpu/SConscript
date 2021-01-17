@@ -37,16 +37,15 @@ if (env_etc.enable_cuda):
   env_bpl.Prepend(CPPPATH=[env_etc.boost_adaptbx_include,
     env_etc.boost_include])
 
-  env_bpl.Append(LIBS=["cudadevrt", "cudart", "cuda"])
-  env_bpl.Append(LIBDIR=["/usr/common/software/sles15_cgpu/cuda/10.2.89/lib64"])
-  cuda_obj = env_bpl.cudaSharedDeviceLibrary(
-    target = "#simtbx/gpu/simtbx_gpu.o",
-    source = cuda_src + ["#simtbx/nanoBragg/nanoBraggCUDA.o"]
-  )
+  # env_bpl.Append(LIBS=["cudadevrt", "cudart", "cuda"])
+  # cuda_obj = env_bpl.cudaSharedDeviceObject(
+  #   target = "#simtbx/gpu/simtbx_gpu.o",
+  #   source = cuda_src + ["#simtbx/nanoBragg/nanoBraggCUDA.o"]
+  # )
 
-  cuda_lib = env_bpl.cudaSharedLibrary(
+  cuda_lib = env_bpl.cudaSharedDeviceLibrary(
     target = "#lib/libsimtbx_gpu",
-    source = cuda_obj)
+    source = cuda_src)
 
   env.Prepend(LIBS=["simtbx_gpu"])
   env.SharedLibrary(
