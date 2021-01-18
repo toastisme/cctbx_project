@@ -63,6 +63,7 @@ if not env_etc.no_boost_python:
   #   source = cuda_obj)
 
   # build nanoBragg extension
+  env_simtbx = env_cuda
   env_simtbx.Prepend(CPPDEFINES=["NANOBRAGG_HAVE_CUDA"])
   env_simtbx.Prepend(CPPFLAGS=["-DCUDAREAL=double",
                                "-DNANOBRAGG_HAVE_CUDA",
@@ -75,12 +76,14 @@ if not env_etc.no_boost_python:
     "nanoBragg/nanoBragg_nks.cpp",
     "nanoBragg/nanoBragg_cuda.cpp"
   ]
-  env_simtbx.SharedLibrary(
+
+  env_simtbx['STATIC_AND_SHARED_OBJECTS_ARE_THE_SAME'] = 1
+  env_simtbx.cudaSharedLibrary(
     target="#lib/simtbx_nanoBragg_ext",
     source=nanoBragg_ext_src + [cuda_obj])
 
   # build gpu extension
   gpu_ext_src = ["gpu/gpu_ext.cpp"]
-  env_simtbx.SharedLibrary(
+  env_simtbx.cudaSharedLibrary(
     target="#lib/simtbx_gpu_ext",
     source=gpu_ext_src + [cuda_obj])
