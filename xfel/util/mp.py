@@ -21,30 +21,9 @@ mp_phil_str = '''
               specified, the last will be determined by modular arithmetic. \
               If all three are specified, nnodes is ignored. nproc alone is \
               sufficient for most methods.
-    nproc_index = None
-      .type = int
-      .help = If defined, use this many processes for GUI indexing and integration.
-    nproc_scale = None
-      .type = int
-      .help = If defined, use this many processes for GUI scaling.
-    nproc_merge = None
-      .type = int
-      .help = If defined, use this many processes for GUI merging.
     nnodes = 1
       .type = int
       .help = Number of nodes to request
-    nnodes_index = None
-      .type = int
-      .help = If defined, use this many nodes for indexing and integration. \
-              Currently only works for mp.method=shifter.
-    nnodes_scale = None
-      .type = int
-      .help = If defined, use this many nodes for scaling. \
-              Currently only works for mp.method=shifter.
-    nnodes_merge = None
-      .type = int
-      .help = If defined, use this many nodes for merging. \
-              Currently only works for mp.method=shifter.
     nproc_per_node = 1
       .type = int
       .help = Number of processes to allocate per node

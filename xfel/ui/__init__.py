@@ -85,6 +85,29 @@ facility {
               of files are submitted as single runs
   }
 }
+mp {
+  nproc_index = None
+    .type = int
+    .help = If defined, use this many processes for GUI indexing and integration.
+  nproc_scale = None
+    .type = int
+    .help = If defined, use this many processes for GUI scaling.
+  nproc_merge = None
+    .type = int
+    .help = If defined, use this many processes for GUI merging.
+  nnodes_index = None
+    .type = int
+    .help = If defined, use this many nodes for indexing and integration. \
+            Currently only works for mp.method=shifter.
+  nnodes_scale = None
+    .type = int
+    .help = If defined, use this many nodes for scaling. \
+            Currently only works for mp.method=shifter.
+  nnodes_merge = None
+    .type = int
+    .help = If defined, use this many nodes for merging. \
+            Currently only works for mp.method=shifter.
+}
 output_folder = ""
   .type = path
   .help = Processing results will go in this folder
