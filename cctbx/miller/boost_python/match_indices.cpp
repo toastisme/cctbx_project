@@ -20,6 +20,7 @@ namespace {
                   af::shared<index<> > const&>())
         .def(init<af::shared<index<> > const&>())
         .def("match_cached", &w_t::match_cached)
+        .def("match_cached_fast", &w_t::match_cached_fast)
         .def("pairs", &w_t::pairs)
         .def("singles", &w_t::singles)
         .def("have_singles", &w_t::have_singles)
