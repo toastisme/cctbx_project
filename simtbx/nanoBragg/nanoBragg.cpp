@@ -186,6 +186,7 @@ nanoBragg::nanoBragg(
     spindle_vector[2] = fdet_vector[2];
     spindle_vector[3] = fdet_vector[3];
     unitize(spindle_vector,spindle_vector);
+    user_beam=true;
 
     /* NOT IMPLEMENTED: read in any other stuff?  */
     /*TODO: consider reading in a crystal model as well, showing params without crystal model can be confusing*/
@@ -795,6 +796,7 @@ nanoBragg::init_beamcenter()
     {
         if(! user_beam)
         {
+        //printf("HITTTTTTTT!");
             Xbeam = Xclose;
             Ybeam = Yclose;
         }
@@ -1254,9 +1256,16 @@ nanoBragg::update_beamcenter()
     /* make sure beam center is preserved */
     if(detector_pivot == BEAM){
         if(verbose) printf("pivoting detector around direct beam spot\n");
+        //printf("BIGZSZZZZ");
         pix0_vector[1] = -Fbeam*fdet_vector[1]-Sbeam*sdet_vector[1]+distance*beam_vector[1];
         pix0_vector[2] = -Fbeam*fdet_vector[2]-Sbeam*sdet_vector[2]+distance*beam_vector[2];
         pix0_vector[3] = -Fbeam*fdet_vector[3]-Sbeam*sdet_vector[3]+distance*beam_vector[3];
+        //SCITBX_EXAMINE(Fbeam);
+        //SCITBX_EXAMINE(Sbeam);
+        //SCITBX_EXAMINE(pix0_vector[1]);
+        //SCITBX_EXAMINE(pix0_vector[2]);
+        //SCITBX_EXAMINE(pix0_vector[3]);
+        //printf("BIGZSZZZZ");
     }
 
     /* what is the point of closest approach between sample and detector? */
@@ -2165,7 +2174,7 @@ nanoBragg::init_sources()
             init_beam();
         }
         /* make sure stored source intensities are fractional */
-        double norm = flux_sum/sources;
+        double norm = flux_sum ; //sources;
         for (i=0; i < sources && norm>0.0; ++i)
         {
             source_I[i] /= norm;
@@ -2959,6 +2968,24 @@ nanoBragg::add_nanoBragg_spots()
             {
                 if((fpixel==printout_fpixel && spixel==printout_spixel) || printout_fpixel < 0)
                 {
+                    //printf("LAKSLDKLASKDLKSLAKDA\n");
+                    //SCITBX_EXAMINE(scattering[1]);
+                    //SCITBX_EXAMINE(scattering[2]);
+                    //SCITBX_EXAMINE(scattering[3]);
+
+                    //SCITBX_EXAMINE(incident[1]);
+                    //SCITBX_EXAMINE(incident[2]);
+                    //SCITBX_EXAMINE(incident[3]);
+
+                    //SCITBX_EXAMINE(diffracted[1]) ;
+                    //SCITBX_EXAMINE(diffracted[2]) ;
+                    //SCITBX_EXAMINE(diffracted[3]) ;
+
+                    //SCITBX_EXAMINE(pix0_vector[1]);
+                    //SCITBX_EXAMINE(pix0_vector[2]);
+                    //SCITBX_EXAMINE(pix0_vector[3]);
+
+                    //printf("LAKSLDKLASKDLKSLAKDA\n");
                     twotheta = atan2(sqrt(pixel_pos[2]*pixel_pos[2]+pixel_pos[3]*pixel_pos[3]),pixel_pos[1]);
                     test = sin(twotheta/2.0)/(lambda0*1e10);
                     printf("%4d %4d : stol = %g or %g\n", fpixel,spixel,stol,test);
@@ -2974,6 +3001,18 @@ nanoBragg::add_nanoBragg_spots()
                     printf("X: %11.8f %11.8f %11.8f\n",a[1]*1e10,b[1]*1e10,c[1]*1e10);
                     printf("Y: %11.8f %11.8f %11.8f\n",a[2]*1e10,b[2]*1e10,c[2]*1e10);
                     printf("Z: %11.8f %11.8f %11.8f\n",a[3]*1e10,b[3]*1e10,c[3]*1e10);
+                    SCITBX_EXAMINE(airpath);
+                    SCITBX_EXAMINE(Fclose);
+                    SCITBX_EXAMINE(Sclose);
+                    SCITBX_EXAMINE(close_distance);
+                    SCITBX_EXAMINE(pix0_vector[0]);
+                    SCITBX_EXAMINE(pix0_vector[1]);
+                    SCITBX_EXAMINE(pix0_vector[2]);
+                    SCITBX_EXAMINE(pix0_vector[3]);
+                    SCITBX_EXAMINE(odet_vector[0]);
+                    SCITBX_EXAMINE(odet_vector[1]);
+                    SCITBX_EXAMINE(odet_vector[2]);
+                    SCITBX_EXAMINE(odet_vector[3]);
                 }
             }
             else
@@ -3022,10 +3061,12 @@ nanoBragg::add_background( int oversample, int source )
     /* allow user to override automated oversampling decision at call time with arguments */
     if(oversample<=0) oversample = this->oversample;
     if(oversample<=0) oversample = 1;
+    bool single_source = false;
     if(source>=0) {
         /* user-specified source in the argument */
         source_start = source;
         sources = source_start +1;
+        single_source = true;
     }
 
     /* make sure we are normalizing with the right number of sub-steps */
@@ -3149,7 +3190,10 @@ nanoBragg::add_background( int oversample, int source )
                             }
 
                             /* accumulate unscaled pixel intensity from this */
-                            Ibg += sign*Fbg*Fbg*polar*omega_pixel*source_I[source]*capture_fraction;
+                            if (single_source)
+                                Ibg += sign*Fbg*Fbg*polar*omega_pixel*capture_fraction;
+                            else
+                                Ibg += sign*Fbg*Fbg*polar*omega_pixel*source_I[source]*capture_fraction;
                             if(verbose>7 && i==1)printf("DEBUG: Fbg= %g polar= %g omega_pixel= %g source[%d]= %g capture_fraction= %g\n",
                                                            Fbg,polar,omega_pixel,source,source_I[source],capture_fraction);
                         }
