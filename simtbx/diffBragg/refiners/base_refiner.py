@@ -225,10 +225,12 @@ class BaseRefiner:
         self.shot_ids = None  # for global refinement ,
         self.poisson_only = True  # use strictly Poissonian statistics
         self.sigma_r = 3.  # readout noise mean in ADU
+        self.sigma_r_scalar = 3.  # readout noise mean in ADU
         self.log2pi = np.log(np.pi*2)
         self.use_ucell_priors = False  # (not yet supported) whether to include priors for the unit cell constants
         self.use_rot_priors = False  # (not yet supported) whether to inc;ude priors for misset corrections
         self._refinement_millers = None  # flex array of refinement miller indices (computed by GlobalRefiner _setup method)
+        self.crystal_for_mosaicity_model = None # if using an anisotropic mosaicity model, specify a reference crystal here
 
         self.parameter_hdf5_path = None  # path to an output file that will store the parameter log
         self.parameter_hdf5_write_freq = 5 # write every 5 iterations

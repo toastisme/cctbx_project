@@ -96,6 +96,12 @@ simulator {
 
 refiner_phil = """
 refiner {
+  res_ranges = None
+    .type = str
+    .help = resolution-defining strings, where each string is 
+    .help = is comma-separated substrings, formatted according to "%f-%f,%f-%f" where the first float
+    .help = in each substr specifies the high-resolution for the refinement trial, and the second float
+    .help = specifies the low-resolution for the refinement trial. Should be same length as max_calls
   parameter_hdf5_path = None
     .type = str
     .help = path to an output file where parameter log can be written (stage 1 only)

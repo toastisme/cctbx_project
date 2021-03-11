@@ -2,6 +2,7 @@ from __future__ import absolute_import, division, print_function
 
 import time
 import warnings
+from simtbx.nanoBragg.mosaicity import generate_Umats
 warnings.filterwarnings("ignore")
 
 class Bcolors:
@@ -26,7 +27,7 @@ except ImportError:
 
 # TODO : consider PEP-8 ing these numpy imports, but do a NERSC massively MPI time-test first...
 # for now, if it aint broke, dont fix it ...
-from numpy import mean, median, unique, std
+from numpy import mean, median, unique, percentile, std
 from simtbx.diffBragg.utils import makeMoffat_integPSF, convolve_with_psf
 from scipy.stats import pearsonr
 from numpy import vstack as np_vstack
@@ -665,12 +666,12 @@ class LocalRefiner(BaseRefiner):
                 assert self.rescale_params
                 self.is_being_refined[self.eta_xpos[i_shot]] = True
 
-            if self.refine_per_spot_scale:
-                n_spots = len(self.NANOBRAGG_ROIS[i_shot])
-                self.per_spot_scale_xpos[i_shot] = list(range(_local_pos, _local_pos + n_spots))
-                for x in range(_local_pos, _local_pos + n_spots):
-                    self.Xall[x] = 1
-                _local_pos += n_spots
+            #if self.refine_per_spot_scale:
+            n_spots = len(self.NANOBRAGG_ROIS[i_shot])
+            self.per_spot_scale_xpos[i_shot] = list(range(_local_pos, _local_pos + n_spots))
+            for x in range(_local_pos, _local_pos + n_spots):
+                self.Xall[x] = 1
+            _local_pos += n_spots
 
             if self.refine_blueSausages:
                 assert self.rescale_params
@@ -1504,10 +1505,13 @@ class LocalRefiner(BaseRefiner):
             if self.S.Umats_method==1:
                 from simtbx.nanoBragg.tst_gaussian_mosaicity2 import run_uniform
                 Umats, Umats_prime = run_uniform(eta_val, self.D.mosaic_domains)
-            elif self.S.Umats_method==2:
-                from simtbx.nanoBragg.tst_gaussian_mosaicity2_spiral import run_uniform
-                Umats, Umats_prime = run_uniform(eta_val, Naxes=self.S.crystal.num_mos_axes,
-                                                 Nang=self.S.crystal.mos_angles_per_axis)
+            elif self.S.Umats_method in [2,3, 4]:
+                Umats,Umats_prime,Umats_dblprime = self.S.Umats(eta_val,
+                                                            crystal=self.crystal_for_mosaicity_model,
+                                                            method=2,
+                                                            angles_per_axis=self.S.crystal.mos_angles_per_axis,
+                                                            num_axes=self.S.crystal.num_mos_axes,
+                                                            return_second_deriv=True)
             else:
                 raise ValueError("Wrong umats method, should be 1 or 2")
             self.print("updating ETA as %f deg sampled from %d blocks from method %d" %
@@ -1517,26 +1521,37 @@ class LocalRefiner(BaseRefiner):
             self.D.vectorize_umats()
 
     def _set_background_plane(self, i_spot):
-        if self.bg_extracted:
-            self.bg_coef = self._get_bg_coef(self._i_shot)
-            (i1, i2), (j1, j2) = self.NANOBRAGG_ROIS[self._i_shot][i_spot]
-            self.tilt_plane = self.bg_coef*self.background_estimate[self._panel_id, j1:j2, i1:i2]
-        elif self.background is not None:
-            (x1, x2), (y1, y2) = self.NANOBRAGG_ROIS[self._i_shot][self._i_spot]
-            self.tilt_plane = self.background[self._i_shot][self._panel_id, y1:y2, x1:x2]
-            assert np_all(self.tilt_plane >= 0)
-        else:
-            xr = self.XREL[self._i_shot][i_spot]
-            yr = self.YREL[self._i_shot][i_spot]
-            self.a, self.b, self.c = self._get_bg_vals(self._i_shot, i_spot)
-            if self.bg_offset_only:
-                self.tilt_plane = ONES_LIKE(xr)*self.c
-            else:
-                self.tilt_plane = xr * self.a + yr * self.b + self.c
-            if self.OMEGA_KAHN is not None:
+        saving_model = self.save_model_for_shot is not None and self.save_model_for_shot == self._i_shot
+        try:
+            if self.bg_extracted:
+                self.bg_coef = self._get_bg_coef(self._i_shot)
                 (i1, i2), (j1, j2) = self.NANOBRAGG_ROIS[self._i_shot][i_spot]
-                omega_kahn_correction = self.OMEGA_KAHN[self._panel_id][j1:j2, i1:i2]
-                self.tilt_plane *= omega_kahn_correction
+                self.tilt_plane = self.bg_coef*self.background_estimate[self._panel_id, j1:j2, i1:i2]
+            elif self.background is not None:
+                (x1, x2), (y1, y2) = self.NANOBRAGG_ROIS[self._i_shot][self._i_spot]
+                self.tilt_plane = self.background[self._i_shot][self._panel_id, y1:y2, x1:x2]
+                assert np_all(self.tilt_plane >= 0)
+            else:
+                xr = self.XREL[self._i_shot][i_spot]
+                yr = self.YREL[self._i_shot][i_spot]
+                self.a, self.b, self.c = self._get_bg_vals(self._i_shot, i_spot)
+                if self.bg_offset_only:
+                    self.tilt_plane = ONES_LIKE(xr)*self.c
+                else:
+                    self.tilt_plane = xr * self.a + yr * self.b + self.c
+                if self.OMEGA_KAHN is not None:
+                    (i1, i2), (j1, j2) = self.NANOBRAGG_ROIS[self._i_shot][i_spot]
+                    omega_kahn_correction = self.OMEGA_KAHN[self._panel_id][j1:j2, i1:i2]
+                    self.tilt_plane *= omega_kahn_correction
+        except Exception as error:
+            if not saving_model:
+                raise("background error", error)
+            else:
+                im = self.ROI_IMGS[self._i_shot][i_spot]
+                self.tilt_plane = ONES_LIKE(im)
+                m = median(im[ im < percentile(im,80)])
+                self.tilt_plane *= m
+
         self.tilt_plane = self.tilt_plane.flatten()
 
     def _update_sausages(self):
@@ -1883,9 +1898,13 @@ class LocalRefiner(BaseRefiner):
         #DATA = NP_ZEROS((npan, nslow, nfast), "float32")
         nspots = len(self.NANOBRAGG_ROIS[self._i_shot])
         for i_spot in range(nspots):
-            if self.selection_flags is not None and not self.selection_flags[self._i_shot][i_spot]:
-                continue
             (x1, x2), (y1, y2) = self.NANOBRAGG_ROIS[self._i_shot][i_spot]
+            if x2-x1==0 or y2-y1==0:
+                continue
+
+            saving_model = self.save_model_for_shot is not None and self.save_model_for_shot == self._i_shot
+            if not saving_model and self.selection_flags is not None and not self.selection_flags[self._i_shot][i_spot]:
+                continue
             pid = self.PANEL_IDS[self._i_shot][i_spot]
             MASK[pid, y1:y2, x1:x2] = True
             ROI_ID[pid, y1:y2, x1:x2] = i_spot
@@ -1974,8 +1993,12 @@ class LocalRefiner(BaseRefiner):
 
                 for i_spot in range(n_spots):
                     self._i_spot = i_spot
+                    (x1, x2), (y1, y2) = self.NANOBRAGG_ROIS[self._i_shot][i_spot]
+                    if x2 - x1 == 0 or y2 - y1 == 0:
+                        continue
 
-                    if self.selection_flags is not None:
+                    saving_model = self.save_model_for_shot is not None and self.save_model_for_shot == self._i_shot
+                    if not saving_model and self.selection_flags is not None:
                         if self._i_shot not in self.selection_flags:
                             continue
                         elif not self.selection_flags[self._i_shot][i_spot]:
@@ -2065,6 +2088,8 @@ class LocalRefiner(BaseRefiner):
 
             # reset ROI pixels TODO: is this necessary
             self.D.raw_pixels_roi *= 0
+
+            self._sanity_check_grad()
             self.gnorm = norm(self.grad)
 
             if self.verbose:
@@ -2081,13 +2106,75 @@ class LocalRefiner(BaseRefiner):
             #time.sleep(self.pause_after_iteration)
 
             if self.calc_curvatures and not self.use_curvatures:
-                if self.num_positive_curvatures == self.use_curvatures_threshold:
+                saving_model = self.save_model_for_shot is not None and self.save_model_for_shot == self._i_shot
+                if not saving_model and self.num_positive_curvatures == self.use_curvatures_threshold:
                     raise BreakToUseCurvatures
 
         if self.save_model:
             self._close_model_output_file()
 
         return self._f, self._g
+
+    def _sanity_check_grad(self):
+        if not self.refine_background_planes:
+            for xp in self.bg_a_xstart[self._i_shot]:
+                assert self.grad[xp] == 0
+            for xp in self.bg_b_xstart[self._i_shot]:
+                assert self.grad[xp] == 0
+            for xp in self.bg_c_xstart[self._i_shot]:
+                assert self.grad[xp] == 0
+        if not self.refine_blueSausages:
+            for i_saus in range(self.num_sausages):
+                for i_saus_param in range(4):
+                    idx = i_saus * 4 + i_saus_param
+                    assert self.grad[self.sausages_xpos[self._i_shot][idx]] == 0
+        if not self.refine_eta:
+            assert self.grad[self.eta_xpos[self._i_shot]] == 0
+        if not self.refine_spectra:
+            for i_p in range(2):
+                assert self.grad[self.spectra_coef_xstart + i_p] == 0
+        if not self.refine_ncells:
+            for i_ncells in range(self.n_ncells_param):
+                assert self.grad[self.ncells_xstart[self._i_shot] + i_ncells] == 0
+        if not self.refine_ncells_def:
+            for i_ncells in range(3):
+                assert self.grad[self.ncells_def_xstart[self._i_shot] + i_ncells] == 0
+
+        if not self.refine_Umatrix:
+            # if not self.refine_rotX:
+            assert self.grad[self.rotX_xpos[self._i_shot]] == 0
+            # if not self.refine_rotY:
+            assert self.grad[self.rotY_xpos[self._i_shot]] == 0
+            # if not self.refine_rotZ:
+            assert self.grad[self.rotZ_xpos[self._i_shot]] == 0
+
+        if not self.refine_Bmatrix:
+            for i_p in range(self.n_ucell_param):
+                assert self.grad[self.ucell_xstart[self._i_shot] + i_p] == 0
+
+        if not self.refine_crystal_scale:
+            assert self.grad[self.spot_scale_xpos[self._i_shot]] == 0
+
+        for pg in set(list(self.panel_group_from_id.values())):
+            if not self.refine_panelRotO:
+                assert self.grad[self.panelRot_xstart + 3 * pg] == 0
+            if not self.refine_panelRotF:
+                assert self.grad[self.panelRot_xstart + 3 * pg + 1] == 0
+            if not self.refine_panelRotS:
+                assert self.grad[self.panelRot_xstart + 3 * pg + 2] == 0
+
+            if not self.refine_panelXY:
+                assert self.grad[self.panelXY_xstart + 2 * pg] == 0
+                assert self.grad[self.panelXY_xstart + 2 * pg + 1] == 0
+            if not self.refine_panelZ:
+                assert self.grad[self.panelZ_xstart] == 0
+
+        if not self.refine_detdist:
+            assert self.grad[self.detector_distance_xpos[self._i_shot]] == 0
+
+        if not self.refine_per_spot_scale:
+            for xp in self.per_spot_scale_xpos[self._i_shot]:
+                assert self.grad[xp] == 0
 
     def _set_roi_mask(self):
         if self.MASK is not None:

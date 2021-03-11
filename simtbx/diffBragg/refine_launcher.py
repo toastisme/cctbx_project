@@ -19,6 +19,7 @@ class LocalRefinerLauncher:
     def __init__(self, params):
         self.params = self.check_parameter_integrity(params)
 
+        self.shot_reso = {}
         self.shot_ucell_managers = {}
         self.shot_rois = {}
         self.shot_nanoBragg_rois = {}
@@ -104,6 +105,9 @@ class LocalRefinerLauncher:
         self.DEVICE_ID = self.params.simulator.device_id
 
         shot_data = self.load_roi_data(refls, expt)
+        if "rlp" in refls:
+            shot_data.reso = {}
+
         if shot_data is None:
             raise ValueError("Cannot refine!")
 
@@ -113,6 +117,8 @@ class LocalRefinerLauncher:
         UcellMan = utils.manager_from_crystal(self.SIM.crystal.dxtbx_crystal)
 
         #TODO multi shot
+        if "rlp" in refls:
+            self.shot_reso = {0: 1/np.linalg.norm(refls["rlp"], axis=1)}
         self.shot_ucell_managers = {0: UcellMan}
         self.shot_rois = {0: shot_data.rois}
         self.shot_nanoBragg_rois = {0: shot_data.nanoBragg_rois}
@@ -154,15 +160,16 @@ class LocalRefinerLauncher:
         n_local_unknowns = nrot_params + n_unitcell_params + n_ncells_param + n_spotscale_params + n_originZ_params \
                            + n_tilt_params + n_eta_params + n_sausage_params + n_ncells_def_param
 
-        if self.params.refiner.refine_per_spot_scale is not None and any(self.params.refiner.refine_per_spot_scale):
-            n_local_unknowns += len(shot_data.nanoBragg_rois)
+        #if self.params.refiner.refine_per_spot_scale is not None and any(self.params.refiner.refine_per_spot_scale):
+        # per spot scale factor unknowns
+        n_local_unknowns += len(shot_data.nanoBragg_rois)
 
         self.panel_groups_refined = self.determine_refined_panel_groups(shot_data.pids, shot_data.selection_flags)
 
         #TODO multi shot
-        n_spectra_params = 0
-        if self.params.refiner.refine_spectra is not None and any(self.params.refiner.refine_spectra):
-            n_spectra_params = 2
+        #n_spectra_params = 0
+        #if self.params.refiner.refine_spectra is not None and any(self.params.refiner.refine_spectra):
+        n_spectra_params = 2
         n_panelRot_params = 3*self.n_panel_groups
         n_panelXYZ_params = 3*self.n_panel_groups
         n_global_unknowns = n_spectra_params + n_panelRot_params + n_panelXYZ_params
@@ -201,54 +208,54 @@ class LocalRefinerLauncher:
             self.RUC.print_end = self.params.refiner.print_end
 
             if not self.params.refiner.only_predict_model:
-                if self.params.refiner.refine_Bmatrix is not None:
+                if self.will_refine(self.params.refiner.refine_Bmatrix):
                     self.RUC.refine_Bmatrix = (self.params.refiner.refine_Bmatrix*nmacro)[i_trial]
 
-                if self.params.refiner.refine_Umatrix is not None:
+                if self.will_refine(self.params.refiner.refine_Umatrix):
                     self.RUC.refine_Umatrix = (self.params.refiner.refine_Umatrix*nmacro)[i_trial]
 
-                if self.params.refiner.refine_ncells is not None:
+                if self.will_refine(self.params.refiner.refine_ncells):
                     self.RUC.refine_ncells = (self.params.refiner.refine_ncells*nmacro)[i_trial]
 
-                if self.params.refiner.refine_ncells_def is not None:
+                if self.will_refine(self.params.refiner.refine_ncells_def):
                     self.RUC.refine_ncells_def = (self.params.refiner.refine_ncells_def*nmacro)[i_trial]
 
-                if self.params.refiner.refine_bg is not None:
+                if self.will_refine(self.params.refiner.refine_bg):
                     self.RUC.refine_background_planes = (self.params.refiner.refine_bg*nmacro)[i_trial]
 
-                if self.params.refiner.refine_spot_scale is not None:
+                if self.will_refine(self.params.refiner.refine_spot_scale):
                     self.RUC.refine_crystal_scale = (self.params.refiner.refine_spot_scale*nmacro)[i_trial]
 
-                if self.params.refiner.refine_spectra is not None:
+                if self.will_refine(self.params.refiner.refine_spectra):
                     self.RUC.refine_spectra = (self.params.refiner.refine_spectra*nmacro)[i_trial]
 
-                if self.params.refiner.refine_detdist is not None:
+                if self.will_refine(self.params.refiner.refine_detdist):
                     self.RUC.refine_detdist = (self.params.refiner.refine_detdist*nmacro)[i_trial]
 
-                if self.params.refiner.refine_panelZ is not None:
+                if self.will_refine(self.params.refiner.refine_panelZ):
                     self.RUC.refine_panelZ = (self.params.refiner.refine_panelZ*nmacro)[i_trial]
 
-                if self.params.refiner.refine_panelRotO is not None:
+                if self.will_refine(self.params.refiner.refine_panelRotO):
                     self.RUC.refine_panelRotO = (self.params.refiner.refine_panelRotO*nmacro)[i_trial]
-                if self.params.refiner.refine_panelRotF is not None:
+                if self.will_refine(self.params.refiner.refine_panelRotF):
                     self.RUC.refine_panelRotF = (self.params.refiner.refine_panelRotF*nmacro)[i_trial]
 
-                if self.params.refiner.refine_panelRotS is not None:
+                if self.will_refine(self.params.refiner.refine_panelRotS):
                     self.RUC.refine_panelRotS = (self.params.refiner.refine_panelRotS*nmacro)[i_trial]
 
-                if self.params.refiner.refine_panelXY is not None:
+                if self.will_refine(self.params.refiner.refine_panelXY):
                     self.RUC.refine_panelXY = (self.params.refiner.refine_panelXY*nmacro)[i_trial]
 
-                if self.params.refiner.refine_per_spot_scale is not None:
+                if self.will_refine(self.params.refiner.refine_per_spot_scale):
                     self.RUC.refine_per_spot_scale = (self.params.refiner.refine_per_spot_scale*nmacro)[i_trial]
 
-                if self.params.refiner.refine_eta is not None:
+                if self.will_refine(self.params.refiner.refine_eta):
                     self.RUC.refine_eta = (self.params.refiner.refine_eta*nmacro)[i_trial]
 
-                if self.params.refiner.refine_blueSausages is not None:
+                if self.will_refine(self.params.refiner.refine_blueSausages):
                     self.RUC.refine_blueSausages = (self.params.refiner.refine_blueSausages*nmacro)[i_trial]
 
-                if self.params.refiner.refine_Fcell is not None:
+                if self.will_refine(self.params.refiner.refine_Fcell):
                     self.RUC.refine_Fcell = (self.params.refiner.refine_Fcell*nmacro)[i_trial]
 
             if self.RUC.refine_detdist and self.RUC.refine_panelZ:
@@ -317,7 +324,7 @@ class LocalRefinerLauncher:
             self.RUC.compute_image_model_correlation = self.params.refiner.compute_image_model_correlation
 
             # plot things
-            self.RUC.sigma_r = self.params.refiner.sigma_r / self.params.refiner.adu_per_photon
+            self.RUC.sigma_r_scalar = self.params.refiner.sigma_r / self.params.refiner.adu_per_photon
             self.RUC.trial_id = i_trial
             self.RUC.refine_rotZ = not self.params.refiner.fix_rotZ
             self.RUC.plot_images = self.params.refiner.plot.display
@@ -393,7 +400,21 @@ class LocalRefinerLauncher:
             self.RUC.num_positive_curvatures = 0
             self.RUC.use_curvatures = self.params.refiner.start_with_curvatures
             self.RUC.hit_break_to_use_curvatures = False
+
+            # selection flags set here:
             self.RUC.selection_flags = self.shot_selection_flags
+            if self.params.refiner.res_ranges is not None:
+                assert self.shot_reso is not None, "cant set reso flags is rlp is not in refl tables"
+                nshots = len(self.shot_selection_flags)
+                more_sel_flags = {}
+                res_ranges = utils.parse_reso_string(self.params.refiner.res_ranges)
+                for i_shot in range(nshots):
+                    rhigh, rlow = (res_ranges*nmacro)[i_trial]
+                    sel_flags = self.shot_selection_flags[i_shot]
+                    res_flags = [rhigh < r < rlow for r in self.shot_reso[i_shot]]
+                    more_sel_flags[i_shot] = [flag1 and flag2 for flag1,flag2 in zip(sel_flags, res_flags)]
+                self.RUC.selection_flags = more_sel_flags
+
             self.RUC.record_model_predictions = self.params.refiner.record_xy_calc
             self.RUC.run(setup=False)
             if self.RUC.hit_break_to_use_curvatures:
@@ -409,6 +430,9 @@ class LocalRefinerLauncher:
 
             if self.params.refiner.use_cuda:
                 self.RUC.S.D.gpu_free()
+
+    def will_refine(self, param):
+        return param is not None and any(param)
 
     def _initialize_some_refinement_parameters(self):
         self.RUC.spot_scale_init = {0: self.params.refiner.init.spot_scale}  # self.spot_scale_init
@@ -685,3 +709,4 @@ class ShotData:
         self.yrel = None
         self.pids = None  # list of panel id
         self.selection_flags = None
+        self.reso = None

@@ -69,7 +69,7 @@ SIM = SimData()
 SIM.Umats_method = 2
 SIM.detector = DET_gt
 SIM.crystal = nbcryst
-SIM.instantiate_diffBragg(oversample=1, verbose=1)
+SIM.instantiate_diffBragg(oversample=1, verbose=0)
 if args.finitediff:
   SIM.D.refine(eta_diffBragg_id)
   SIM.D.initialize_managers()
@@ -116,18 +116,19 @@ if args.finitediff:
     error = (np.abs(fdiff[bragg] - deriv[bragg])).mean()
     all_errors.append(error)
     all_shifts.append(delta_eta)
+    print("Error:", error, "shift:", delta_eta)
 
   from scipy.stats import linregress
   l = linregress(all_shifts, all_errors)
   print("finite diff l.rvalue=%10.7g" % l.rvalue)
-  assert l.rvalue > .99, "%f" % l.rvalue
-  assert l.slope > 0, "%f" % l.slope
-  assert l.pvalue < 1e-6, "%f" % l.pvalue
-  print("OK")
   if args.plot:
     plt.figure()
     plt.plot(all_shifts, all_errors, 'o')
     plt.show()
+  assert l.rvalue > .99, "%f" % l.rvalue
+  assert l.slope > 0, "%f" % l.slope
+  assert l.pvalue < 1e-6, "%f" % l.pvalue
+  print("OK")
   sys.exit()
 
 

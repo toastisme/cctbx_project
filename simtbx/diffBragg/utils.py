@@ -577,6 +577,25 @@ def convolve_with_psf(image_data, fwhm=27.0, pixel_size=177.8, psf_radius=7, sz=
     return convolved_image
 
 
+#def get_rois_deltaQ(refls, delta_Q, experiment):
+#    """
+#
+#    :param refls: reflection table (needs rlp column)
+#    :param delta_Q:  width of the ROI in inverse Angstromg (e.g. 0.05)
+#    :param experiment:
+#    :return:
+#    """
+#    nref = len(refls)
+#    assert nref >0
+#    if "rlp" not in list(refls[0].keys()):
+#        raise KeyError("Need rlp column in refl table!")
+#
+#    beam = experiment.beam
+#    detector = experiment.detector
+#    assert beam is not None and experiment is not None
+#    for i_refl in range(len(refls)):
+#        roi = determine_shoebox_ROI(detector, delta_Q, beam.get_wavelength(), REFL[0])
+
 def get_roi_from_spot(refls, fdim, sdim, shoebox_sz=10):
     fs_spot, ss_spot, _ = zip(*refls['xyzobs.px.value'])
     rois = []
@@ -602,7 +621,7 @@ def get_roi_background_and_selection_flags(refls, imgs, shoebox_sz=10, reject_ed
                                    reject_roi_with_hotpix=True, background_mask=None, hotpix_mask=None,
                                    bg_thresh=3.5, set_negative_bg_to_zero=False,
                                    pad_for_background_estimation=None, use_robust_estimation=True, sigma_rdout=3.,
-                                   min_trusted_pix_per_roi=4):
+                                   min_trusted_pix_per_roi=4, deltaQ=None, experiment=None):
 
     npan, sdim, fdim = imgs.shape
 
@@ -612,7 +631,12 @@ def get_roi_background_and_selection_flags(refls, imgs, shoebox_sz=10, reject_ed
     if background_mask is not None:
         assert background_mask.shape == imgs.shape
 
-    rois, is_on_edge = get_roi_from_spot(refls, fdim, sdim, shoebox_sz=shoebox_sz)
+    if deltaQ is None:  # then use fixed size ROIS determined by shoebox_sz
+        rois, is_on_edge = get_roi_from_spot(refls, fdim, sdim, shoebox_sz=shoebox_sz)
+    else:
+        assert experiment is not None
+        rois, is_on_edge = get_roi_deltaQ(refls, deltaQ, experiment)
+
     tilt_abc = []
     kept_rois = []
     panel_ids = []
@@ -706,7 +730,7 @@ def get_roi_background_and_selection_flags(refls, imgs, shoebox_sz=10, reject_ed
         roi_dimY = j2_nopad-j1_nopad
         roi_dimX = i2_nopad-i1_nopad
 
-        if roi_dimY <2 or roi_dimX < 2:
+        if roi_dimY < 2 or roi_dimX < 2:
             is_selected = False
         #assert np.all(background[pid, j1_nopad:j2_nopad, i1_nopad:i2_nopad] == -1), "region of interest already accounted for"
         background[pid, j1_nopad:j2_nopad, i1_nopad:i2_nopad] = \
@@ -1665,3 +1689,20 @@ def extract_parmaeters(experiment, refls, use_back_computed_wavelen=False):
     D = 2 / out.x[0]
     eta = out.x[1] * 180 / np.pi
     return D, eta, waves2
+
+
+def parse_reso_string(s):
+    """
+    :param s:  a strong formated as %f-%f,%f-%f,%f-%f etc.
+    :return: two floats as a tuple
+    """
+    vals =[]
+    try:
+        for subs in s.strip().split(","):
+            a, b = map(float, subs.strip().split("-"))
+            assert a < b
+            vals.append((a,b))
+    except Exception as error:
+        print("Failed to parse string!", error)
+        raise ValueError("Wrong string format, see error above")
+    return vals
