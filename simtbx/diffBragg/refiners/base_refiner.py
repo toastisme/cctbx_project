@@ -44,6 +44,8 @@ class BaseRefiner:
         self.refine_eta = False  # refine the mosaic spread angle
         self.eta_init = {0: 0}  # initialize the mosaic spread angle
         self.eta_sigma = 1  # sensitivity of mosaic spread
+        self.eta_min = 0  # minimum mosaic spread should always be 0
+        self.eta_max = 10  # maximum mosaic spread in degrees
         self.refine_per_spot_scale = False  # experimental, refine a per spot scale factor for each ROI
         self.per_spot_scale_sigma = 1  # sensitivity for per spot scales
         self.detector_distance_sigma = 1  # sensitivity for detector distance offset parameter

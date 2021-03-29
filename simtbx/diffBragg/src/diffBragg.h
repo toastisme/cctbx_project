@@ -147,6 +147,7 @@ class diffBragg: public nanoBragg{
         image_type& d_Ncells_images, image_type& d2_Ncells_images,
         image_type& d_fcell_images, image_type& d2_fcell_images,
         image_type& d_eta_images,
+        image_type& d2_eta_images,
         image_type& d_lambda_images, image_type& d2_lambda_images,
         image_type& d_panel_rot_images, image_type& d2_panel_rot_images,
         image_type& d_panel_orig_images, image_type& d2_panel_orig_images,
@@ -162,6 +163,7 @@ class diffBragg: public nanoBragg{
         std::vector<Eigen::Vector3d,Eigen::aligned_allocator<Eigen::Vector3d> >& dS_vecs,
         std::vector<Eigen::Matrix3d,Eigen::aligned_allocator<Eigen::Matrix3d> >& UMATS_RXYZ,
         std::vector<Eigen::Matrix3d,Eigen::aligned_allocator<Eigen::Matrix3d> >& UMATS_RXYZ_prime,
+        std::vector<Eigen::Matrix3d,Eigen::aligned_allocator<Eigen::Matrix3d> >& UMATS_RXYZ_dbl_prime,
         std::vector<Eigen::Matrix3d,Eigen::aligned_allocator<Eigen::Matrix3d> >& RotMats,
         std::vector<Eigen::Matrix3d,Eigen::aligned_allocator<Eigen::Matrix3d> >& dRotMats,
         std::vector<Eigen::Matrix3d,Eigen::aligned_allocator<Eigen::Matrix3d> >& d2RotMats,
@@ -290,7 +292,7 @@ class diffBragg: public nanoBragg{
   Eigen::Matrix3d RXYZ;
   std::vector<Eigen::Vector3d,Eigen::aligned_allocator<Eigen::Vector3d> > Fdet_vectors, Sdet_vectors, Odet_vectors;
   std::vector<Eigen::Matrix3d,Eigen::aligned_allocator<Eigen::Matrix3d> > RotMats, dRotMats, d2RotMats, R3, R3_2,
-    UMATS, UMATS_RXYZ, UMATS_prime, UMATS_RXYZ_prime;
+    UMATS, UMATS_RXYZ, UMATS_prime, UMATS_dbl_prime,UMATS_RXYZ_prime, UMATS_RXYZ_dbl_prime;
   //std::vector<Eigen::Matrix3d> RotMats;
   //std::vector<Eigen::Matrix3d> dRotMats, d2RotMats;
   //std::vector<Eigen::Matrix3d> R3, R3_2;
@@ -314,7 +316,9 @@ class diffBragg: public nanoBragg{
   //std::vector<Eigen::Matrix3d> UMATS_prime;
   //std::vector<Eigen::Matrix3d> UMATS_RXYZ_prime;
   double * mosaic_umats_prime;
+  double * mosaic_umats_dbl_prime;
   void set_mosaic_blocks_prime(af::shared<mat3> umat_in);  // set the individual mosaic block orientation derivatives from array
+  void set_mosaic_blocks_dbl_prime(af::shared<mat3> umat_in);  // set the individual mosaic block orientation derivatives from array
   //bool vectorized_umats;
 
   /* derivative managers */

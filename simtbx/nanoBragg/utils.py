@@ -1,9 +1,6 @@
 from __future__ import absolute_import, division, print_function
 import json, h5py, numpy as np
-<<<<<<< Updated upstream
 from scipy.interpolate import interp1d
-=======
->>>>>>> Stashed changes
 from scipy.stats import binned_statistic
 from scipy import signal
 from scipy import constants

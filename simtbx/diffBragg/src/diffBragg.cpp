@@ -262,6 +262,7 @@ diffBragg::diffBragg(const dxtbx::model::Detector& detector, const dxtbx::model:
     eta_man = boost::shared_ptr<eta_manager>(new eta_manager());
     eta_man->refine_me = false;
     mosaic_umats_prime = NULL;
+    mosaic_umats_dbl_prime = NULL;
 
     panel_rot_man = boost::shared_ptr<panel_manager>(new panel_manager());
     panel_rot_man->refine_me = false;
@@ -776,6 +777,10 @@ void diffBragg::vectorize_umats(){
         UMATS_prime.clear();
         UMATS_RXYZ_prime.clear();
     }
+    if (UMATS_dbl_prime.size()> 0){
+        UMATS_dbl_prime.clear();
+        UMATS_RXYZ_dbl_prime.clear();
+    }
     for(mos_tic=0;mos_tic<mosaic_domains;++mos_tic){
         double uxx,uxy,uxz,uyx,uyy,uyz,uzx,uzy,uzz;
         uxx = mosaic_umats[mos_tic*9+0];
@@ -810,6 +815,26 @@ void diffBragg::vectorize_umats(){
                  uzx, uzy, uzz;
             UMATS_RXYZ_prime.push_back(Up);
             UMATS_prime.push_back(Up);
+
+            if (mosaic_umats_dbl_prime != NULL){
+                if (verbose && mos_tic==0)
+                    printf("Setting umts dbl prime\n");
+                uxx = mosaic_umats_dbl_prime[mos_tic*9+0];
+                uxy = mosaic_umats_dbl_prime[mos_tic*9+1];
+                uxz = mosaic_umats_dbl_prime[mos_tic*9+2];
+                uyx = mosaic_umats_dbl_prime[mos_tic*9+3];
+                uyy = mosaic_umats_dbl_prime[mos_tic*9+4];
+                uyz = mosaic_umats_dbl_prime[mos_tic*9+5];
+                uzx = mosaic_umats_dbl_prime[mos_tic*9+6];
+                uzy = mosaic_umats_dbl_prime[mos_tic*9+7];
+                uzz = mosaic_umats_dbl_prime[mos_tic*9+8];
+                Eigen::Matrix3d Udp;
+                Udp << uxx, uxy, uxz,
+                     uyx, uyy, uyz,
+                     uzx, uzy, uzz;
+                UMATS_RXYZ_dbl_prime.push_back(Udp);
+                UMATS_dbl_prime.push_back(Udp);
+            }
         }
     }
 }
@@ -1205,8 +1230,12 @@ af::flex_double diffBragg::get_second_derivative_pixels(int refine_id){
     else if (refine_id==16){
         boost::shared_ptr<panel_manager> pan_orig = boost::dynamic_pointer_cast<panel_manager>(panels[3]);
         return pan_orig->raw_pixels2;}
-    else
+    else if (refine_id==19)
+        return eta_man->raw_pixels2;
+    else if (refine_id==11)
         return fcell_man->raw_pixels2;
+    else
+       printf("Not suppotrted for refine id %d\n", refine_id);
 }
 
 boost::python::tuple diffBragg::get_ncells_derivative_pixels(){
@@ -1238,7 +1267,6 @@ boost::python::tuple diffBragg::get_ncells_def_second_derivative_pixels(){
         Ncells_managers[4]->raw_pixels2, Ncells_managers[5]->raw_pixels2);
     return second_derivative_pixels;
 }
-
 
 
 boost::python::list diffBragg::get_sausage_derivative_pixels(){
@@ -1342,7 +1370,8 @@ void diffBragg::set_mosaic_blocks_prime(af::shared<mat3> umat_in){
     if(mosaic_umats_prime != NULL) free(mosaic_umats_prime);
 
     /* allocate enough space */
-    SCITBX_ASSERT(mosaic_domains == umat_in.size());
+    SCITBX_ASSERT(mosaic_domains == umat_in.size() || 3*mosaic_domains==umat_in.size());
+    //int nfactor = umat_in.size() / mosaic_domains;
     mosaic_umats_prime = (double *) calloc(mosaic_domains+10,9*sizeof(double));
 
     /* now actually import the orientation of each domain */
@@ -1355,6 +1384,26 @@ void diffBragg::set_mosaic_blocks_prime(af::shared<mat3> umat_in){
     }
     if(verbose) printf("  imported a total of %d mosaic domain derivative Umats\n",mosaic_domains);
 }
+
+void diffBragg::set_mosaic_blocks_dbl_prime(af::shared<mat3> umat_in){
+    /* free any previous allocations */
+    if(mosaic_umats_dbl_prime != NULL) free(mosaic_umats_dbl_prime);
+
+    /* allocate enough space */
+    SCITBX_ASSERT(mosaic_domains == umat_in.size() || 3*mosaic_domains==umat_in.size());
+    mosaic_umats_dbl_prime = (double *) calloc(mosaic_domains+10,9*sizeof(double));
+
+    /* now actually import the orientation of each domain */
+    for(mos_tic=0;mos_tic<mosaic_domains;++mos_tic){
+      int offset = 9 * mos_tic;
+      mat3& domain = umat_in[mos_tic];
+      mosaic_umats_dbl_prime[0+offset]=domain[0];mosaic_umats_dbl_prime[1+offset]=domain[1];mosaic_umats_dbl_prime[2+offset]=domain[2];
+      mosaic_umats_dbl_prime[3+offset]=domain[3];mosaic_umats_dbl_prime[4+offset]=domain[4];mosaic_umats_dbl_prime[5+offset]=domain[5];
+      mosaic_umats_dbl_prime[6+offset]=domain[6];mosaic_umats_dbl_prime[7+offset]=domain[7];mosaic_umats_dbl_prime[8+offset]=domain[8];
+    }
+    if(verbose) printf("  imported a total of %d mosaic domain 2nd derivative Umats\n",mosaic_domains);
+}
+
 
 void diffBragg::add_diffBragg_spots(){
     int fdim = roi_xmax-roi_xmin;
@@ -1473,6 +1522,7 @@ void diffBragg::add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows
     image_type d_fcell_images(Npix_to_model,0.0);
     image_type d2_fcell_images(Npix_to_model,0.0);
     image_type d_eta_images(Npix_to_model,0.0);
+    image_type d2_eta_images(Npix_to_model,0.0);
     image_type d_lambda_images(Npix_to_model*2,0.0);
     image_type d2_lambda_images(Npix_to_model*2,0.0);
     image_type d_panel_rot_images(Npix_to_model*3,0.0);
@@ -1492,7 +1542,7 @@ void diffBragg::add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows
             d_Bmat_images, d2_Bmat_images,
             d_Ncells_images, d2_Ncells_images,
             d_fcell_images,  d2_fcell_images,
-            d_eta_images,
+            d_eta_images, d2_eta_images,
             d_lambda_images, d2_lambda_images,
             d_panel_rot_images,  d2_panel_rot_images,
             d_panel_orig_images,  d2_panel_orig_images,
@@ -1508,6 +1558,7 @@ void diffBragg::add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows
             dS_vecs,
             UMATS_RXYZ,
             UMATS_RXYZ_prime,
+            UMATS_RXYZ_dbl_prime,
             RotMats, dRotMats, d2RotMats,
             UMATS,
             dB_Mats, dB2_Mats,
@@ -1540,7 +1591,7 @@ void diffBragg::add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows
            d_Bmat_images, d2_Bmat_images,
            d_Ncells_images, d2_Ncells_images,
            d_fcell_images,  d2_fcell_images,
-           d_eta_images,
+           d_eta_images, d2_eta_images,
            d_lambda_images, d2_lambda_images,
            d_panel_rot_images,  d2_panel_rot_images,
            d_panel_orig_images,  d2_panel_orig_images,
@@ -1554,6 +1605,7 @@ void diffBragg::add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows
            dS_vecs,
            UMATS_RXYZ,
            UMATS_RXYZ_prime,
+           UMATS_RXYZ_dbl_prime,
            RotMats, dRotMats, d2RotMats,
            UMATS,
            dB_Mats, dB2_Mats,
@@ -1650,7 +1702,7 @@ void diffBragg::add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows
             fcell_man->increment_image(i_pix, d_fcell_images[i_pix], d2_fcell_images[i_pix], compute_curvatures);
 
         if (eta_man->refine_me)
-            eta_man->increment_image(i_pix, d_eta_images[i_pix], 0, compute_curvatures);
+            eta_man->increment_image(i_pix, d_eta_images[i_pix], d2_eta_images[i_pix], compute_curvatures);
 
         for(int i_lam=0; i_lam < 2; i_lam++){
             if (lambda_managers[i_lam]->refine_me){
@@ -1717,7 +1769,12 @@ void diffBragg::diffBragg_rot_mats(){
             //if (verbose)
             //   printf("setting umat %d in vector of length %d\n" , mos_tic, UMATS_RXYZ_prime.size());
             UMATS_RXYZ_prime[mos_tic] = UMATS_prime[mos_tic]*RXYZ;
+            if (UMATS_dbl_prime.size() > 0){
+                if (verbose && mos_tic ==0)
+                    printf("setting UMATS_RXYZ_dblprime\n");
+                UMATS_RXYZ_dbl_prime[mos_tic] = UMATS_dbl_prime[mos_tic]*RXYZ;
             }
+        }
     }
 }
 

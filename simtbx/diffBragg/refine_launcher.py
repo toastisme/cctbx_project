@@ -312,6 +312,10 @@ class LocalRefinerLauncher:
             self.RUC.a_sigma, self.RUC.b_sigma, self.RUC.c_sigma = self.params.refiner.sensitivity.tilt_abc
             self.RUC.fcell_sigma_scale = self.params.refiner.sensitivity.fcell
             self.RUC.eta_sigma = self.params.refiner.sensitivity.eta
+            self.RUC.eta_min = self.params.refiner.ranges.eta[0]
+            self.RUC.eta_max = self.params.refiner.ranges.eta[1]
+            if self.RUC.eta_min < 0:
+                raise ValueError("Eta min should always be >= 0")
 
             self.RUC.print_all_missets = True
 

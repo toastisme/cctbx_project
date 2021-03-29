@@ -309,6 +309,10 @@ refiner {
     panel_rotS = [-1e-6, 1e-6]
       .type = floats(size=2)
       .help = range of values in degrees for rotation of panel about its slow-axis
+    eta = [0,1]
+      .type = floats(size=2)
+      .help = range of possible values for mosaicity. First valus is min, second is max.
+      .help = Note the min should always be greater than or equal to 0
   }
   update_oversample_during_refinement = False
     .type = bool

@@ -12,6 +12,7 @@ void diffBragg::diffBragg_sum_over_steps(
         image_type& d_Ncells_images, image_type& d2_Ncells_images,
         image_type& d_fcell_images, image_type& d2_fcell_images,
         image_type& d_eta_images,
+        image_type& d2_eta_images,
         image_type& d_lambda_images, image_type& d2_lambda_images,
         image_type& d_panel_rot_images, image_type& d2_panel_rot_images,
         image_type& d_panel_orig_images, image_type& d2_panel_orig_images,
@@ -27,6 +28,7 @@ void diffBragg::diffBragg_sum_over_steps(
         std::vector<Eigen::Vector3d,Eigen::aligned_allocator<Eigen::Vector3d> >& dS_vecs,
         std::vector<Eigen::Matrix3d,Eigen::aligned_allocator<Eigen::Matrix3d> >& UMATS_RXYZ,
         std::vector<Eigen::Matrix3d,Eigen::aligned_allocator<Eigen::Matrix3d> >& UMATS_RXYZ_prime,
+        std::vector<Eigen::Matrix3d,Eigen::aligned_allocator<Eigen::Matrix3d> >& UMATS_RXYZ_dbl_prime,
         std::vector<Eigen::Matrix3d,Eigen::aligned_allocator<Eigen::Matrix3d> >& RotMats,
         std::vector<Eigen::Matrix3d,Eigen::aligned_allocator<Eigen::Matrix3d> >& dRotMats,
         std::vector<Eigen::Matrix3d,Eigen::aligned_allocator<Eigen::Matrix3d> >& d2RotMats,
@@ -79,6 +81,7 @@ void diffBragg::diffBragg_sum_over_steps(
         double fcell_manager_dI=0;
         double fcell_manager_dI2=0;
         double eta_manager_dI = 0;
+        double eta_manager_dI2 = 0;
         double lambda_manager_dI[2] = {0,0};
         double lambda_manager_dI2[2] = {0,0};
         std::vector<double> sausage_manager_dI(num_sausages*4,0);
@@ -428,8 +431,19 @@ void diffBragg::diffBragg_sum_over_steps(
             if (refine_eta){
                 Eigen::Vector3d DeltaH_deriv = (UMATS_RXYZ_prime[_mos_tic]*UBOt).transpose()*q_vec;
                 // vector V is _Nabc*Delta_H
-                double value = -two_C*(V.dot(_NABC*DeltaH_deriv))*Iincrement;
-                eta_manager_dI += value;
+                Eigen::Vector3d dV = _NABC*DeltaH_deriv;
+                double V_dot_dV = V.dot(dV);
+                double Iprime = -two_C*(V_dot_dV)*Iincrement;
+                eta_manager_dI += Iprime;
+
+                double Idbl_prime = 0;
+                if (compute_curvatures){
+                    Eigen::Vector3d DeltaH_second_deriv = (UMATS_RXYZ_dbl_prime[_mos_tic]*UBOt).transpose()*q_vec;
+                    Eigen::Vector3d dV2 = _NABC*DeltaH_second_deriv;
+                    Idbl_prime = -two_C*(dV.dot(dV) + V.dot(dV2))*Iincrement;
+                    Idbl_prime += -two_C*(V_dot_dV)*Iprime;
+                }
+                eta_manager_dI2 += Idbl_prime;
             } /* end of eta man deriv */
 
             // sausage deriv
@@ -640,8 +654,9 @@ void diffBragg::diffBragg_sum_over_steps(
         /* update eta derivative image */
         if(refine_eta){
             double value = _scale_term*eta_manager_dI;
-            double value2 = 0;
+            double value2 = _scale_term*eta_manager_dI2;
             d_eta_images[i_pix] = value;
+            d2_eta_images[i_pix] = value2;
         }/* end eta deriv image increment */
 
         /*update the lambda derivative images*/

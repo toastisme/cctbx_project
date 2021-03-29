@@ -299,7 +299,11 @@ namespace boost_python { namespace {
 
       .def("set_mosaic_blocks_prime",
              &simtbx::nanoBragg::diffBragg::set_mosaic_blocks_prime,
-             "enter a list of unitary matrix derivatives Uprime (will raise error if not same length as mosaic Umats already set)")
+             "enter a list of unitary matrix derivatives Uprime")
+
+      .def("set_mosaic_blocks_dbl_prime",
+             &simtbx::nanoBragg::diffBragg::set_mosaic_blocks_dbl_prime,
+             "enter a list of unitary matrix 2nd derivatives Uprime")
 
       //.add_property("region_of_interest",
       //       make_function(&get_roi,rbv()),

@@ -2,7 +2,7 @@ from __future__ import absolute_import, division, print_function
 
 import time
 import warnings
-from simtbx.nanoBragg.mosaicity import generate_Umats
+from simtbx.nanoBragg.anisotropic_mosaicity import generate_Umats
 warnings.filterwarnings("ignore")
 
 class Bcolors:
@@ -465,6 +465,7 @@ class LocalRefiner(BaseRefiner):
         self.detector_distance_xpos = {}
         self.spot_scale_xpos = {}
         self.eta_xpos = {}
+        self.eta_params = {}
         self.n_panels = {}
         self.bg_a_xstart = {}
         self.bg_b_xstart = {}
@@ -662,6 +663,12 @@ class LocalRefiner(BaseRefiner):
             self.eta_xpos[i_shot] = _local_pos
             _local_pos += 1
             self.Xall[self.eta_xpos[i_shot]] = 1
+            eta_param = RangedParameter()
+            eta_param.init = self.eta_init[i_shot]
+            eta_param.sigma = self.eta_sigma
+            eta_param.minval = self.eta_min
+            eta_param.maxval = self.eta_max
+            self.eta_params[i_shot] = eta_param
             if self.refine_eta:
                 assert self.rescale_params
                 self.is_being_refined[self.eta_xpos[i_shot]] = True
@@ -1287,10 +1294,8 @@ class LocalRefiner(BaseRefiner):
         return vals
 
     def _get_eta(self, i_shot):
-        val = self.Xall[self.eta_xpos[i_shot]]
-        sig = self.eta_sigma
-        init = self.eta_init[i_shot]
-        val = np_exp(sig*(val-1))*init
+        xval = self.Xall[self.eta_xpos[i_shot]]
+        val = self.eta_params[i_shot].get_val(xval)
         return val
 
     def _get_spot_scale(self, i_shot):
@@ -1502,22 +1507,25 @@ class LocalRefiner(BaseRefiner):
     def _update_eta(self):
         if self.update_eta or self.refine_eta:  # TODO think of a better interface
             eta_val = self._get_eta(self._i_shot)
+            Umats_dblprime = None
             if self.S.Umats_method==1:
                 from simtbx.nanoBragg.tst_gaussian_mosaicity2 import run_uniform
                 Umats, Umats_prime = run_uniform(eta_val, self.D.mosaic_domains)
             elif self.S.Umats_method in [2,3, 4]:
                 Umats,Umats_prime,Umats_dblprime = self.S.Umats(eta_val,
+                                                            n_mos_doms=self.S.crystal.n_mos_domains,
                                                             crystal=self.crystal_for_mosaicity_model,
                                                             method=2,
                                                             angles_per_axis=self.S.crystal.mos_angles_per_axis,
-                                                            num_axes=self.S.crystal.num_mos_axes,
-                                                            return_second_deriv=True)
+                                                            num_axes=self.S.crystal.num_mos_axes)
             else:
                 raise ValueError("Wrong umats method, should be 1 or 2")
             self.print("updating ETA as %f deg sampled from %d blocks from method %d" %
                        (eta_val, self.D.mosaic_domains, self.S.Umats_method))
             self.D.set_mosaic_blocks(Umats)
             self.D.set_mosaic_blocks_prime(Umats_prime)
+            if Umats_dblprime is not None:# and self.compute_curvatures:
+                self.D.set_mosaic_blocks_dbl_prime(Umats_dblprime)
             self.D.vectorize_umats()
 
     def _set_background_plane(self, i_spot):
@@ -1703,6 +1711,8 @@ class LocalRefiner(BaseRefiner):
 
         if self.refine_eta:
             self._eta_deriv = self.D.get_derivative_pixels(self._eta_id).as_numpy_array()[:npix]
+            if self.calc_curvatures:
+                self._eta_second_deriv = self.D.get_second_derivative_pixels(self._eta_id).as_numpy_array()[:npix]
 
     def _extract_sausage_derivs(self):
         if self.refine_blueSausages:
@@ -2391,15 +2401,15 @@ class LocalRefiner(BaseRefiner):
             derivs.append(d)
         return derivs
 
-    def _get_ucell_second_derivatives(self, first_deriv=None):
+    def _get_ucell_second_derivatives(self):
         second_derivs = []
         for i_ucell in range(self.n_ucell_param):
             d2 = self.ucell_d2I_dtheta2[i_ucell]
             if self.rescale_params:
                 if self.use_ucell_ranges:
+                    d = self.ucell_dI_dtheta[i_ucell]
                     xpos = self.ucell_xstart[self._i_shot] + i_ucell
                     xval = self.Xall[xpos]
-                    d = first_deriv[i_ucell]
                     d2 = self.ucell_params[self._i_shot][i_ucell].get_second_deriv(xval, d, d2)
                 else:
                     sigma_squared = self.ucell_sigmas[i_ucell]**2
@@ -2411,7 +2421,7 @@ class LocalRefiner(BaseRefiner):
         if self.refine_Bmatrix:
             # unit cell derivative
             derivs = self._get_ucell_first_derivatives()
-            second_derivs = self._get_ucell_second_derivatives(first_deriv=derivs)
+            second_derivs = self._get_ucell_second_derivatives()#first_deriv=derivs)
             for i_ucell in range(self.n_ucell_param):
                 xpos = self.ucell_xstart[self._i_shot] + i_ucell
                 d = derivs[i_ucell]
@@ -2630,17 +2640,13 @@ class LocalRefiner(BaseRefiner):
     def _eta_derivatives(self):
         if self.refine_eta:
             dI_dtheta = self.G2*self.scale_fac*self._eta_deriv[self.roi_slice]
-            # second derivative is 0 with respect to scale factor
-            sig = self.eta_sigma
-            eta_val = self._get_eta(self._i_shot)
-            # case 2 type rescaling
-            d = dI_dtheta * eta_val * sig
-            #d2 = dI_dtheta * (self.scale_fac * sig * sig)
-            d2 = 0
-
             xpos = self.eta_xpos[self._i_shot]
+            xval = self.Xall[xpos]
+            d = self.eta_params[self._i_shot].get_deriv(xval, dI_dtheta)
             self.grad[xpos] += self._grad_accumulate(d)
             if self.calc_curvatures:
+                d2I_dtheta2 = self.G2 * self.scale_fac * self._eta_second_deriv[self.roi_slice]
+                d2 = self.eta_params[self._i_shot].get_second_deriv(xval, dI_dtheta, d2I_dtheta2)
                 self.curv[xpos] += self._curv_accumulate(d, d2)
 
     def _per_spot_scale_derivatives(self):

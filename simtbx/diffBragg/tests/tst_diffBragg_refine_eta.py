@@ -3,7 +3,9 @@ from argparse import ArgumentParser
 parser = ArgumentParser()
 parser.add_argument("--plot", action="store_true")
 parser.add_argument("--finitediff", action="store_true")
+parser.add_argument("--curvatures", action="store_true")
 parser.add_argument("--cuda", action="store_true")
+parser.add_argument("--testUpperBound", action="store_true")
 args = parser.parse_args()
 
 from dxtbx.model.crystal import Crystal
@@ -69,7 +71,7 @@ SIM = SimData()
 SIM.Umats_method = 2
 SIM.detector = DET_gt
 SIM.crystal = nbcryst
-SIM.instantiate_diffBragg(oversample=1, verbose=0)
+SIM.instantiate_diffBragg(oversample=1, verbose=1)
 if args.finitediff:
   SIM.D.refine(eta_diffBragg_id)
   SIM.D.initialize_managers()
@@ -86,6 +88,8 @@ SIM.D.add_diffBragg_spots()
 
 if args.finitediff:
   deriv = SIM.D.get_derivative_pixels(eta_diffBragg_id).as_numpy_array()
+  if args.curvatures:
+    deriv2 = SIM.D.get_second_derivative_pixels(eta_diffBragg_id).as_numpy_array()
   SPOTS = SIM.D.raw_pixels_roi.as_numpy_array()
 else:
   SPOTS = SIM.D.raw_pixels.as_numpy_array()
@@ -102,6 +106,8 @@ SIM.D.raw_pixels *= 0
 if args.finitediff:
   all_errors = []
   all_shifts = []
+  all_errors2 = []
+  all_shifts2 = []
   for finite_diff_step in [1, 2, 4, 8, 16]:
     # update Umats to do finite difference test
     delta_eta = 0.0001*finite_diff_step
@@ -116,7 +122,24 @@ if args.finitediff:
     error = (np.abs(fdiff[bragg] - deriv[bragg])).mean()
     all_errors.append(error)
     all_shifts.append(delta_eta)
-    print("Error:", error, "shift:", delta_eta)
+    if args.curvatures:
+      SIM.update_umats(MOS_SPREAD - delta_eta, N_MOS_DOMAINS)
+      all_shifts2.append(delta_eta ** 2)
+
+      SIM.D.raw_pixels_roi *= 0
+      SIM.D.raw_pixels *= 0
+      SIM.D.add_diffBragg_spots()
+      img_backward = SIM.D.raw_pixels_roi.as_numpy_array()
+
+      fdiff2 = (img_forward - 2*SPOTS + img_backward) / delta_eta/ delta_eta
+
+      second_deriv = deriv2
+      error2 = (np.abs(fdiff2[bragg] - second_deriv[bragg]) / 1).mean()
+      all_errors2.append(error2)
+
+    print("\n\n<><><><><><><><>\n\tError:", error, "shift:", delta_eta)
+    if args.curvatures:
+      print("\terror2=%f, step=%f\n<><><><><><><><>\n\n" % (error2, delta_eta))
 
   from scipy.stats import linregress
   l = linregress(all_shifts, all_errors)
@@ -125,9 +148,20 @@ if args.finitediff:
     plt.figure()
     plt.plot(all_shifts, all_errors, 'o')
     plt.show()
+    if args.curvatures:
+      plt.plot(all_shifts2, all_errors2, 'o')
+      plt.title("second finite diff error")
+      plt.xlabel("delta eta")
+      plt.show()
+
   assert l.rvalue > .99, "%f" % l.rvalue
   assert l.slope > 0, "%f" % l.slope
   assert l.pvalue < 1e-6, "%f" % l.pvalue
+  if args.curvatures:
+    l = linregress(all_shifts2, all_errors2)
+    assert l.rvalue > .9999  # this is definitely a line!
+    assert l.slope > 0
+    assert l.pvalue < 1e-6
   print("OK")
   sys.exit()
 
@@ -162,8 +196,12 @@ P.simulator.total_flux = total_flux
 P.simulator.oversample = 1
 P.refiner.max_calls = [50]
 P.refiner.tradeps = 1e-9
-P.refiner.curvatures = False
+P.refiner.curvatures = args.curvatures #False
 P.refiner.use_curvatures_threshold = 0
+if args.testUpperBound:
+  P.refiner.ranges.eta = [0, 0.8]
+else:
+  P.refiner.ranges.eta = [0, 10]
 P.refiner.poissononly = False
 P.refiner.verbose = True
 P.refiner.big_dump = False
@@ -180,6 +218,10 @@ RUC = refine_launcher.local_refiner_from_parameters(refls, E, P, miller_data=SIM
 eta_refined = RUC._get_eta(i_shot=0)
 print("Refined eta: %10.7f" % eta_refined)
 print("GT eta: %10.7f" % MOS_SPREAD)
-assert abs(eta_refined - MOS_SPREAD) < 0.01
+if args.testUpperBound:
+  assert abs(eta_refined - 0.8) < 0.01
+  print("Testing upper bound, so 0.8 is the correct answer")
+else:
+  assert abs(eta_refined - MOS_SPREAD) < 0.01
 
 print("OK")

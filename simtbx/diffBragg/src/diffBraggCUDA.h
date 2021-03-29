@@ -26,6 +26,7 @@ struct diffBragg_cudaPointers {
   CUDAREAL* cu_d_Ncells_images;
   CUDAREAL* cu_d_fcell_images;
   CUDAREAL* cu_d_eta_images;
+  CUDAREAL* cu_d2_eta_images;
   CUDAREAL* cu_d_lambda_images;
   CUDAREAL* cu_d_panel_rot_images;
   CUDAREAL* cu_d_panel_orig_images;
@@ -34,7 +35,6 @@ struct diffBragg_cudaPointers {
   CUDAREAL* cu_d2_Bmat_images;
   CUDAREAL* cu_d2_Ncells_images;
   CUDAREAL* cu_d2_fcell_images;
-  CUDAREAL* cu_d2_eta_images;
   CUDAREAL* cu_d2_lambda_images;
   CUDAREAL* cu_d2_panel_rot_images;
   CUDAREAL* cu_d2_panel_orig_images;
@@ -67,6 +67,7 @@ struct diffBragg_cudaPointers {
   Eigen::Matrix3d* cu_dB2_Mats;
   Eigen::Matrix3d* cu_UMATS_RXYZ;
   Eigen::Matrix3d* cu_UMATS_RXYZ_prime=NULL;
+  Eigen::Matrix3d* cu_UMATS_RXYZ_dbl_prime=NULL;
   Eigen::Matrix3d* cu_RotMats;
   Eigen::Matrix3d* cu_dRotMats;
   Eigen::Matrix3d* cu_d2RotMats;
@@ -99,6 +100,7 @@ void diffBragg_loopy(
         image_type& d_Ncells_images, image_type& d2_Ncells_images,
         image_type& d_fcell_images, image_type& d2_fcell_images,
         image_type& d_eta_images,
+        image_type& d2_eta_images,
         image_type& d_lambda_images, image_type& d2_lambda_images,
         image_type& d_panel_rot_images, image_type& d2_panel_rot_images,
         image_type& d_panel_orig_images, image_type& d2_panel_orig_images,
@@ -112,6 +114,7 @@ void diffBragg_loopy(
         eigVec3_vec& dS_vecs,
         eigMat3_vec& UMATS_RXYZ,
         eigMat3_vec& UMATS_RXYZ_prime,
+        eigMat3_vec& UMATS_RXYZ_dbl_prime,
         eigMat3_vec& RotMats,
         eigMat3_vec& dRotMats,
         eigMat3_vec& d2RotMats,

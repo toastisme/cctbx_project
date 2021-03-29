@@ -9,6 +9,7 @@ void gpu_sum_over_steps(
         CUDAREAL* d_Ncells_images, CUDAREAL* d2_Ncells_images,
         CUDAREAL* d_fcell_images, CUDAREAL* d2_fcell_images,
         CUDAREAL* d_eta_images,
+        CUDAREAL* d2_eta_images,
         CUDAREAL* d_lambda_images, CUDAREAL* d2_lambda_images,
         CUDAREAL* d_panel_rot_images, CUDAREAL* d2_panel_rot_images,
         CUDAREAL* d_panel_orig_images, CUDAREAL* d2_panel_orig_images,
@@ -23,6 +24,7 @@ void gpu_sum_over_steps(
         VEC3* dS_vecs,
         const MAT3* __restrict__ UMATS_RXYZ,
         MAT3* UMATS_RXYZ_prime,
+        MAT3* UMATS_RXYZ_dbl_prime,
         MAT3* RotMats,
         MAT3* dRotMats,
         MAT3* d2RotMats,
@@ -207,6 +209,7 @@ void gpu_sum_over_steps(
         double fcell_manager_dI=0;
         double fcell_manager_dI2=0;
         double eta_manager_dI = 0;
+        double eta_manager_dI2 = 0;
         double lambda_manager_dI[2] = {0,0};
         double lambda_manager_dI2[2] = {0,0};
 
@@ -548,8 +551,18 @@ void gpu_sum_over_steps(
             if (s_refine_eta){
                 VEC3 DeltaH_deriv = (UMATS_RXYZ_prime[_mos_tic]*UBOt).transpose()*q_vec;
                 // vector V is _Nabc*Delta_H
-                CUDAREAL value = -two_C*(V.dot(_NABC*DeltaH_deriv))*Iincrement;
-                eta_manager_dI += value;
+                VEC3 dV = _NABC*DeltaH_deriv;
+                CUDAREAL V_dot_dV = V.dot(dV);
+                CUDAREAL Iprime = -two_C*(V_dot_dV)*Iincrement;
+                eta_manager_dI += Iprime;
+                CUDAREAL Idbl_prime=0;
+                if (s_compute_curvatures){
+                    VEC3 DeltaH_second_deriv = (UMATS_RXYZ_dbl_prime[_mos_tic]*UBOt).transpose()*q_vec;
+                    VEC3 dV2 = _NABC*DeltaH_second_deriv;
+                    Idbl_prime = -two_C*(dV.dot(dV) + V.dot(dV2))*Iincrement;
+                    Idbl_prime += -two_C*(V_dot_dV)*Iprime;
+                }
+                eta_manager_dI2 += Idbl_prime;
             } // end of eta man deriv
 
               // sausage deriv
@@ -787,8 +800,9 @@ void gpu_sum_over_steps(
         // update eta derivative image
         if(s_refine_eta){
             CUDAREAL value = _scale_term*eta_manager_dI;
-            CUDAREAL value2 = 0;
+            CUDAREAL value2 = _scale_term*eta_manager_dI2;
             d_eta_images[i_pix] = value;
+            d2_eta_images[i_pix] = value2;
         }// end eta deriv image increment
 
         //update the lambda derivative images

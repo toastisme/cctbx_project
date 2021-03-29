@@ -30,7 +30,7 @@ void diffBragg_loopy(
         image_type& d_Bmat_images, image_type& d2_Bmat_images,
         image_type& d_Ncells_images, image_type& d2_Ncells_images,
         image_type& d_fcell_images, image_type& d2_fcell_images,
-        image_type& d_eta_images,
+        image_type& d_eta_images, image_type& d2_eta_images,
         image_type& d_lambda_images, image_type& d2_lambda_images,
         image_type& d_panel_rot_images, image_type& d2_panel_rot_images,
         image_type& d_panel_orig_images, image_type& d2_panel_orig_images,
@@ -44,6 +44,7 @@ void diffBragg_loopy(
         std::vector<VEC3,Eigen::aligned_allocator<VEC3> >& dS_vecs,
         std::vector<MAT3,Eigen::aligned_allocator<MAT3> >& UMATS_RXYZ,
         std::vector<MAT3,Eigen::aligned_allocator<MAT3> >& UMATS_RXYZ_prime,
+        std::vector<MAT3,Eigen::aligned_allocator<MAT3> >& UMATS_RXYZ_dbl_prime,
         std::vector<MAT3,Eigen::aligned_allocator<MAT3> >& RotMats,
         std::vector<MAT3,Eigen::aligned_allocator<MAT3> >& dRotMats,
         std::vector<MAT3,Eigen::aligned_allocator<MAT3> >& d2RotMats,
@@ -144,6 +145,8 @@ void diffBragg_loopy(
         gpuErr(cudaMallocManaged((void **)&cp.cu_AMATS, UMATS_RXYZ.size()*sausages_U.size()*sizeof(MAT3)));
         if (UMATS_RXYZ_prime.size()>0)
             gpuErr(cudaMallocManaged((void **)&cp.cu_UMATS_RXYZ_prime, UMATS_RXYZ_prime.size()*sizeof(MAT3)));
+        if (UMATS_RXYZ_dbl_prime.size()>0)
+            gpuErr(cudaMallocManaged((void **)&cp.cu_UMATS_RXYZ_dbl_prime, UMATS_RXYZ_dbl_prime.size()*sizeof(MAT3)));
 
         gpuErr(cudaMallocManaged((void **)&cp.cu_dB_Mats, dB_Mats.size()*sizeof(MAT3)));
         gpuErr(cudaMallocManaged((void **)&cp.cu_dB2_Mats, dB2_Mats.size()*sizeof(MAT3)));
@@ -180,6 +183,7 @@ void diffBragg_loopy(
         gpuErr(cudaMallocManaged(&cp.cu_floatimage, Npix_to_allocate*sizeof(CUDAREAL) ));
         gpuErr(cudaMallocManaged(&cp.cu_d_fcell_images, Npix_to_allocate*sizeof(CUDAREAL)));
         gpuErr(cudaMallocManaged(&cp.cu_d_eta_images, Npix_to_allocate*sizeof(CUDAREAL)));
+        gpuErr(cudaMallocManaged(&cp.cu_d2_eta_images, Npix_to_allocate*sizeof(CUDAREAL)));
         gpuErr(cudaMallocManaged(&cp.cu_d_Umat_images, Npix_to_allocate*3*sizeof(CUDAREAL) ));
         gpuErr(cudaMallocManaged(&cp.cu_d_Ncells_images, Npix_to_allocate*6*sizeof(CUDAREAL)));
         gpuErr(cudaMallocManaged(&cp.cu_d_panel_rot_images, Npix_to_allocate*3*sizeof(CUDAREAL)));
@@ -250,6 +254,8 @@ void diffBragg_loopy(
             cp.cu_UMATS_RXYZ[i] = UMATS_RXYZ[i];
         for (int i=0; i < UMATS_RXYZ_prime.size(); i++)
             cp.cu_UMATS_RXYZ_prime[i] = UMATS_RXYZ_prime[i];
+        for (int i=0; i < UMATS_RXYZ_dbl_prime.size(); i++)
+            cp.cu_UMATS_RXYZ_dbl_prime[i] = UMATS_RXYZ_dbl_prime[i];
         if(verbose>1)
             printf("H2D Done copying Umats\n") ;
     }
@@ -396,7 +402,7 @@ void diffBragg_loopy(
         cp.cu_d_Bmat_images, cp.cu_d2_Bmat_images,
         cp.cu_d_Ncells_images, cp.cu_d2_Ncells_images,
         cp.cu_d_fcell_images, cp.cu_d2_fcell_images,
-        cp.cu_d_eta_images,
+        cp.cu_d_eta_images, cp.cu_d2_eta_images,
         cp.cu_d_lambda_images, cp.cu_d2_lambda_images,
         cp.cu_d_panel_rot_images, cp.cu_d2_panel_rot_images,
         cp.cu_d_panel_orig_images, cp.cu_d2_panel_orig_images,
@@ -411,6 +417,7 @@ void diffBragg_loopy(
         cp.cu_dS_vecs,
         cp.cu_UMATS_RXYZ,
         cp.cu_UMATS_RXYZ_prime,
+        cp.cu_UMATS_RXYZ_dbl_prime,
         cp.cu_RotMats,
         cp.cu_dRotMats,
         cp.cu_d2RotMats,
@@ -454,6 +461,7 @@ void diffBragg_loopy(
     for (int i=0; i< Npix_to_model; i++){
         floatimage[i] = cp.cu_floatimage[i];
         d_eta_images[i] = cp.cu_d_eta_images[i];
+        d2_eta_images[i] = cp.cu_d2_eta_images[i];
         d_fcell_images[i] = cp.cu_d_fcell_images[i];
     }
     for (int i=0; i<3*Npix_to_model; i++){
@@ -494,6 +502,7 @@ void freedom(diffBragg_cudaPointers& cp){
         gpuErr(cudaFree( cp.cu_d2_Bmat_images));
         gpuErr(cudaFree( cp.cu_d2_Ncells_images));
         gpuErr(cudaFree( cp.cu_d_eta_images));
+        gpuErr(cudaFree( cp.cu_d2_eta_images));
         gpuErr(cudaFree( cp.cu_d_fcell_images));
         gpuErr(cudaFree( cp.cu_d_lambda_images));
         gpuErr(cudaFree( cp.cu_d_panel_rot_images));
@@ -520,6 +529,8 @@ void freedom(diffBragg_cudaPointers& cp){
         gpuErr(cudaFree(cp.cu_AMATS));
         if(cp.cu_UMATS_RXYZ_prime != NULL)
             gpuErr(cudaFree(cp.cu_UMATS_RXYZ_prime));
+        if(cp.cu_UMATS_RXYZ_dbl_prime != NULL)
+            gpuErr(cudaFree(cp.cu_UMATS_RXYZ_dbl_prime));
         gpuErr(cudaFree(cp.cu_RotMats));
         gpuErr(cudaFree(cp.cu_dRotMats));
         gpuErr(cudaFree(cp.cu_d2RotMats));
