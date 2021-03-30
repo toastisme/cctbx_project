@@ -154,7 +154,7 @@ class LocalRefinerLauncher:
         n_unitcell_params = len(UcellMan.variables)
         n_spotscale_params = 1
         n_originZ_params = 1
-        n_eta_params = 1
+        n_eta_params = 3
         n_tilt_params = 3 * len(shot_data.nanoBragg_rois)
         n_sausage_params = 4*self.params.simulator.crystal.num_sausages
         n_perspot_param = len(shot_data.nanoBragg_rois)
@@ -437,7 +437,14 @@ class LocalRefinerLauncher:
 
     def _initialize_some_refinement_parameters(self):
         self.RUC.spot_scale_init = {0: self.params.refiner.init.spot_scale}  # self.spot_scale_init
-        self.RUC.eta_init = {0: self.params.simulator.crystal.mosaicity}
+        # eta_init in the refiner is a 3-tuple (6-tuple not yet supported)
+        if self.params.simulator.crystal.anisotropic_mosaicity is None:
+            eta_init = [self.params.simulator.crystal.mosaicity, 0, 0]
+        else:
+            eta_init = self.params.simulator.crystal.anisotropic_mosaicity
+            if len(eta_init) == 6:
+                raise NotImplementedError("No support for 6 parameter mosaic model")
+        self.RUC.eta_init = {0: eta_init}
         # MOSAICBLOCK
         m_init = self.params.simulator.crystal.ncells_abc
         if self.n_ncells_param == 2:

@@ -42,7 +42,7 @@ class BaseRefiner:
         self.sausages_sigma = [1, 1, 1, 1]  # relative senstivity factor for each sausage parameter (rotX, rotY, rotZ, scale)
 
         self.refine_eta = False  # refine the mosaic spread angle
-        self.eta_init = {0: 0}  # initialize the mosaic spread angle
+        self.eta_init = {0: [0,0,0]}  # initialize the mosaic spread angles
         self.eta_sigma = 1  # sensitivity of mosaic spread
         self.eta_min = 0  # minimum mosaic spread should always be 0
         self.eta_max = 10  # maximum mosaic spread in degrees

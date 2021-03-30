@@ -80,8 +80,8 @@ void diffBragg::diffBragg_sum_over_steps(
         double pan_rot_manager_dI2[3]= {0,0,0};
         double fcell_manager_dI=0;
         double fcell_manager_dI2=0;
-        double eta_manager_dI = 0;
-        double eta_manager_dI2 = 0;
+        double eta_manager_dI[3] = {0,0,0};
+        double eta_manager_dI2[3] = {0,0,0};
         double lambda_manager_dI[2] = {0,0};
         double lambda_manager_dI2[2] = {0,0};
         std::vector<double> sausage_manager_dI(num_sausages*4,0);
@@ -429,21 +429,27 @@ void diffBragg::diffBragg_sum_over_steps(
 
             /* checkpoint for eta manager */
             if (refine_eta){
-                Eigen::Vector3d DeltaH_deriv = (UMATS_RXYZ_prime[_mos_tic]*UBOt).transpose()*q_vec;
-                // vector V is _Nabc*Delta_H
-                Eigen::Vector3d dV = _NABC*DeltaH_deriv;
-                double V_dot_dV = V.dot(dV);
-                double Iprime = -two_C*(V_dot_dV)*Iincrement;
-                eta_manager_dI += Iprime;
+                for (int i_eta=0; i_eta < 3; i_eta++){
+                    if (i_eta != 0 && UMATS_RXYZ_prime.size()==UMATS_RXYZ.size()){
+                        continue;
+                    }
+                    int mtic2 = _mos_tic  + i_eta*mosaic_domains;
+                    Eigen::Vector3d DeltaH_deriv = (UMATS_RXYZ_prime[mtic2]*UBOt).transpose()*q_vec;
+                    // vector V is _Nabc*Delta_H
+                    Eigen::Vector3d dV = _NABC*DeltaH_deriv;
+                    double V_dot_dV = V.dot(dV);
+                    double Iprime = -two_C*(V_dot_dV)*Iincrement;
+                    eta_manager_dI[i_eta] += Iprime;
 
-                double Idbl_prime = 0;
-                if (compute_curvatures){
-                    Eigen::Vector3d DeltaH_second_deriv = (UMATS_RXYZ_dbl_prime[_mos_tic]*UBOt).transpose()*q_vec;
-                    Eigen::Vector3d dV2 = _NABC*DeltaH_second_deriv;
-                    Idbl_prime = -two_C*(dV.dot(dV) + V.dot(dV2))*Iincrement;
-                    Idbl_prime += -two_C*(V_dot_dV)*Iprime;
+                    double Idbl_prime = 0;
+                    if (compute_curvatures){
+                        Eigen::Vector3d DeltaH_second_deriv = (UMATS_RXYZ_dbl_prime[mtic2]*UBOt).transpose()*q_vec;
+                        Eigen::Vector3d dV2 = _NABC*DeltaH_second_deriv;
+                        Idbl_prime = -two_C*(dV.dot(dV) + V.dot(dV2))*Iincrement;
+                        Idbl_prime += -two_C*(V_dot_dV)*Iprime;
+                    }
+                    eta_manager_dI2[i_eta] += Idbl_prime;
                 }
-                eta_manager_dI2 += Idbl_prime;
             } /* end of eta man deriv */
 
             // sausage deriv
@@ -653,10 +659,21 @@ void diffBragg::diffBragg_sum_over_steps(
 
         /* update eta derivative image */
         if(refine_eta){
-            double value = _scale_term*eta_manager_dI;
-            double value2 = _scale_term*eta_manager_dI2;
-            d_eta_images[i_pix] = value;
-            d2_eta_images[i_pix] = value2;
+            //double value = _scale_term*eta_manager_dI[0];
+            //double value2 = _scale_term*eta_manager_dI2[0];
+            //d_eta_images[i_pix] = value;
+            //d2_eta_images[i_pix] = value2;
+            //if (UMATS_RXYZ_prime.size() >= 3*mosaic_domains){
+            for(int i_eta=0; i_eta<3; i_eta++){
+                if (i_eta != 0 && UMATS_RXYZ.size() == UMATS_RXYZ_prime.size())
+                    continue;
+                int idx = i_pix + Npix_to_model*i_eta;
+                double value = _scale_term*eta_manager_dI[i_eta];
+                double value2 = _scale_term*eta_manager_dI2[i_eta];
+                d_eta_images[idx] = value;
+                d2_eta_images[idx] = value2;
+            }
+            //}
         }/* end eta deriv image increment */
 
         /*update the lambda derivative images*/

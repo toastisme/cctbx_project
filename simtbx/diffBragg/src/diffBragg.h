@@ -261,6 +261,8 @@ class diffBragg: public nanoBragg{
   boost::python::tuple get_ncells_def_derivative_pixels();
   boost::python::tuple get_ncells_def_second_derivative_pixels();
   boost::python::tuple get_ncells_second_derivative_pixels();
+  boost::python::tuple get_aniso_eta_deriv_pixels();
+  boost::python::tuple get_aniso_eta_second_deriv_pixels();
 
   boost::python::tuple get_lambda_derivative_pixels();
 
@@ -316,6 +318,8 @@ class diffBragg: public nanoBragg{
   //std::vector<Eigen::Matrix3d> UMATS_prime;
   //std::vector<Eigen::Matrix3d> UMATS_RXYZ_prime;
   double * mosaic_umats_prime;
+  int nmats; // the number of mosaic umat derivative matrices (can be 3x the number of mosaic domains)
+
   double * mosaic_umats_dbl_prime;
   void set_mosaic_blocks_prime(af::shared<mat3> umat_in);  // set the individual mosaic block orientation derivatives from array
   void set_mosaic_blocks_dbl_prime(af::shared<mat3> umat_in);  // set the individual mosaic block orientation derivatives from array
@@ -331,7 +335,8 @@ class diffBragg: public nanoBragg{
   std::vector<boost::shared_ptr<lambda_manager> > lambda_managers;
   std::vector<boost::shared_ptr<panel_manager> > panels;
   boost::shared_ptr<Fcell_manager> fcell_man;
-  boost::shared_ptr<eta_manager> eta_man;
+  std::vector<boost::shared_ptr<eta_manager> > eta_managers;
+  //boost::shared_ptr<eta_manager> eta_man;
   boost::shared_ptr<panel_manager> panel_rot_man;
   boost::shared_ptr<panel_manager> panel_rot_manF;
   boost::shared_ptr<panel_manager> panel_rot_manS;
@@ -404,6 +409,7 @@ class diffBragg: public nanoBragg{
   double F_cell2; // for storing the imaginary component
 
   bool isotropic_ncells;
+  bool modeling_anisotropic_mosaic_spread;
   double Nd, Ne, Nf;
   bool refine_Ncells_def;
 

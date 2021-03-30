@@ -887,8 +887,10 @@ def simulator_from_expt_and_params(expt, params=None, oversample=0, device_id=0,
 
         spectra_file = params.simulator.spectrum.filename
         spectra_stride = params.simulator.spectrum.stride
+        aniso_mos_spread = params.simulator.crystal.anisotropic_mosaicity
     else:
         ncells_def = None
+        aniso_mos_spread = None
 
     if has_isotropic_ncells:
         if len(set(ncells_abc)) != 1 :
@@ -914,6 +916,7 @@ def simulator_from_expt_and_params(expt, params=None, oversample=0, device_id=0,
     crystal.Ncells_abc = tuple(ncells_abc)  #params.simulator.init_ncells_abc
     if ncells_def is not None:
         crystal.Ncells_def = tuple(ncells_def)  #params.simulator.init_ncells_abc
+    crystal.anisotropic_mos_spread_deg = aniso_mos_spread
     crystal.n_mos_domains = num_mosaicity_samples
     crystal.mos_spread_deg = mosaicity
     if params is not None:
@@ -927,8 +930,8 @@ def simulator_from_expt_and_params(expt, params=None, oversample=0, device_id=0,
         miller_data = open_mtz(mtz_name, mtz_column)
     crystal.miller_array = miller_data
     SIM.crystal = crystal
-    if params is not None:
-        SIM.Umats_method = params.simulator.crystal.mosaicity_method
+    #if params is not None:
+    #    SIM.Umats_method = params.simulator.crystal.mosaicity_method
 
     # create a nanoBragg beam
     beam = NBbeam()

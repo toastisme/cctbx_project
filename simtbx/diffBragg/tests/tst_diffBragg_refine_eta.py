@@ -6,6 +6,7 @@ parser.add_argument("--finitediff", action="store_true")
 parser.add_argument("--curvatures", action="store_true")
 parser.add_argument("--cuda", action="store_true")
 parser.add_argument("--testUpperBound", action="store_true")
+parser.add_argument("--aniso", type=int, choices=[0,1,2], default=None)
 args = parser.parse_args()
 
 from dxtbx.model.crystal import Crystal
@@ -25,6 +26,7 @@ ucell = (79, 79, 38, 90, 90, 90)
 symbol = "P43212"
 N_MOS_DOMAINS = 100
 MOS_SPREAD = 1
+ANISO_MOS_SPREAD = 0.5, 0.75, 1
 eta_diffBragg_id = 19
 
 miller_array_GT = fcalc_from_pdb(resolution=2, wavelength=1, algorithm='fft', ucell=ucell, symbol=symbol)
@@ -59,6 +61,10 @@ nbcryst.dxtbx_crystal = C   # simulate ground truth
 nbcryst.thick_mm = 0.1
 nbcryst.Ncells_abc = Ncells_gt  # ground truth Ncells
 nbcryst.mos_spread_deg = MOS_SPREAD
+if args.aniso is not None:
+  nbcryst.anisotropic_mos_spread_deg = ANISO_MOS_SPREAD
+  assert nbcryst.has_anisotropic_mosaicity
+
 nbcryst.n_mos_domains = N_MOS_DOMAINS
 nbcryst.miller_array = miller_array_GT
 print("Ground truth ncells = %f" % (nbcryst.Ncells_abc[0]))
@@ -68,7 +74,10 @@ DET_gt = SimData.simple_detector(150, 0.177, (600, 600))
 
 # initialize the simulator
 SIM = SimData()
-SIM.Umats_method = 2
+if args.aniso is None:
+  SIM.Umats_method = 2
+else:
+  SIM.Umats_method = 3
 SIM.detector = DET_gt
 SIM.crystal = nbcryst
 SIM.instantiate_diffBragg(oversample=1, verbose=1)
@@ -87,9 +96,16 @@ SIM.D.use_cuda= args.cuda
 SIM.D.add_diffBragg_spots()
 
 if args.finitediff:
-  deriv = SIM.D.get_derivative_pixels(eta_diffBragg_id).as_numpy_array()
+  if args.aniso is None:
+    deriv = SIM.D.get_derivative_pixels(eta_diffBragg_id).as_numpy_array()
+  else:
+    deriv = SIM.D.get_aniso_eta_deriv_pixels()[args.aniso].as_numpy_array()
+
   if args.curvatures:
-    deriv2 = SIM.D.get_second_derivative_pixels(eta_diffBragg_id).as_numpy_array()
+    if args.aniso is None:
+      deriv2 = SIM.D.get_second_derivative_pixels(eta_diffBragg_id).as_numpy_array()
+    else:
+      deriv2 = SIM.D.get_aniso_eta_second_deriv_pixels()[args.aniso].as_numpy_array()
   SPOTS = SIM.D.raw_pixels_roi.as_numpy_array()
 else:
   SPOTS = SIM.D.raw_pixels.as_numpy_array()
@@ -110,8 +126,17 @@ if args.finitediff:
   all_shifts2 = []
   for finite_diff_step in [1, 2, 4, 8, 16]:
     # update Umats to do finite difference test
-    delta_eta = 0.0001*finite_diff_step
-    SIM.update_umats(MOS_SPREAD + delta_eta, N_MOS_DOMAINS)
+    delta_eta = 0.001*finite_diff_step
+
+    if args.aniso is not None:
+      eta_update = list(ANISO_MOS_SPREAD)
+      eta_update[args.aniso] = eta_update[args.aniso]+ delta_eta
+      crystal = nbcryst.dxtbx_crystal
+    else:
+      eta_update = MOS_SPREAD + delta_eta
+      crystal = None
+
+    SIM.update_umats(eta_update, N_MOS_DOMAINS, crystal=crystal)
     SIM.D.add_diffBragg_spots()
 
     img_forward = SIM.D.raw_pixels_roi.as_numpy_array()
@@ -123,7 +148,17 @@ if args.finitediff:
     all_errors.append(error)
     all_shifts.append(delta_eta)
     if args.curvatures:
-      SIM.update_umats(MOS_SPREAD - delta_eta, N_MOS_DOMAINS)
+
+      if args.aniso is not None:
+        eta_update = list(ANISO_MOS_SPREAD)
+        eta_update[args.aniso] = eta_update[args.aniso] - delta_eta
+        crystal = nbcryst.dxtbx_crystal
+      else:
+        eta_update = MOS_SPREAD - delta_eta
+        crystal= None
+
+      SIM.update_umats(eta_update, N_MOS_DOMAINS, crystal=crystal)
+
       all_shifts2.append(delta_eta ** 2)
 
       SIM.D.raw_pixels_roi *= 0
@@ -216,6 +251,7 @@ P.refiner.ncells_mask = "111"
 
 RUC = refine_launcher.local_refiner_from_parameters(refls, E, P, miller_data=SIM.crystal.miller_array)
 eta_refined = RUC._get_eta(i_shot=0)
+eta_refined = eta_refined[0]
 print("Refined eta: %10.7f" % eta_refined)
 print("GT eta: %10.7f" % MOS_SPREAD)
 if args.testUpperBound:

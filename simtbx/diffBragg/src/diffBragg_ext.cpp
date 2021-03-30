@@ -249,6 +249,10 @@ namespace boost_python { namespace {
 
       .def("get_ncells_def_derivative_pixels", &simtbx::nanoBragg::diffBragg::get_ncells_def_derivative_pixels, "get derivatives of intensity w.r.t (Nd, Ne, Nf)")
 
+      .def("get_aniso_eta_deriv_pixels", &simtbx::nanoBragg::diffBragg::get_aniso_eta_deriv_pixels, "get derivatives of intensity w.r.t anisotropic mosaicity model")
+
+      .def("get_aniso_eta_second_deriv_pixels", &simtbx::nanoBragg::diffBragg::get_aniso_eta_second_deriv_pixels, "get second derivatives of intensity w.r.t anisotropic mosaicity model")
+
       .def("get_ncells_def_second_derivative_pixels", &simtbx::nanoBragg::diffBragg::get_ncells_def_second_derivative_pixels, "get 2nd derivatives of intensity w.r.t (Nd, Ne, Nf)")
 
       .def("get_ncells_second_derivative_pixels", &simtbx::nanoBragg::diffBragg::get_ncells_second_derivative_pixels, "get second derivatives of intensity w.r.t (Na, Nb, Nc)")
@@ -384,6 +388,11 @@ namespace boost_python { namespace {
                      make_getter(&simtbx::nanoBragg::diffBragg::isotropic_ncells,rbv()),
                      make_setter(&simtbx::nanoBragg::diffBragg::isotropic_ncells,dcp()),
                      "refine (Na, Nb, Nc) as three independent parameters")
+
+      .add_property("has_anisotropic_mosaic_spread",
+                     make_getter(&simtbx::nanoBragg::diffBragg::modeling_anisotropic_mosaic_spread,rbv()),
+                     make_setter(&simtbx::nanoBragg::diffBragg::modeling_anisotropic_mosaic_spread,dcp()),
+                     "compute derivatives for a single mosaic spread parameter")
 
       .add_property("use_lambda_coefficients",
                      make_getter(&simtbx::nanoBragg::diffBragg::use_lambda_coefficients,rbv()),

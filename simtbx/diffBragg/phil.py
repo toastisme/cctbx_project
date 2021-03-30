@@ -32,6 +32,9 @@ simulator {
     mosaicity = 0
       .type = float
       .help = mosaic spread in degrees
+    anisotropic_mosaicity = None
+      .type = floats
+      .help = mosaic spread 3-tuple or 6-tuple specifying anisotropic mosaicity
     num_mosaicity_samples = 1
       .type = int
       .help = the number of mosaic domains to use when simulating mosaic spread

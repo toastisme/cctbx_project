@@ -3,6 +3,7 @@ from __future__ import absolute_import, division, print_function
 import time
 import warnings
 from simtbx.nanoBragg.anisotropic_mosaicity import generate_Umats
+from collections import Iterable
 warnings.filterwarnings("ignore")
 
 class Bcolors:
@@ -464,7 +465,7 @@ class LocalRefiner(BaseRefiner):
         self.ncells_def_xstart = {}
         self.detector_distance_xpos = {}
         self.spot_scale_xpos = {}
-        self.eta_xpos = {}
+        self.eta_xstart = {}
         self.eta_params = {}
         self.n_panels = {}
         self.bg_a_xstart = {}
@@ -660,18 +661,21 @@ class LocalRefiner(BaseRefiner):
             if self.refine_crystal_scale:
                 self.is_being_refined[self.spot_scale_xpos[i_shot]] = True
 
-            self.eta_xpos[i_shot] = _local_pos
-            _local_pos += 1
-            self.Xall[self.eta_xpos[i_shot]] = 1
-            eta_param = RangedParameter()
-            eta_param.init = self.eta_init[i_shot]
-            eta_param.sigma = self.eta_sigma
-            eta_param.minval = self.eta_min
-            eta_param.maxval = self.eta_max
-            self.eta_params[i_shot] = eta_param
-            if self.refine_eta:
-                assert self.rescale_params
-                self.is_being_refined[self.eta_xpos[i_shot]] = True
+            self.eta_xstart[i_shot] = _local_pos
+            self.eta_params[i_shot] = []
+            for i_eta in range(3):
+                xpos = self.eta_xstart[i_shot] + i_eta
+                self.Xall[xpos] = 1
+                eta_param = RangedParameter()
+                eta_param.init = self.eta_init[i_shot][i_eta]
+                eta_param.sigma = self.eta_sigma
+                eta_param.minval = self.eta_min
+                eta_param.maxval = self.eta_max
+                self.eta_params[i_shot].append(eta_param)
+                if self.refine_eta:
+                    assert self.rescale_params
+                    self.is_being_refined[xpos] = True
+            _local_pos += 3
 
             #if self.refine_per_spot_scale:
             n_spots = len(self.NANOBRAGG_ROIS[i_shot])
@@ -1294,9 +1298,14 @@ class LocalRefiner(BaseRefiner):
         return vals
 
     def _get_eta(self, i_shot):
-        xval = self.Xall[self.eta_xpos[i_shot]]
-        val = self.eta_params[i_shot].get_val(xval)
-        return val
+        vals = [0, 0, 0]
+        for i_eta in range(3):
+            xval = self.Xall[self.eta_xstart[i_shot]+ i_eta]
+            val = self.eta_params[i_shot][i_eta].get_val(xval)
+            vals[i_eta] = val
+            if not self.S.crystal.has_anisotropic_mosaicity:
+                break
+        return vals
 
     def _get_spot_scale(self, i_shot):
         xval = self.Xall[self.spot_scale_xpos[i_shot]]
@@ -1508,24 +1517,40 @@ class LocalRefiner(BaseRefiner):
         if self.update_eta or self.refine_eta:  # TODO think of a better interface
             eta_val = self._get_eta(self._i_shot)
             Umats_dblprime = None
-            if self.S.Umats_method==1:
+            if self.S.Umats_method == 1:
+                assert eta_val[1] == 0 and eta_val[2] == 0
                 from simtbx.nanoBragg.tst_gaussian_mosaicity2 import run_uniform
                 Umats, Umats_prime = run_uniform(eta_val, self.D.mosaic_domains)
-            elif self.S.Umats_method in [2,3, 4]:
+            elif self.S.Umats_method in [2, 3]:
+                if self.S.Umats_method == 2:
+                    assert eta_val[1] == eta_val[2] == 0
+                    eta_val = eta_val[0]
                 Umats,Umats_prime,Umats_dblprime = self.S.Umats(eta_val,
                                                             n_mos_doms=self.S.crystal.n_mos_domains,
                                                             crystal=self.crystal_for_mosaicity_model,
-                                                            method=2,
+                                                            method=self.S.Umats_method,
                                                             angles_per_axis=self.S.crystal.mos_angles_per_axis,
                                                             num_axes=self.S.crystal.num_mos_axes)
             else:
-                raise ValueError("Wrong umats method, should be 1 or 2")
-            self.print("updating ETA as %f deg sampled from %d blocks from method %d" %
-                       (eta_val, self.D.mosaic_domains, self.S.Umats_method))
+                raise ValueError("Wrong umats method, only support for 1,2,3")
+            if isinstance(eta_val, Iterable):
+                eta_val_s = "%.4f, %.4f, %.4f" % tuple(eta_val)
+            else:
+                eta_val_s = "%.4f" % eta_val
+            self.print("updating ETA as %s deg sampled from %d blocks from method %d" %
+                       (eta_val_s, self.D.mosaic_domains, self.S.Umats_method))
+
             self.D.set_mosaic_blocks(Umats)
+
+            if self.S.Umats_method==3:
+                Umats_prime = Umats_prime[0::3] + Umats_prime[1::3] + Umats_prime[2::3]
             self.D.set_mosaic_blocks_prime(Umats_prime)
-            if Umats_dblprime is not None:# and self.compute_curvatures:
+
+            if Umats_dblprime is not None: # and self.compute_curvatures:
+                if self.S.Umats_method == 3:
+                    Umats_dblprime = Umats_dblprime[0::3] + Umats_dblprime[1::3] + Umats_dblprime[2::3]
                 self.D.set_mosaic_blocks_dbl_prime(Umats_dblprime)
+
             self.D.vectorize_umats()
 
     def _set_background_plane(self, i_spot):
@@ -1669,6 +1694,8 @@ class LocalRefiner(BaseRefiner):
         self._panRot_second_deriv = [0, 0, 0]
         self._panXYZ_deriv = [0, 0, 0]
         self._panXYZ_second_deriv = [0, 0, 0]
+        self._eta_deriv = [0,0,0]
+        self._eta_second_deriv = [0,0,0]
         for i_pan in range(3):
             if refining_pan_rot[i_pan]:
                 rot_man_id = rot_manager_ids[i_pan]
@@ -1710,9 +1737,15 @@ class LocalRefiner(BaseRefiner):
                 self._ncells_def_second_derivs = [d.as_numpy_array()[:npix] for d in self.D.get_ncells_def_second_derivative_pixels()]
 
         if self.refine_eta:
-            self._eta_deriv = self.D.get_derivative_pixels(self._eta_id).as_numpy_array()[:npix]
+            if not self.S.crystal.has_anisotropic_mosaicity:
+                self._eta_deriv[0] = self.D.get_derivative_pixels(self._eta_id).as_numpy_array()[:npix]
+            else:
+                self._eta_deriv = [d.as_numpy_array()[:npix] for d in self.D.get_aniso_eta_deriv_pixels()]
             if self.calc_curvatures:
-                self._eta_second_deriv = self.D.get_second_derivative_pixels(self._eta_id).as_numpy_array()[:npix]
+                if not self.S.crystal.has_anisotropic_mosaicity:
+                    self._eta_second_deriv[0] = self.D.get_second_derivative_pixels(self._eta_id).as_numpy_array()[:npix]
+                else:
+                    self._eta_second_deriv = [d.as_numpy_array()[:npix] for d in self.D.get_aniso_eta_second_deriv_pixels()]
 
     def _extract_sausage_derivs(self):
         if self.refine_blueSausages:
@@ -1953,8 +1986,6 @@ class LocalRefiner(BaseRefiner):
             # reset gradient and functional
             self.target_functional = 0
             self._update_Xall_from_x()
-            #from IPython import embed
-            #embed()
 
             self.grad = flex_double(self.n_total_params)
             if self.calc_curvatures:
@@ -2140,7 +2171,11 @@ class LocalRefiner(BaseRefiner):
                     idx = i_saus * 4 + i_saus_param
                     assert self.grad[self.sausages_xpos[self._i_shot][idx]] == 0
         if not self.refine_eta:
-            assert self.grad[self.eta_xpos[self._i_shot]] == 0
+            for i_eta in range(3):
+                assert self.grad[self.eta_xstart[self._i_shot]+i_eta] == 0
+                if i_eta in [1, 2] and not self.S.crystal.has_anisotropic_mosaicity:
+                    assert self.grad[self.eta_xstart[self._i_shot] + i_eta] == 0
+
         if not self.refine_spectra:
             for i_p in range(2):
                 assert self.grad[self.spectra_coef_xstart + i_p] == 0
@@ -2640,15 +2675,18 @@ class LocalRefiner(BaseRefiner):
 
     def _eta_derivatives(self):
         if self.refine_eta:
-            dI_dtheta = self.G2*self.scale_fac*self._eta_deriv[self.roi_slice]
-            xpos = self.eta_xpos[self._i_shot]
-            xval = self.Xall[xpos]
-            d = self.eta_params[self._i_shot].get_deriv(xval, dI_dtheta)
-            self.grad[xpos] += self._grad_accumulate(d)
-            if self.calc_curvatures:
-                d2I_dtheta2 = self.G2 * self.scale_fac * self._eta_second_deriv[self.roi_slice]
-                d2 = self.eta_params[self._i_shot].get_second_deriv(xval, dI_dtheta, d2I_dtheta2)
-                self.curv[xpos] += self._curv_accumulate(d, d2)
+            for i_eta in range(3):
+                xpos = self.eta_xstart[self._i_shot] + i_eta
+                dI_dtheta = self.G2*self.scale_fac*self._eta_deriv[i_eta][self.roi_slice]
+                xval = self.Xall[xpos]
+                d = self.eta_params[self._i_shot][i_eta].get_deriv(xval, dI_dtheta)
+                self.grad[xpos] += self._grad_accumulate(d)
+                if self.calc_curvatures:
+                    d2I_dtheta2 = self.G2 * self.scale_fac * self._eta_second_deriv[i_eta][self.roi_slice]
+                    d2 = self.eta_params[self._i_shot][i_eta].get_second_deriv(xval, dI_dtheta, d2I_dtheta2)
+                    self.curv[xpos] += self._curv_accumulate(d, d2)
+                if not self.S.crystal.has_anisotropic_mosaicity:
+                    break
 
     def _per_spot_scale_derivatives(self):
         if self.refine_per_spot_scale:
@@ -3163,9 +3201,10 @@ class LocalRefiner(BaseRefiner):
 
         degree = "\u00b0"
         angstrom = "\u212b"
-        eta_val = self._get_eta(i_shot=self._i_shot)
-        scale_stats_string += u"Eta=%.3f%s, " % (eta_val, degree)
-        self.parameters.add_eta(eta_val)
+        eta_vals = self._get_eta(i_shot=self._i_shot)
+        eta_a, eta_b, eta_c = eta_vals
+        scale_stats_string += u"Eta=%.3f%s, %.3f%s, %.3f%s, " % (eta_a, degree, eta_b, degree, eta_c, degree)
+        self.parameters.add_eta(eta_vals)
         lam01 = self._get_spectra_coefficients()
         if not lam01:
             lam0, lam1 = 0,1
@@ -3479,7 +3518,7 @@ class LocalRefiner(BaseRefiner):
             bgplane = [self._get_bg_vals(i_shot, i_spot) for i_spot in range(nspots)]
 
             crystal_scale = self._get_spot_scale(i_shot)**2 * self.D.spot_scale
-            eta = self._get_eta(i_shot)
+            eta = tuple(self._get_eta(i_shot))
             proc_h5_fname = "" #self.all_proc_fnames[i_shot]
             proc_h5_idx = "" #self.all_shot_idx[i_shot]
             proc_bbox_idx = "" #self.all_proc_idx[i_shot]

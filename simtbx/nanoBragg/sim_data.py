@@ -360,7 +360,17 @@ class SimData:
         self.D.Ncells_abc_aniso = self.crystal.Ncells_abc
       if self.crystal.Ncells_def is not None:
         self.D.Ncells_def = self.crystal.Ncells_def
-      self.update_umats(self.crystal.mos_spread_deg, self.crystal.n_mos_domains)
+
+      if self.crystal.anisotropic_mos_spread_deg is not None:
+        mosaicity = self.crystal.anisotropic_mos_spread_deg
+        self.Umats_method = 3 if 3 == len(mosaicity) else 4
+        crystal=self.crystal.dxtbx_crystal
+      else:
+        mosaicity = self.crystal.mos_spread_deg
+        self.Umats_method = 2
+        crystal=None
+      self.update_umats(mosaicity, self.crystal.n_mos_domains, crystal)
+
     else:
       self.D.xtal_shape = self.crystal.xtal_shape
       self.update_Fhkl_tuple()
@@ -369,6 +379,7 @@ class SimData:
       if len(Nabc) == 1:
         Nabc = Nabc[0], Nabc[0], Nabc[0]
       self.D.Ncells_abc = Nabc
+      # TODO fix for anisotropic
       self.D.mosaic_spread_deg = self.crystal.mos_spread_deg
       self.D.mosaic_domains = self.crystal.n_mos_domains
       mos_blocks, _ = SimData.Umats(self.crystal.mos_spread_deg,
@@ -377,18 +388,35 @@ class SimData:
                                     angles_per_axis=self.crystal.mos_angles_per_axis, num_axes=self.crystal.num_mos_axes)
       self.D.set_mosaic_blocks(mos_blocks)
 
-  def update_umats(self, mos_spread, mos_domains):
+  def update_umats(self, mos_spread, mos_domains, crystal=None):
     #TODO remove arguments from this function as they are already in crystal attribute
     if not hasattr(self, "D"):
       print("Cannot set umats if diffBragg is not yet instantiated")
       return
-    self.D.mosaic_spread_deg = mos_spread
+    # TODO anisotropic case
+    if isinstance(mos_spread, Iterable):
+      # TODO does this matter ?
+      ave_spread =  sum(mos_spread) / len(mos_spread)
+      assert ave_spread > 0
+      self.D.mosaic_spread_deg = ave_spread
+      self.crystal.mos_spread_deg = ave_spread
+      self.crystal.anisotropic_mosaic_spread_deg = mos_spread
+      assert self.Umats_method in [3, 4]
+      assert crystal is not None
+      self.D.has_anisotropic_mosaic_spread = True
+    else:
+      self.D.mosaic_spread_deg = mos_spread
+      self.crystal.mos_spread_deg = mos_spread
+      self.crystal.anisotropic_mosaic_spread_deg = None
+      assert self.Umats_method in [0, 1, 2]
+      self.D.has_anisotropic_mosaic_spread = False
+
     self.D.mosaic_domains = mos_domains
-    self.crystal.mos_spread_deg = mos_spread
     self.crystal.n_mos_domains = mos_domains
     Umats_data = SimData.Umats(mos_spread, mos_domains, method=self.Umats_method,
-                                       angles_per_axis=self.crystal.mos_angles_per_axis,
-                                       num_axes=self.crystal.num_mos_axes)
+                               angles_per_axis=self.crystal.mos_angles_per_axis,
+                               crystal=crystal,
+                               num_axes=self.crystal.num_mos_axes)
     if len(Umats_data) == 2:
       Umats, Umats_prime = Umats_data
       Umats_dbl_prime = None
@@ -397,6 +425,13 @@ class SimData:
       Umats, Umats_prime, Umats_dbl_prime = Umats_data
 
     self.D.set_mosaic_blocks(Umats)
+    if self.Umats_method == 3 and Umats_prime is not None:
+      Umats_prime = Umats_prime[0::3] + Umats_prime[1::3] + Umats_prime[2::3]
+      assert len(Umats_prime) == 3*len(Umats)
+      if Umats_dbl_prime is not None:
+        Umats_dbl_prime = Umats_dbl_prime[0::3] + Umats_dbl_prime[1::3] + Umats_dbl_prime[2::3]
+        assert len(Umats_dbl_prime) == 3*len(Umats)
+
     if Umats_prime is not None:
       self.D.set_mosaic_blocks_prime(Umats_prime)
     if Umats_dbl_prime is not None:

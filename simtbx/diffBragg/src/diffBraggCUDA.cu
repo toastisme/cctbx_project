@@ -182,8 +182,8 @@ void diffBragg_loopy(
         //gettimeofday(&t3, 0));
         gpuErr(cudaMallocManaged(&cp.cu_floatimage, Npix_to_allocate*sizeof(CUDAREAL) ));
         gpuErr(cudaMallocManaged(&cp.cu_d_fcell_images, Npix_to_allocate*sizeof(CUDAREAL)));
-        gpuErr(cudaMallocManaged(&cp.cu_d_eta_images, Npix_to_allocate*sizeof(CUDAREAL)));
-        gpuErr(cudaMallocManaged(&cp.cu_d2_eta_images, Npix_to_allocate*sizeof(CUDAREAL)));
+        gpuErr(cudaMallocManaged(&cp.cu_d_eta_images, Npix_to_allocate*3*sizeof(CUDAREAL)));
+        gpuErr(cudaMallocManaged(&cp.cu_d2_eta_images, Npix_to_allocate*3*sizeof(CUDAREAL)));
         gpuErr(cudaMallocManaged(&cp.cu_d_Umat_images, Npix_to_allocate*3*sizeof(CUDAREAL) ));
         gpuErr(cudaMallocManaged(&cp.cu_d_Ncells_images, Npix_to_allocate*6*sizeof(CUDAREAL)));
         gpuErr(cudaMallocManaged(&cp.cu_d_panel_rot_images, Npix_to_allocate*3*sizeof(CUDAREAL)));

@@ -2,6 +2,7 @@
 organizer for setting the nanoBragg crystal properties
 """
 from __future__ import absolute_import, division, print_function
+from collections import Iterable
 from simtbx.nanoBragg import shapetype
 from scitbx.matrix import sqr, col
 from cctbx import sgtbx
@@ -17,6 +18,7 @@ class NBcrystal(object):
         self.mos_angles_per_axis = 10
         self.num_mos_axes = 10
         self.mos_spread_deg = 0
+        self.anisotropic_mos_spread_deg = None
         self.n_mos_domains = 1
         self.thick_mm = 0.1
         self.symbol = "P43212"
@@ -24,6 +26,10 @@ class NBcrystal(object):
         self.isotropic_ncells = True
         self.dxtbx_crystal = NBcrystal.dxtbx_crystal_from_ucell_and_symbol(
             ucell_tuple_Adeg=ucell, symbol=self.symbol)
+
+    @property
+    def has_anisotropic_mosaicity(self):
+        return self.anisotropic_mos_spread_deg is not None
 
     @property
     def space_group_info(self):
@@ -94,6 +100,19 @@ class NBcrystal(object):
     @Ncells_def.setter
     def Ncells_def(self, val):
         self._Ncells_def = val
+
+    @property
+    def anisotropic_mos_spread_deg(self):
+        return self._anisotropic_mos_spread_deg
+
+    @anisotropic_mos_spread_deg.setter
+    def anisotropic_mos_spread_deg(self, val):
+        if val is not None:
+            if not isinstance(val, Iterable):
+                raise TypeError("anisotropic_mos_spread_deg needs top be a 3-tuple or 6-tuple")
+            elif len(val) not in [3, 6]:
+                raise ValueError("Anisotropic mosaicity should be either a 3-tuple or a 6-tuple")
+        self._anisotropic_mos_spread_deg = val
 
     @property
     def mos_spread_deg(self):
