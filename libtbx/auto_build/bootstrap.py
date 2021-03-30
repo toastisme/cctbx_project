@@ -984,7 +984,7 @@ class xia2_module(SourceModule):
 # Duke repositories
 class probe_module(SourceModule):
   module = 'probe'
-  anonymous = ['git', 'https://github.com/ReliaSolve/probe.git', '-b cctbx']
+  anonymous = ['git', '-b cctbx', 'https://github.com/ReliaSolve/probe.git']
 
 class suitename_module(SourceModule):
   module = 'suitename'
