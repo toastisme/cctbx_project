@@ -729,7 +729,7 @@ class afitt_class(SourceModule):
 # These must all provide anonymous access.
 class cctbx_module(SourceModule):
   module = 'cctbx_project'
-  anonymous = ['git',
+  anonymous = ['git', '-b cctbx-probe',
                'git@github.com:cctbx/cctbx_project.git',
                'https://github.com/cctbx/cctbx_project.git',
                'https://github.com/cctbx/cctbx_project/archive/master.zip']
