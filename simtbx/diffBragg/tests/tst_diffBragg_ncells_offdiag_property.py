@@ -124,13 +124,13 @@ for i_nc in range(3):
             plt.show()
 
     l = linregress(shifts, all_error)
-    assert l.rvalue > .9999  # this is definitely a line!
+    assert l.rvalue > .999  # this is definitely a line!
     assert l.slope > 0
-    assert l.pvalue < 1e-6
+    assert l.pvalue < 1e-5
     if args.curvatures:
         l = linregress(shifts2, all_error2)
-        assert l.rvalue > .9999  # this is definitely a line!
+        assert l.rvalue > .999  # this is definitely a line!
         assert l.slope > 0
-        assert l.pvalue < 1e-6
+        assert l.pvalue < 1e-5
 
     print("OK!")

@@ -685,7 +685,7 @@ class LocalRefiner(BaseRefiner):
             self.sausages_xpos[i_shot] = []
             for i_sausage in range(self.num_sausages):
                 for i_sausage_param in range(4):
-                    idx = i_sausage_param + 4 * i_sausage
+                    #idx = i_sausage_param + 4 * i_sausage
                     self.sausages_xpos[i_shot].append(_local_pos)
                     self.Xall[_local_pos] = 1+i_sausage #idx #*0.1 #i_sausage
                     self.is_being_refined[_local_pos] = True
@@ -1953,6 +1953,8 @@ class LocalRefiner(BaseRefiner):
             # reset gradient and functional
             self.target_functional = 0
             self._update_Xall_from_x()
+            #from IPython import embed
+            #embed()
 
             self.grad = flex_double(self.n_total_params)
             if self.calc_curvatures:
@@ -2083,7 +2085,6 @@ class LocalRefiner(BaseRefiner):
                     # Done with derivative accumulation
 
             #    self.image_corr[self._i_shot] = self.image_corr[self._i_shot] / self.image_corr_norm[self._i_shot]
-
             self._MPI_aggregate_model_data_correlations()
             # TODO add in the priors:
             self._priors()

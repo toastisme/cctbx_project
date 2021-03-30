@@ -157,13 +157,10 @@ class LocalRefinerLauncher:
         n_eta_params = 1
         n_tilt_params = 3 * len(shot_data.nanoBragg_rois)
         n_sausage_params = 4*self.params.simulator.crystal.num_sausages
+        n_perspot_param = len(shot_data.nanoBragg_rois)
         n_local_unknowns = nrot_params + n_unitcell_params + n_ncells_param + n_spotscale_params + n_originZ_params \
-                           + n_tilt_params + n_eta_params + n_sausage_params + n_ncells_def_param
-
-        #if self.params.refiner.refine_per_spot_scale is not None and any(self.params.refiner.refine_per_spot_scale):
-        # per spot scale factor unknowns
+                           + n_tilt_params + n_eta_params + n_sausage_params + n_ncells_def_param + n_perspot_param
         n_local_unknowns += len(shot_data.nanoBragg_rois)
-
         self.panel_groups_refined = self.determine_refined_panel_groups(shot_data.pids, shot_data.selection_flags)
 
         #TODO multi shot

@@ -204,15 +204,22 @@ nrotation_param = 3
 nscale_param = 1
 ntilt_param = 3*nspot
 n_ncell_def_param = 3
-n_local_unknowns = nrotation_param + nscale_param + n_ncell_def_param +ntilt_param
-
+n_detz_param = 1
+n_eta_param = 1
 nucell_param = len(UcellMan.variables)
 n_ncell_param = 1
+n_perspot_param = nspot
+n_sausage_param = 4
+n_local_unknowns = n_ncell_param + n_eta_param + nrotation_param + nscale_param + n_ncell_def_param + n_detz_param + \
+                   ntilt_param + n_perspot_param + n_sausage_param
+
 nfcell_param = len(Hi_asu)
 ngain_param = 1
-ndetz_param = 1
+nspec_param = 2
+npanel_param = 6  # 3 rotation and 3 offset
 
-n_global_unknowns = nucell_param + nfcell_param + ngain_param + ndetz_param + n_ncell_param
+#n_global_unknowns = npanel_param + nspec_param + nucell_param + nfcell_param + ngain_param +  n_ncell_param
+n_global_unknowns = npanel_param + nspec_param + nfcell_param + ngain_param + nucell_param
 n_total_unknowns = n_local_unknowns + n_global_unknowns
 
 RUC = LocalRefiner(
@@ -235,8 +242,9 @@ RUC = LocalRefiner(
     log_of_init_crystal_scales=None,
     all_crystal_scales=None,
     perturb_fcell=False,
-    global_ncells=True,
+    global_ncells=False,
     global_ucell=True,
+    global_detector_distance=False,
     shot_detector_distance_init={0: 0},
     sgsymbol=symbol)
 

@@ -448,19 +448,23 @@ n_global_m_param = n_ncell_param
 if args.pershotncells:
     n_pershot_m_param = 1*N_SHOTS
     n_global_m_param = 0
-n_ncells_def_param =3
+n_ncells_def_param = 3
 
 ndetz_param = len(detdists_gt)
-n_local_unknowns = n_ncells_def_param + nrotation_param + nscale_param + ntilt_param + ndetz_param + n_pershot_ucell_param + n_pershot_m_param
+n_eta_param = 1
+n_perspot_scale_param = int(ntilt_param / 3.)
+n_local_unknowns = n_ncells_def_param + nrotation_param + nscale_param \
+                   + ntilt_param + ndetz_param + n_pershot_ucell_param \
+                   + n_pershot_m_param + n_eta_param + n_perspot_scale_param
 
 nfcell_param = len(idx_from_asu)
 ngain_param = 1
 
-n_spectra_param = 0
-if args.refineSpectra:
-    n_spectra_param = 2
+n_spectra_param = 2
 n_panelXYZ_params = 3
 n_panelRot_params = 3
+
+#n_global_unknowns = n_spectra_params + n_panelRot_params + n_panelXYZ_params
 n_global_unknowns = nfcell_param + ngain_param + n_global_m_param + n_global_ucell_param + n_spectra_param + n_panelXYZ_params + n_panelRot_params
 n_total_unknowns = n_local_unknowns + n_global_unknowns
 
