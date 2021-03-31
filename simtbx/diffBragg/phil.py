@@ -38,6 +38,9 @@ simulator {
     num_mosaicity_samples = 1
       .type = int
       .help = the number of mosaic domains to use when simulating mosaic spread
+    crystal_for_anisotropic_mosaicity = None
+      .type = str
+      .help = path to a experiment file holding a crystal (if None, defaults to experment crystal)
     mos_angles_per_axis = 10
       .type = int
       .help = if doing a uniform mosaicity sampling, use this many angles per rotation axis

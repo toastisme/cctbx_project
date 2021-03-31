@@ -451,7 +451,7 @@ if args.pershotncells:
 n_ncells_def_param = 3
 
 ndetz_param = len(detdists_gt)
-n_eta_param = 1
+n_eta_param = 3
 n_perspot_scale_param = int(ntilt_param / 3.)
 n_local_unknowns = n_ncells_def_param + nrotation_param + nscale_param \
                    + ntilt_param + ndetz_param + n_pershot_ucell_param \

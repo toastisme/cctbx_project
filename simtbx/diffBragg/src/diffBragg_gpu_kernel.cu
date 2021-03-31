@@ -52,12 +52,14 @@ void gpu_sum_over_steps(
         bool refine_sausages, int num_sausages,
         const CUDAREAL* __restrict__ fdet_vectors, const CUDAREAL* __restrict__ sdet_vectors,
         const CUDAREAL* __restrict__ odet_vectors, const CUDAREAL* __restrict__ pix0_vectors,
-        bool _nopolar, bool _point_pixel, CUDAREAL _fluence, CUDAREAL _r_e_sqr, CUDAREAL _spot_scale, int Npanels)
+        bool _nopolar, bool _point_pixel, CUDAREAL _fluence, CUDAREAL _r_e_sqr, CUDAREAL _spot_scale, int Npanels,
+        bool aniso_eta)
 { // BEGIN GPU kernel
 
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int thread_stride = blockDim.x * gridDim.x;
 
+    __shared__ bool s_aniso_eta;
     __shared__ bool s_compute_curvatures;
     __shared__ MAT3 s_Ot;
     __shared__ MAT3 _NABC;
@@ -98,6 +100,7 @@ void gpu_sum_over_steps(
             s_refine_panel_origin[i] = refine_panel_origin[i];
             s_refine_panel_rot[i] = refine_panel_rot[i];
         }
+        s_aniso_eta = aniso_eta;
         s_refine_lambda[0] = refine_lambda[0];
         s_refine_lambda[1] = refine_lambda[1];
         for(int i=0; i<6; i++){
@@ -208,8 +211,8 @@ void gpu_sum_over_steps(
         double pan_rot_manager_dI2[3]= {0,0,0};
         double fcell_manager_dI=0;
         double fcell_manager_dI2=0;
-        double eta_manager_dI = 0;
-        double eta_manager_dI2 = 0;
+        double eta_manager_dI[3] = {0,0,0};
+        double eta_manager_dI2[3] = {0,0,0};
         double lambda_manager_dI[2] = {0,0};
         double lambda_manager_dI2[2] = {0,0};
 
@@ -549,20 +552,25 @@ void gpu_sum_over_steps(
 
             // checkpoint for eta manager
             if (s_refine_eta){
-                VEC3 DeltaH_deriv = (UMATS_RXYZ_prime[_mos_tic]*UBOt).transpose()*q_vec;
-                // vector V is _Nabc*Delta_H
-                VEC3 dV = _NABC*DeltaH_deriv;
-                CUDAREAL V_dot_dV = V.dot(dV);
-                CUDAREAL Iprime = -two_C*(V_dot_dV)*Iincrement;
-                eta_manager_dI += Iprime;
-                CUDAREAL Idbl_prime=0;
-                if (s_compute_curvatures){
-                    VEC3 DeltaH_second_deriv = (UMATS_RXYZ_dbl_prime[_mos_tic]*UBOt).transpose()*q_vec;
-                    VEC3 dV2 = _NABC*DeltaH_second_deriv;
-                    Idbl_prime = -two_C*(dV.dot(dV) + V.dot(dV2))*Iincrement;
-                    Idbl_prime += -two_C*(V_dot_dV)*Iprime;
+                for (int i_eta=0;i_eta<3; i_eta++){
+                    if (i_eta > 0 && ! s_aniso_eta)
+                        continue;
+                    int mtic2 = _mos_tic + i_eta*s_mosaic_domains;
+                    VEC3 DeltaH_deriv = (UMATS_RXYZ_prime[mtic2]*UBOt).transpose()*q_vec;
+                    // vector V is _Nabc*Delta_H
+                    VEC3 dV = _NABC*DeltaH_deriv;
+                    CUDAREAL V_dot_dV = V.dot(dV);
+                    CUDAREAL Iprime = -two_C*(V_dot_dV)*Iincrement;
+                    eta_manager_dI[i_eta] += Iprime;
+                    CUDAREAL Idbl_prime=0;
+                    if (s_compute_curvatures){
+                        VEC3 DeltaH_second_deriv = (UMATS_RXYZ_dbl_prime[mtic2]*UBOt).transpose()*q_vec;
+                        VEC3 dV2 = _NABC*DeltaH_second_deriv;
+                        Idbl_prime = -two_C*(dV.dot(dV) + V.dot(dV2))*Iincrement;
+                        Idbl_prime += -two_C*(V_dot_dV)*Iprime;
+                    }
+                    eta_manager_dI2[i_eta] += Idbl_prime;
                 }
-                eta_manager_dI2 += Idbl_prime;
             } // end of eta man deriv
 
               // sausage deriv
@@ -799,10 +807,15 @@ void gpu_sum_over_steps(
 
         // update eta derivative image
         if(s_refine_eta){
-            CUDAREAL value = _scale_term*eta_manager_dI;
-            CUDAREAL value2 = _scale_term*eta_manager_dI2;
-            d_eta_images[i_pix] = value;
-            d2_eta_images[i_pix] = value2;
+            for (int i_eta=0; i_eta<3; i_eta++){
+                if (i_eta > 0 && ! s_aniso_eta)
+                    continue;
+                int idx = i_pix + Npix_to_model*i_eta;
+                CUDAREAL value = _scale_term*eta_manager_dI[i_eta];
+                CUDAREAL value2 = _scale_term*eta_manager_dI2[i_eta];
+                d_eta_images[idx] = value;
+                d2_eta_images[idx] = value2;
+            }
         }// end eta deriv image increment
 
         //update the lambda derivative images

@@ -37,6 +37,10 @@ tst_list = [
     "$D/diffBragg/tests/tst_diffBragg_refine_spectrum.py",
     ["$D/diffBragg/tests/tst_diffBragg_refine_eta.py", "--finitediff"],
     ["$D/diffBragg/tests/tst_diffBragg_refine_eta.py", "--finitediff", "--curvatures"],
+    ["$D/diffBragg/tests/tst_diffBragg_refine_eta.py", "--finitediff", "--curvatures", "--aniso 0"],
+    ["$D/diffBragg/tests/tst_diffBragg_refine_eta.py", "--finitediff", "--curvatures", "--aniso 1"],
+    ["$D/diffBragg/tests/tst_diffBragg_refine_eta.py", "--finitediff", "--curvatures", "--aniso 2"],
+    #["$D/diffBragg/tests/tst_diffBragg_refine_eta.py", "--curvatures", "--aniso 0"],# NOTE, this test is really long, recommended to run seperately on an OMP build
     #"$D/diffBragg/tests/tst_diffBragg_refine_eta.py", # NOTE, this test is really long, recommended to run seperately on an OMP build
     #["$D/diffBragg/tests/tst_diffBragg_refine_eta.py","--testUpperBound" ], # NOTE, this test is really long, recommended to run seperately on an OMP build
     #["$D/diffBragg/tests/tst_diffBragg_refine_eta.py", "--curvatures"], # NOTE, this test is really long, recommended to run seperately on an OMP build

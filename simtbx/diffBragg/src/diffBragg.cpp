@@ -266,9 +266,11 @@ diffBragg::diffBragg(const dxtbx::model::Detector& detector, const dxtbx::model:
     eta0->refine_me = false;
     eta1->refine_me = false;
     eta2->refine_me = false;
-
     mosaic_umats_prime = NULL;
     mosaic_umats_dbl_prime = NULL;
+    eta_managers.push_back(eta0);
+    eta_managers.push_back(eta1);
+    eta_managers.push_back(eta2);
 
     panel_rot_man = boost::shared_ptr<panel_manager>(new panel_manager());
     panel_rot_man->refine_me = false;
@@ -320,9 +322,6 @@ diffBragg::diffBragg(const dxtbx::model::Detector& detector, const dxtbx::model:
     lambda_managers.push_back(lam1);
     lambda_managers.push_back(lam2);
 
-    eta_managers.push_back(eta0);
-    eta_managers.push_back(eta1);
-    eta_managers.push_back(eta2);
 
     rot_managers.push_back(rotX);
     rot_managers.push_back(rotY);
@@ -750,6 +749,7 @@ void diffBragg::initialize_managers(){
     for (int i_eta=0; i_eta<3; i_eta++){
         int counter =0;
         if (eta_managers[i_eta]->refine_me){
+            if (verbose)printf("Initializing eta %d\n", i_eta);
             eta_managers[i_eta]->initialize(Npix_total, compute_curvatures);
             counter +=1;
             }
@@ -1762,13 +1762,15 @@ void diffBragg::add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows
         if (fcell_man->refine_me)
             fcell_man->increment_image(i_pix, d_fcell_images[i_pix], d2_fcell_images[i_pix], compute_curvatures);
 
-        if (eta_managers[0]->refine_me)
+        if (eta_managers[0]->refine_me){
             eta_managers[0]->increment_image(i_pix, d_eta_images[i_pix], d2_eta_images[i_pix], compute_curvatures);
             if (modeling_anisotropic_mosaic_spread){
+                if (verbose && i_pix==0)printf("copying aniso eta derivatives\n");
                 for(int i_eta=1; i_eta < 3; i_eta++){
                     int idx = i_eta*Npix_to_model+i_pix;
                     eta_managers[i_eta]->increment_image(i_pix, d_eta_images[idx], d2_eta_images[idx], compute_curvatures);
                 }
+            }
         }
 
         for(int i_lam=0; i_lam < 2; i_lam++){

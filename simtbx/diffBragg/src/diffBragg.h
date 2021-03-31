@@ -331,11 +331,11 @@ class diffBragg: public nanoBragg{
   std::vector<boost::shared_ptr<rot_manager> > rot_managers;
   std::vector<boost::shared_ptr<ucell_manager> > ucell_managers;
   std::vector<boost::shared_ptr<Ncells_manager> > Ncells_managers;
+  std::vector<boost::shared_ptr<eta_manager> > eta_managers;
   std::vector<boost::shared_ptr<origin_manager> > origin_managers;
   std::vector<boost::shared_ptr<lambda_manager> > lambda_managers;
   std::vector<boost::shared_ptr<panel_manager> > panels;
   boost::shared_ptr<Fcell_manager> fcell_man;
-  std::vector<boost::shared_ptr<eta_manager> > eta_managers;
   //boost::shared_ptr<eta_manager> eta_man;
   boost::shared_ptr<panel_manager> panel_rot_man;
   boost::shared_ptr<panel_manager> panel_rot_manF;

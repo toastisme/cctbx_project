@@ -9,6 +9,9 @@ parser.add_argument("--testUpperBound", action="store_true")
 parser.add_argument("--aniso", type=int, choices=[0,1,2], default=None)
 args = parser.parse_args()
 
+if args.testUpperBound:
+  assert args.aniso is None
+
 from dxtbx.model.crystal import Crystal
 from cctbx import uctbx
 from scitbx.matrix import rec, col
@@ -64,6 +67,8 @@ nbcryst.mos_spread_deg = MOS_SPREAD
 if args.aniso is not None:
   nbcryst.anisotropic_mos_spread_deg = ANISO_MOS_SPREAD
   assert nbcryst.has_anisotropic_mosaicity
+else:
+  assert not nbcryst.has_anisotropic_mosaicity
 
 nbcryst.n_mos_domains = N_MOS_DOMAINS
 nbcryst.miller_array = miller_array_GT
@@ -80,7 +85,7 @@ else:
   SIM.Umats_method = 3
 SIM.detector = DET_gt
 SIM.crystal = nbcryst
-SIM.instantiate_diffBragg(oversample=1, verbose=1)
+SIM.instantiate_diffBragg(oversample=1, verbose=2)
 if args.finitediff:
   SIM.D.refine(eta_diffBragg_id)
   SIM.D.initialize_managers()
@@ -220,7 +225,11 @@ P = phil_scope.extract()
 P.roi.shoebox_size = 25
 P.roi.reject_edge_reflections = False
 P.refiner.refine_eta = [1]
-P.simulator.crystal.mosaicity = 0.1
+GUESS = 0.1
+P.simulator.crystal.mosaicity = GUESS
+ANISO_GUESS = [0.1, 0.15, 0.2]
+if args.aniso is not None:
+  P.simulator.crystal.anisotropic_mosaicity = ANISO_GUESS
 P.simulator.crystal.num_mos_axes = 10
 P.simulator.crystal.mos_angles_per_axis = 10
 P.simulator.crystal.num_mosaicity_samples = N_MOS_DOMAINS
@@ -251,13 +260,23 @@ P.refiner.ncells_mask = "111"
 
 RUC = refine_launcher.local_refiner_from_parameters(refls, E, P, miller_data=SIM.crystal.miller_array)
 eta_refined = RUC._get_eta(i_shot=0)
-eta_refined = eta_refined[0]
-print("Refined eta: %10.7f" % eta_refined)
-print("GT eta: %10.7f" % MOS_SPREAD)
-if args.testUpperBound:
-  assert abs(eta_refined - 0.8) < 0.01
-  print("Testing upper bound, so 0.8 is the correct answer")
+if args.aniso is None:
+  eta_refined = eta_refined[0]
+  print("Refined eta: %10.7f" % eta_refined)
+  print("GT eta: %10.7f" % MOS_SPREAD)
+  print("Initial guess:", GUESS)
+  if args.testUpperBound:
+    assert abs(eta_refined - 0.8) < 0.01
+    print("Testing upper bound, so 0.8 is the correct answer")
+  else:
+    assert abs(eta_refined - MOS_SPREAD) < 0.01
 else:
-  assert abs(eta_refined - MOS_SPREAD) < 0.01
+  a,b,c = eta_refined
+  assert abs(a-ANISO_MOS_SPREAD[0]) < 0.01
+  assert abs(b-ANISO_MOS_SPREAD[1]) < 0.01
+  assert abs(c-ANISO_MOS_SPREAD[2]) < 0.01
+  print("Ground truth anisotropic mosaicity:", ANISO_MOS_SPREAD)
+  print("Optimized anisotropic mosaicity:", eta_refined)
+  print("Initial guess:", ANISO_GUESS)
 
 print("OK")

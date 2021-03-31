@@ -7,6 +7,7 @@ from simtbx.diffBragg import utils
 from copy import deepcopy
 import os
 import h5py
+from dxtbx.model.experiment_list import ExperimentListFactory
 
 
 def local_refiner_from_parameters(refls, expt, params, miller_data=None):
@@ -444,6 +445,14 @@ class LocalRefinerLauncher:
             eta_init = self.params.simulator.crystal.anisotropic_mosaicity
             if len(eta_init) == 6:
                 raise NotImplementedError("No support for 6 parameter mosaic model")
+            if self.params.simulator.crystal.crystal_for_anisotropic_mosaicity is not None:
+                El = ExperimentListFactory.from_json_file(\
+                    self.params.simulator.crystal.crystal_for_anisotropic_mosaicity, check_format=False)
+                assert len(El)==1
+                assert El[0].crystal is not None
+                self.RUC.crystal_for_mosaicity_model = El[0].crystal
+            else:
+                self.RUC.crystal_for_mosaicity_model = deepcopy(self.SIM.crystal.dxtbx_crystal)
         self.RUC.eta_init = {0: eta_init}
         # MOSAICBLOCK
         m_init = self.params.simulator.crystal.ncells_abc

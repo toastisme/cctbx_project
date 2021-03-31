@@ -395,6 +395,7 @@ void diffBragg_loopy(
     int Npanels = fdet_vectors.size()/3;
     //int sm_size = number_of_sources*5*sizeof(CUDAREAL);
     //gpu_sum_over_steps<<<numblocks, blocksize, sm_size >>>(
+    bool aniso_eta = UMATS_RXYZ.size() != UMATS_RXYZ_prime.size();
     gpu_sum_over_steps<<<numblocks, blocksize>>>(
         Npix_to_model, cp.cu_panels_fasts_slows,
         cp.cu_floatimage,
@@ -442,7 +443,7 @@ void diffBragg_loopy(
         refine_sausages, num_sausages,
         cp.cu_fdet_vectors, cp.cu_sdet_vectors,
         cp.cu_odet_vectors, cp.cu_pix0_vectors,
-        _nopolar, _point_pixel, _fluence, _r_e_sqr, _spot_scale, Npanels);
+        _nopolar, _point_pixel, _fluence, _r_e_sqr, _spot_scale, Npanels, aniso_eta);
 
     error_msg(cudaGetLastError(), "after kernel call");
 
@@ -460,8 +461,6 @@ void diffBragg_loopy(
 //  COPY BACK FROM DEVICE
     for (int i=0; i< Npix_to_model; i++){
         floatimage[i] = cp.cu_floatimage[i];
-        d_eta_images[i] = cp.cu_d_eta_images[i];
-        d2_eta_images[i] = cp.cu_d2_eta_images[i];
         d_fcell_images[i] = cp.cu_d_fcell_images[i];
     }
     for (int i=0; i<3*Npix_to_model; i++){
@@ -469,6 +468,8 @@ void diffBragg_loopy(
         d2_Umat_images[i] = cp.cu_d2_Umat_images[i];
         d_panel_rot_images[i] = cp.cu_d_panel_rot_images[i];
         d_panel_orig_images[i] = cp.cu_d_panel_orig_images[i];
+        d_eta_images[i] = cp.cu_d_eta_images[i];
+        d2_eta_images[i] = cp.cu_d2_eta_images[i];
     }
 
     for(int i=0; i<6*Npix_to_model; i++){
