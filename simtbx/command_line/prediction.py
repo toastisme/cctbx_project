@@ -42,12 +42,22 @@ stage_one_folder = None
 oversample_override = None
   .type = int
   .help = force the nanoBragg oversample property to be this value (pixel oversample rate)
+default_F = 1e3
+  .type = float
+  .help = if not supplying an MTZ, this is the default structure factor amplitude
 Ncells_abc_override = None
   .type = ints(size=3)
   .help = force the nanoBragg Ncells_abc property to be this 3-tuple (Na,Nb,Nc mosaic block size in unit cells)
+pink_stride_override = None
+  .type = int
+  .help = if this is N, then take every Nth channel in the model spectrum
+  .help = and therefore make the simulation faster
 cuda = False
   .type = bool
   .help = whether to use cuda
+omp = False
+  .type = bool
+  .help = try to use openMP
 d_max = 999
   .type = float
   .help = maximum resolution
@@ -60,6 +70,9 @@ output_img = None
 outfile = None
   .type = str
   .help = output reflection file for indexed refls
+prediction_tag = None
+  .type = str
+  .help = tag for predicted reflections 
 tolerance = 1
   .type = float
   .help = indexing toleraance for assigning indices to the modeled spots
@@ -88,6 +101,9 @@ mtz_name = None
 mtz_col = None
   .type = str
   .help = mtz col name
+symbol_override = None
+  .type = str
+  .help = space group lookup symbol if not supplying mtz. If None, comes from crystal model
 """
 
 phil_scope = parse(script_phil)
@@ -108,6 +124,8 @@ class Script:
 
     def run(self):
         self.params, _ = self.parser.parse_args(show_diff_phil=True)
+        if self.params.omp and self.params.cuda:
+            raise ValueError("omp and cuda cannot be used simultaneously")
 
         if self.params.stage_one_folder is None:
             explist = self.load_filelist(self.params.exper_list)
@@ -185,16 +203,18 @@ class Script:
                     spectrum_file=spec_file,
                     cuda=self.params.cuda, d_max=self.params.d_max, d_min=self.params.d_min,
                     output_img=output_img,
-                    njobs=self.params.njobs, device_Id=dev_id, as_numpy_array=True)
+                    njobs=self.params.njobs, device_Id=dev_id, as_numpy_array=True, omp=self.params.omp)
             else:
                 model_imgs = utils.spots_from_pandas(panda_frame,
                     mtz_file=self.params.mtz_name,
                     mtz_col=self.params.mtz_col,
                     oversample_override=self.params.oversample_override,
                     Ncells_abc_override=self.params.Ncells_abc_override,
+                    pink_stride_override=self.params.pink_stride_override,
                     cuda=self.params.cuda, d_max=self.params.d_max, d_min=self.params.d_min,
                     output_img=output_img,
-                    njobs=self.params.njobs, device_Id=dev_id)
+                    njobs=self.params.njobs, device_Id=dev_id, omp=self.params.omp, norm_by_spectrum=True,
+                    symbol_override=self.params.symbol_override, defaultF=self.params.default_F)
 
             # if strong is None, this will just return all the predictions
             # else it returns the strong reflections that are indexed by the prediction model
@@ -204,8 +224,16 @@ class Script:
             if strong is not None:
                 Rindexed = utils.remove_multiple_indexed(Rindexed)
                 print("%d / %d are indexed!" % (len(Rindexed), len(strong)))
-            prediction_outfile = os.path.splitext(exper_file)[0] + "_diffBragg_prediction.refl"
+
+            # TODO 1/2 pix ?
+
+            prediction_outfile = os.path.splitext(exper_file)[0] + "_%s.refl"
+            tag = "diffBragg_prediction"
+            if self.params.prediction_tag is not None:
+                tag = self.params.prediction_tag
+            prediction_outfile = prediction_outfile % tag
             Rindexed.as_file(prediction_outfile)
+
             tdone = time.time() - tstart
             print("Done, saved indexed refls to file %s (took %.4f sec)" % (prediction_outfile, tdone))
 

@@ -306,6 +306,9 @@ diffBragg::diffBragg(const dxtbx::model::Detector& detector, const dxtbx::model:
     nc1->refine_me = false;
     nc2->refine_me = false;
     nc3->refine_me = false;
+    nc4->refine_me = false;
+    nc5->refine_me = false;
+    nc6->refine_me = false;
 
     orig0->refine_me = false;
     orig0->dk << 0,0,1;
@@ -862,6 +865,80 @@ void diffBragg::vectorize_umats(){
         }
     }
 }
+
+void diffBragg::fix(int refine_id){
+    if (refine_id >= 0 && refine_id < 3  ){
+        rot_managers[refine_id]->refine_me=false;
+    }
+    else if (refine_id >=3 and refine_id < 9 ){
+        // 6 possible unit cell managers (a,b,c,al,be,ga)
+        ucell_managers[refine_id-3]->refine_me=false;
+    }
+    else if (refine_id==9){
+        for (int i_nc=0; i_nc < 3; i_nc ++){
+            Ncells_managers[i_nc]->refine_me=false;
+        }
+    }
+    else if (refine_id==21){
+        refine_Ncells_def = false;
+        for (int i_nc=3; i_nc< 6; i_nc++){
+            Ncells_managers[i_nc]->refine_me=false;
+        }
+    }
+    else if (refine_id==10){
+        boost::shared_ptr<panel_manager> pan_orig = boost::dynamic_pointer_cast<panel_manager>(panels[1]);
+        pan_orig->refine_me=false;
+    }
+    else if(refine_id==11){
+        fcell_man->refine_me=false;
+    }
+
+    else if (refine_id==12 || refine_id==13){
+        int i_lam = refine_id-12;
+        lambda_managers[i_lam]->refine_me=false;
+    }
+
+    else if (refine_id==14){
+        boost::shared_ptr<panel_manager> pan_rot = boost::dynamic_pointer_cast<panel_manager>(panels[0]);
+        pan_rot->refine_me=false;
+    }
+
+    else if (refine_id==15){
+        boost::shared_ptr<panel_manager> pan_orig = boost::dynamic_pointer_cast<panel_manager>(panels[2]);
+        pan_orig->refine_me=false;
+    }
+
+    else if (refine_id==16){
+        boost::shared_ptr<panel_manager> pan_orig = boost::dynamic_pointer_cast<panel_manager>(panels[3]);
+        pan_orig->refine_me=false;
+    }
+    else if (refine_id==17){
+        boost::shared_ptr<panel_manager> pan_rot = boost::dynamic_pointer_cast<panel_manager>(panels[4]);
+        pan_rot->refine_me=false;
+    }
+    else if (refine_id==18){
+        boost::shared_ptr<panel_manager> pan_rot = boost::dynamic_pointer_cast<panel_manager>(panels[5]);
+        pan_rot->refine_me=false;
+    }
+    else if (refine_id==19){
+        eta_managers[0]->refine_me=false;
+        if (modeling_anisotropic_mosaic_spread){
+            for (int i_eta=1; i_eta<3; i_eta++){
+                eta_managers[i_eta]->refine_me=false;
+            }
+        }
+    }
+    else if (refine_id==20){
+        refining_sausages=false;
+        for(int i=0; i < num_sausages; i++){
+            sausage_managers[i*3]->refine_me=false;
+            sausage_managers[i*3+1]->refine_me=false;
+            sausage_managers[i*3+2]->refine_me=false;
+            sausage_scale_managers[i]->refine_me=false;
+        }
+    }
+}
+
 
 void diffBragg::refine(int refine_id){
     if (refine_id >= 0 && refine_id < 3  ){
@@ -1703,11 +1780,15 @@ void diffBragg::add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows
     gettimeofday(&t2, 0);
     double time = (1000000.0*(t2.tv_sec-t1.tv_sec) + t2.tv_usec-t1.tv_usec)/1000.0;
     if(verbose){
-        long int n_total_iter = Nsteps*Npix_to_model;
+        unsigned long long long_Nsteps = Nsteps;
+        unsigned long long long_Npix = Npix_to_model;
+        unsigned long long n_total_iter =  long_Nsteps*long_Npix;
+        printf("Nsteps=%d\noversample=%d\ndet_thick_steps=%d\nsources=%d\nphisteps=%d\nmosaic_domains=%d\nnum_sausages=%d\n",
+                Nsteps,oversample,detector_thicksteps,sources,phisteps,mosaic_domains,num_sausages);
         if(use_cuda || getenv("DIFFBRAGG_USE_CUDA")!= NULL)
-            printf("TIME TO RUN DIFFBRAGG -GPU- KERNEL (%ld iterations):  %3.10f ms \n",n_total_iter, time);
+            printf("TIME TO RUN DIFFBRAGG -GPU- (%llu iterations):  %3.10f ms \n",n_total_iter, time);
         else
-            printf("TIME TO RUN DIFFBRAGG -CPU- KERNEL (%ld iterations):  %3.10f ms \n",n_total_iter, time);
+            printf("TIME TO RUN DIFFBRAGG -CPU- (%llu iterations):  %3.10f ms \n",n_total_iter, time);
     }
     // TODO behold inefficient
     for (int i_pix=0; i_pix< Npix_to_model; i_pix++){
@@ -1808,13 +1889,13 @@ void diffBragg::add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows
 
 void diffBragg::diffBragg_rot_mats(){
     for (int i_rot=0; i_rot < 3; i_rot++){
-        if (rot_managers[i_rot]->refine_me){
+        //if (rot_managers[i_rot]->refine_me){
             RotMats[i_rot] = rot_managers[i_rot]->R;
             dRotMats[i_rot] = rot_managers[i_rot]->dR;
             d2RotMats[i_rot] = rot_managers[i_rot]->dR2;
             R3[i_rot] = RotMats[i_rot];
             R3_2[i_rot] = RotMats[i_rot];
-        }
+        //}
     }
     RXYZ = RotMats[0]*RotMats[1]*RotMats[2];
 

@@ -20,7 +20,9 @@ class LocalRefinerLauncher:
     def __init__(self, params):
         self.params = self.check_parameter_integrity(params)
 
+        self.rotXYZ_inits = {0: [0, 0, 0]}
         self.shot_reso = {}
+        self.shot_expernames = {} # NOTE optional place holder for the experiment names
         self.shot_ucell_managers = {}
         self.shot_rois = {}
         self.shot_nanoBragg_rois = {}
@@ -117,7 +119,6 @@ class LocalRefinerLauncher:
         self._init_simulator(expt, miller_data)
         UcellMan = utils.manager_from_crystal(self.SIM.crystal.dxtbx_crystal)
 
-        #TODO multi shot
         if "rlp" in refls:
             self.shot_reso = {0: 1/np.linalg.norm(refls["rlp"], axis=1)}
         self.shot_ucell_managers = {0: UcellMan}
@@ -135,7 +136,7 @@ class LocalRefinerLauncher:
         self.shot_originZ_init = {0: 0}
         self.shot_selection_flags = {0: shot_data.selection_flags}
         self.shot_background = {0: shot_data.background}
-
+        # TODO , get the experiment name in here, such that self.shot_expernames = {0: expername}
         self.symbol = expt.crystal.get_space_group().type().lookup_symbol()
 
         # <><><><><><>><><><><><><><><><>
@@ -150,7 +151,6 @@ class LocalRefinerLauncher:
 
         n_ncells_def_param = 3
 
-        #TODO multi shot
         nrot_params = 3
         n_unitcell_params = len(UcellMan.variables)
         n_spotscale_params = 1
@@ -164,7 +164,6 @@ class LocalRefinerLauncher:
         n_local_unknowns += len(shot_data.nanoBragg_rois)
         self.panel_groups_refined = self.determine_refined_panel_groups(shot_data.pids, shot_data.selection_flags)
 
-        #TODO multi shot
         #n_spectra_params = 0
         #if self.params.refiner.refine_spectra is not None and any(self.params.refiner.refine_spectra):
         n_spectra_params = 2
@@ -202,6 +201,8 @@ class LocalRefinerLauncher:
         for i_trial in range(n_trials*nmacro):
 
             self.RUC = self._init_refiner(n_local_unknowns, n_global_unknowns, local_idx_start, global_idx_start)
+
+            self.RUC.FNAMES = self.shot_expernames if self.shot_expernames else None
 
             self.RUC.print_end = self.params.refiner.print_end
 
@@ -262,7 +263,7 @@ class LocalRefinerLauncher:
             if self.params.refiner.io.output_dir is not None:
                 self.RUC.output_dir = self.params.refiner.io.output_dir
 
-            self.RUC.parameter_hdf5_path = self.params.refiner.parameter_hdf5_path
+            self.RUC.parameter_hdf5_path = self.get_parameter_hdf5_path()
 
             self.RUC.panel_group_from_id = self.panel_group_from_id
 
@@ -353,6 +354,7 @@ class LocalRefinerLauncher:
             self.RUC.binner_dmin = self.params.refiner.stage_two.d_min
             self.RUC.binner_nbin = self.params.refiner.stage_two.n_bin
             # end Fcell stuff
+            self.RUC.rotXYZ_inits = self.rotXYZ_inits
 
             self.RUC.big_dump = self.params.refiner.big_dump
             self.RUC.request_diag_once = False
@@ -360,9 +362,10 @@ class LocalRefinerLauncher:
             if self.params.refiner.mask is not None:
                 self.RUC.MASK = utils.load_mask(self.params.refiner.mask)
             #if any() : self.RUC.refine_blueSausages is not None and any(self.RUC.refine_blueSausages):
+            #TODO move to init_some_params method
             if self.params.refiner.refine_blueSausages is not None and any(self.params.refiner.refine_blueSausages):
                 self.RUC.num_sausages = self.params.simulator.crystal.num_sausages
-                self.RUC.sausages_init = {0: self.sausages_init}
+                self.RUC.sausages_init = self.sausages_init #{0: self.sausages_init}
                 print("SAUSAGES!: ", self.sausages_init)
                 #self.RUC.S.update_nanoBragg_instance("num_sausages", self.RUC.num_sausages)
             self.RUC.restart_file = self.params.refiner.io.restart_file
@@ -389,7 +392,6 @@ class LocalRefinerLauncher:
             self.RUC.verbose = self.verbose
             self.RUC.background = self.shot_background
             # TODO optional properties.. make this obvious
-            self.RUC.FNAMES = None
             self.RUC.PROC_FNAMES = None
             self.RUC.PROC_IDX = None
             self.RUC.BBOX_IDX = None
@@ -437,7 +439,8 @@ class LocalRefinerLauncher:
         return param is not None and any(param)
 
     def _initialize_some_refinement_parameters(self):
-        self.RUC.spot_scale_init = {0: self.params.refiner.init.spot_scale}  # self.spot_scale_init
+        # TODO verify spot scale init is squared or what
+        self.RUC.spot_scale_init = {0: np.sqrt(self.params.refiner.init.spot_scale)}
         # eta_init in the refiner is a 3-tuple (6-tuple not yet supported)
         if self.params.simulator.crystal.anisotropic_mosaicity is None:
             eta_init = [self.params.simulator.crystal.mosaicity, 0, 0]
@@ -523,6 +526,7 @@ class LocalRefinerLauncher:
                 sigma_rdout = self.params.refiner.sigma_r / self.params.refiner.adu_per_photon
             else:
                 sigma_rdout = 0
+            # TODO unweighted fit
             roi_packet = utils.get_roi_background_and_selection_flags(
                 refls, img_data, shoebox_sz=self.params.roi.shoebox_size,
                 reject_edge_reflections=self.params.roi.reject_edge_reflections,
@@ -532,7 +536,8 @@ class LocalRefinerLauncher:
                 use_robust_estimation=not self.params.roi.fit_tilt,
                 set_negative_bg_to_zero=self.params.roi.force_negative_background_to_zero,
                 pad_for_background_estimation=self.params.roi.pad_shoebox_for_background_estimation,
-                sigma_rdout=sigma_rdout)
+                sigma_rdout=sigma_rdout, deltaQ=self.params.roi.deltaQ, experiment=expt,
+                weighted_fit=self.params.roi.fit_tilt_using_weights)
             if self.params.roi.cachefile_dir is not None and self.params.roi.make_cache_dir:
                 self.save_roi_data_to_file(expt, roi_packet)
 
@@ -603,7 +608,7 @@ class LocalRefinerLauncher:
             y = flex.double(init[1::4])
             z = flex.double(init[2::4])
             scale = flex.double(init[3::4])
-            self.sausages_init = init
+            self.sausages_init = {0:init}
             self.SIM.D.set_sausages(x, y, z, scale)
 
     def _init_simulator(self, expt, miller_data):
@@ -710,7 +715,11 @@ class LocalRefinerLauncher:
     def create_cache_dir(self):
         if self.params.roi.cachefile_dir is not None and self.params.roi.make_cache_dir:
             if not os.path.exists(self.params.roi.cachefile_dir):
+                #TODO multi rank make cache dir
                 os.makedirs(self.params.roi.cachefile_dir)
+
+    def get_parameter_hdf5_path(self):
+        return self.params.refiner.parameter_hdf5_path
 
 
 class ShotData:

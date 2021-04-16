@@ -239,6 +239,7 @@ class diffBragg: public nanoBragg{
 
   /* methods for interacting with the derivative managers */
   void refine(int refine_id);
+  void fix(int refine_id);
   int detector_panel_id;
   void update_dxtbx_geoms(const dxtbx::model::Detector& detector, const dxtbx::model::Beam& beam,
         int panel_id, double panel_rot_angO=0,

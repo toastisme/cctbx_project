@@ -80,7 +80,7 @@ def x_y_to_q(x,y, detector, beam):
     return np.vstack(q_vecs)
 
 
-def label_background_pixels(roi_img, thresh=3.5, iterations=1):
+def label_background_pixels(roi_img, thresh=3.5, iterations=1, only_high=True):
     """
     roi_img, a two dimensional pixel image numpy array
     thresh, median deviation Z-score; pixels with Z-score below thresh are flagged as background
@@ -94,14 +94,16 @@ def label_background_pixels(roi_img, thresh=3.5, iterations=1):
         if background_pixels is None:
             outliers = is_outlier(img1, thresh)
             m = np.median(img1[~outliers])
-            out_and_high = np.logical_and(outliers, img1 > m)
-            background_pixels = ~out_and_high
+            if only_high:
+                outliers = np.logical_and(outliers, img1 > m)
+            background_pixels = ~outliers
         else:
             where_bg = np.where(background_pixels)[0]
             outliers = is_outlier(img1[background_pixels], thresh)
             m = np.median(img1[background_pixels][~outliers])
-            out_and_high = np.logical_and(outliers, img1[background_pixels] > m)
-            background_pixels[where_bg[out_and_high]] = False
+            if only_high:
+                outliers = np.logical_and(outliers, img1[background_pixels] > m)
+            background_pixels[where_bg[outliers]] = False
         iterations = iterations - 1
 
     return background_pixels.reshape(img_shape)
@@ -617,11 +619,37 @@ def get_roi_from_spot(refls, fdim, sdim, shoebox_sz=10):
     return rois, is_on_edge
 
 
+def get_roi_deltaQ(refls, delta_Q, experiment):
+    """
+    :param refls: reflection table (needs rlp column)
+    :param delta_Q:  width of the ROI in inverse Angstromg (e.g. 0.05)
+    :param experiment:
+    :return:
+    """
+    nref = len(refls)
+    assert nref >0
+
+    if "rlp" not in list(refls[0].keys()):
+        raise KeyError("Need rlp column in refl table!")
+
+    beam = experiment.beam
+    detector = experiment.detector
+    assert beam is not None and experiment is not None
+
+    rois = []
+    is_on_edge = []
+    for i_refl in range(nref):
+        roi, on_edge = determine_shoebox_ROI(detector, delta_Q, beam.get_wavelength(), refls[i_refl])
+        rois.append(roi)
+        is_on_edge.append( on_edge)
+    return rois, is_on_edge
+
+
 def get_roi_background_and_selection_flags(refls, imgs, shoebox_sz=10, reject_edge_reflections=False,
                                    reject_roi_with_hotpix=True, background_mask=None, hotpix_mask=None,
                                    bg_thresh=3.5, set_negative_bg_to_zero=False,
                                    pad_for_background_estimation=None, use_robust_estimation=True, sigma_rdout=3.,
-                                   min_trusted_pix_per_roi=4, deltaQ=None, experiment=None):
+                                   min_trusted_pix_per_roi=4, deltaQ=None, experiment=None, weighted_fit=True):
 
     npan, sdim, fdim = imgs.shape
 
@@ -705,7 +733,8 @@ def get_roi_background_and_selection_flags(refls, imgs, shoebox_sz=10, reject_ed
             tilt_plane = tilt_a * Xcoords + tilt_b * Ycoords + tilt_c
         else:
             fit_results = fit_plane_equation_to_background_pixels(
-                shoebox_img=shoebox, fit_sel=is_background, sigma_rdout=shoebox_sigma_readout)
+                shoebox_img=shoebox, fit_sel=is_background, sigma_rdout=shoebox_sigma_readout,
+                weighted=weighted_fit)
             if fit_results is None:
                 tilt_a = tilt_b = tilt_c = covariance = 0
                 is_selected=False
@@ -746,9 +775,40 @@ def get_roi_background_and_selection_flags(refls, imgs, shoebox_sz=10, reject_ed
     #for p in patches:
     #    plt.gca().add_patch(p)
     #plt.show()
-    print("Number of ROI with negative BGs: %d / %d" % (num_roi_negative_bg, len(rois)))
-    print("Number of ROI with NAN in BGs: %d / %d" % (num_roi_nan_bg, len(rois)))
+    #print("Number of ROI with negative BGs: %d / %d" % (num_roi_negative_bg, len(rois)))
+    #print("Number of ROI with NAN in BGs: %d / %d" % (num_roi_nan_bg, len(rois)))
     return kept_rois, panel_ids, tilt_abc, selection_flags, background
+
+
+def determine_shoebox_ROI(detector, delta_Q, wavelength_A, refl):
+    panel = detector[refl["panel"]]
+    width = get_width_of_integration_shoebox(panel, delta_Q, wavelength_A, refl['rlp'])
+    wby2 = int(round(width/2.))
+    fdim,sdim = panel.get_image_size()
+    i1,i2,j1,j2,_,_ = refl['bbox']
+    i_com = (i1+i2) * .5
+    j_com = (j1+j2) * .5
+    i1, i2, j1, j2 = i_com - wby2, i_com + wby2, j_com - wby2, j_com + wby2
+    on_edge = False
+    if i1 < 0 or j1 < 0:
+        on_edge = True
+    elif i2 >= fdim  or j2 >= sdim:
+        on_edge = True
+    i1 = max(int(i1), 0)
+    i2 = min(int(i2), fdim)
+    j1 = max(int(j1), 0)
+    j2 = min(int(j2), sdim)
+    return (i1, i2, j1, j2), on_edge
+
+
+def get_width_of_integration_shoebox(detector_panel, delta_Q, ave_wavelength_A,  rlp):
+    Qmag = 2 * np.pi * np.linalg.norm(rlp)  # magnitude momentum transfer of the RLP in physicist convention
+    detdist_mm = detector_panel.get_distance()
+    pixsize_mm = detector_panel.get_pixel_size()[0]
+    rad1 = (detdist_mm / pixsize_mm) * np.tan(2 * np.arcsin((Qmag - delta_Q * .5) * ave_wavelength_A / 4 / np.pi))
+    rad2 = (detdist_mm / pixsize_mm) * np.tan(2 * np.arcsin((Qmag + delta_Q * .5) * ave_wavelength_A / 4 / np.pi))
+    bbox_extent = (rad2 - rad1) / np.sqrt(2)  # rad2 - rad1 is the diagonal across the bbox
+    return bbox_extent
 
 
 def check_if_tilt_dips_below_zero(tilt_coefs, dim_slowfast):
@@ -761,7 +821,7 @@ def check_if_tilt_dips_below_zero(tilt_coefs, dim_slowfast):
     return dips_below_zero
 
 
-def fit_plane_equation_to_background_pixels(shoebox_img, fit_sel, sigma_rdout=3):
+def fit_plane_equation_to_background_pixels(shoebox_img, fit_sel, sigma_rdout=3, weighted=True):
     """
     :param shoebox_img: 2D pixel image (usually less than 100x100 pixels)
     :param fit_sel: pixels to be fit to plane (usually background pixels)
@@ -780,7 +840,12 @@ def fit_plane_equation_to_background_pixels(shoebox_img, fit_sel, sigma_rdout=3)
     # do the fit of the background plane
     A = np.array([fast, slow, np.ones_like(fast)]).T
     # weights matrix:
-    W = np.diag(1 / (sigma_rdout ** 2 + rho_bg))
+    if weighted:
+        W = np.diag(1 / (sigma_rdout ** 2 + rho_bg))
+        W[W <0] = 0
+        W = np.sqrt(W)
+    else:
+        W = np.eye(len(rho_bg))
     AWA = np.dot(A.T, np.dot(W, A))
     try:
         AWA_inv = np.linalg.inv(AWA)
@@ -1224,10 +1289,12 @@ def load_panel_group_file(panel_group_file):
 def spots_from_pandas(pandas_frame, mtz_file=None, mtz_col=None,
                       oversample_override=None,
                       Ncells_abc_override=None,
+                      pink_stride_override=None,
                       cuda=False, device_Id=0, time_panels=False,
                       d_max=999, d_min=1.5, defaultF=1e3,
                       njobs=1,
-                      output_img=None):
+                      output_img=None, omp=False, norm_by_spectrum=False,
+                      symbol_override=None):
     from joblib import Parallel, delayed
     from simtbx.nanoBragg.utils import flexBeam_sim_colors
 
@@ -1255,12 +1322,18 @@ def spots_from_pandas(pandas_frame, mtz_file=None, mtz_col=None,
     if "spectrum_filename" in list(df):
         spectrum_file = df.spectrum_filename.values[0]
         pink_stride = df.spectrum_stride.values[0]
+        if norm_by_spectrum:
+            nspec = load_spectra_file(spectrum_file)[0].shape[0]
+            spot_scale = spot_scale / nspec
+        if pink_stride_override is not None:
+            pink_stride = pink_stride_override
         fluxes, energies = load_spectra_file(spectrum_file, total_flux=total_flux,
                                              pinkstride=pink_stride)
     else:
         fluxes = np.array([total_flux])
         energies = np.array([ENERGY_CONV/expt.beam.get_wavelength()])
         print("Running MONO sim")
+        nspec = 1
     lam0 = df.lam0.values[0]
     lam1 = df.lam1.values[0]
     if lam0 == -1:
@@ -1275,13 +1348,11 @@ def spots_from_pandas(pandas_frame, mtz_file=None, mtz_col=None,
         assert mtz_col is not None
         Famp = open_mtz(mtz_file, mtz_col)
     else:
-        Famp = make_miller_array_from_crystal(expt.crystal, dmin=d_min, dmax=d_max, defaultF=defaultF)
+        Famp = make_miller_array_from_crystal(expt.crystal, dmin=d_min, dmax=d_max, defaultF=defaultF, symbol=symbol_override)
 
     crystal = expt.crystal
-    #from IPython import embed
-    #embed()
     # TODO opt exp should already include the optimized Amatrix, so no need to set it twice
-    #crystal.set_A(df.Amats.values[0])
+    crystal.set_A(df.Amats.values[0])
 
     panel_list = list(range(len(expt.detector)))
     pids_per_job = np.array_split(panel_list, njobs)
@@ -1291,7 +1362,7 @@ def spots_from_pandas(pandas_frame, mtz_file=None, mtz_col=None,
                                       fluxes=fluxes, energies=energies, beamsize_mm=beamsize_mm,
                                       Ncells_abc=Ncells_abc, spot_scale_override=spot_scale,
                                       cuda=cuda, device_Id=device_Id, oversample=oversample, time_panels=time_panels,
-                                      pids=pids)
+                                      pids=pids, omp=omp)
         return results
 
     results = Parallel(n_jobs=njobs)(delayed(main)(pids_per_job[jid]) for jid in range(njobs))
@@ -1312,7 +1383,7 @@ def spots_from_pandas_and_experiment(expt, pandas_pickle, mtz_file=None, mtz_col
                                      beamsize_mm=0.001, oversample=0, d_max=999, d_min=1.5, defaultF=1e3,
                                      cuda=False, device_Id=0, time_panels=True,
                                      output_img=None, njobs=1, save_expt_data=False,
-                                     as_numpy_array=False):
+                                     as_numpy_array=False, omp=False):
     import pandas
     from joblib import Parallel, delayed
     from simtbx.nanoBragg.utils import flexBeam_sim_colors
@@ -1358,7 +1429,7 @@ def spots_from_pandas_and_experiment(expt, pandas_pickle, mtz_file=None, mtz_col
                                       fluxes=fluxes, energies=energies, beamsize_mm=beamsize_mm,
                                       Ncells_abc=Ncells_abc, spot_scale_override=spot_scale,
                                       cuda=cuda, device_Id=device_Id, oversample=oversample, time_panels=time_panels,
-                                      pids=pids)
+                                      pids=pids, omp=omp)
         return results
 
     results = Parallel(n_jobs=njobs)(delayed(main)(pids_per_job[jid]) for jid in range(njobs))
@@ -1375,9 +1446,11 @@ def spots_from_pandas_and_experiment(expt, pandas_pickle, mtz_file=None, mtz_col
     return results
 
 
-def make_miller_array_from_crystal(Crystal, dmin, dmax, defaultF=1000):
+def make_miller_array_from_crystal(Crystal, dmin, dmax, defaultF=1000, symbol=None):
+    if symbol is None:
+        symbol = Crystal.get_space_group().info().type().lookup_symbol()
     Famp = make_miller_array(
-        symbol=Crystal.get_space_group().info().type().lookup_symbol(),
+        symbol=symbol,
         unit_cell=Crystal.get_unit_cell(), d_min=dmin, d_max=dmax, defaultF=defaultF)
     return Famp
 
@@ -1709,3 +1782,51 @@ def parse_reso_string(s):
         print("Failed to parse string!", error)
         raise ValueError("Wrong string format, see error above")
     return vals
+
+
+def integrate_subimg(subimg, is_bragg_peak, tilt_abc, sigma_rdout_in_photon, covar, is_hotpix=None):
+    Y,X = np.indices(subimg.shape)
+    sel = is_bragg_peak
+
+    if is_hotpix is not None:
+        sel = np.logical_and(is_bragg_peak, ~is_hotpix)
+    p = X[sel]  # fast scan coords
+    q = Y[sel]  # slow scan coords
+    rho_peak = subimg[sel]  # pixel values
+
+    t1, t2, t3 = tilt_abc
+    Isum = np.sum(rho_peak - t1*p - t2*q - t3)  # summed spot intensity
+
+    var_rho_peak = sigma_rdout_in_photon**2 + rho_peak  # include readout noise in the variance
+    Ns = len(rho_peak)  # number of integrated peak pixels
+
+    # variance propagated from tilt plane constants
+    var_a_term = covar[0, 0] * ((np.sum(p)) ** 2)
+    var_b_term = covar[1, 1] * ((np.sum(q)) ** 2)
+    var_c_term = covar[2, 2] * (Ns ** 2)
+
+    # total variance of the spot
+    var_Isum = np.sum(var_rho_peak) + var_a_term + var_b_term + var_c_term
+
+    return Isum, var_Isum
+
+
+def strong_spot_mask2(refl_tbl, detector):
+    """
+    :param refl_tbl:
+    :param detector:
+    :return:  strong spot mask same shape as detector (multi panel)
+    """
+    # dxtbx detector size is (fast scan x slow scan)
+    nfast, nslow = detector[0].get_image_size()
+    n_panels = len(detector)
+    is_strong_pixel = np.zeros((n_panels, nslow, nfast), bool)
+    panel_ids = refl_tbl["panel"]
+    # mask the strong spots so they dont go into tilt plane fits
+    for i_refl, (x1, x2, y1, y2, _, _) in enumerate(refl_tbl['bbox']):
+        i_panel = panel_ids[i_refl]
+        bb_ss = slice(y1, y2, 1)
+        bb_fs = slice(x1, x2, 1)
+        is_model = refl_tbl[i_refl]['shoebox'].mask.as_numpy_array()[0] == 5
+        is_strong_pixel[i_panel,bb_ss, bb_fs] = is_model
+    return is_strong_pixel

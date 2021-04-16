@@ -544,6 +544,7 @@ class SimData:
         elif self.using_omp:
           from boost_adaptbx.boost.python import streambuf  # will deposit printout into dummy StringIO as side effect
           from six.moves import StringIO
+          self.D.progress_meter = False
           self.D.add_nanoBragg_spots_nks(streambuf(StringIO()))
         else:
           self.D.add_nanoBragg_spots()

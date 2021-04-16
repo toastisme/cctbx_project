@@ -67,37 +67,45 @@ class RangedParameter:
 class Parameters:
 
   def __init__(self):
-    self.Ncells_abc =[]
-    self.Ncells_def = []
-    self.rotXYZ = []
-    self.Bmatrix = []
-    self.spot_scale = []
-    self.eta = []
-    self.wavelen_offset =[]
-    self.wavelen_scale = []
+    self.Ncells_abc ={}
+    self.Ncells_def ={}
+    self.rotXYZ ={}
+    self.Bmatrix ={}
+    self.spot_scale ={}
+    self.eta ={}
+    self.wavelen_offset ={}
+    self.wavelen_scale ={}
+    self.keys = []
 
-  def add_Ncells_abc(self, val):
+  def safe_append(self, some_dict,name,val):
+    if name not in some_dict:
+      some_dict[name] = []
+      self.keys.append(name)
+      self.keys = list(set(self.keys))
+    some_dict[name].append(val)
+
+  def add_Ncells_abc(self,name, val):
     #if len(val) != 3:
     #  raise ValueError("Ncells abc must be a 3-tuple")
-    self.Ncells_abc.append(val)
+    self.safe_append(self.Ncells_abc, name, val)
 
-  def add_Ncells_def(self, val):
-    self.Ncells_def.append(val)
+  def add_Ncells_def(self,name, val):
+    self.safe_append(self.Ncells_def, name, val)
 
-  def add_spot_scale(self, val):
-    self.spot_scale.append(val)
+  def add_spot_scale(self,name, val):
+    self.safe_append(self.spot_scale,name,val)
 
-  def add_rotXYZ(self, val):
-    self.rotXYZ.append(val)
+  def add_rotXYZ(self,name, val):
+    self.safe_append(self.rotXYZ, name, val)
 
-  def add_Bmatrix(self, val):
-    self.Bmatrix.append(val.elems)
+  def add_Bmatrix(self,name, val):
+    self.safe_append(self.Bmatrix,name, val.elems)
 
-  def add_eta(self,val):
-    self.eta.append(val)
+  def add_eta(self,name,val):
+    self.safe_append(self.eta, name, val)
 
-  def add_wavelen_offset(self, val):
-    self.wavelen_offset.append(val)
+  def add_wavelen_offset(self,name, val):
+    self.safe_append(self.wavelen_offset, name, val)
 
-  def add_wavelen_scale(self, val):
-    self.wavelen_scale.append(val)
+  def add_wavelen_scale(self,name, val):
+    self.safe_append(self.wavelen_scale, name, val)

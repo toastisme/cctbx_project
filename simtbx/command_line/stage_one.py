@@ -411,6 +411,41 @@ class Script:
                     raise RuntimeError("Process failed")
 
 
+def save_model_from_refiner( img_path, refiner, exper,  shot_idx, adu_per_photon):
+    #TODO replace above method with this, verify same results
+    panel_Xdim, panel_Ydim = refiner.S.detector[0].get_image_size()
+    img_shape = len(refiner.S.detector), panel_Ydim, panel_Xdim
+    num_imgs = 4
+    writer_args = {"filename": img_path,
+                   "image_shape": img_shape,
+                   "num_images": num_imgs,
+                   "detector": refiner.S.detector, "beam": refiner.S.beam.nanoBragg_constructor_beam}
+    model_img, spots_img, sigma_r_img = refiner.get_model_image(i_shot=shot_idx, only_save_model=True)
+    with H5AttributeGeomWriter(**writer_args) as writer:
+        # model_img *= self.params.refiner.adu_per_photon
+        data = image_data_from_expt(exper)
+        data /= adu_per_photon
+        pids, ys, xs = np.where(model_img == 0)
+        model_img[pids, ys, xs] = data[pids, ys, xs]
+        writer.add_image(model_img)
+        writer.add_image(data)
+
+        Zimg = model_img - data
+        Zimg /= np.sqrt(model_img + sigma_r_img ** 2)
+
+        Zimg = Zimg * 0.1 + 1
+        Zimg[pids, ys, xs] = 1
+
+        Zimg2 = model_img - data
+        Zimg2 /= np.sqrt(data + sigma_r_img ** 2)
+
+        Zimg2 = Zimg2 * 0.1 + 1
+        Zimg2[pids, ys, xs] = 1
+
+        writer.add_image(Zimg2)
+        writer.add_image(spots_img)
+
+
 if __name__ == '__main__':
     with show_mail_on_error():
         script = Script()

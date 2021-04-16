@@ -1,4 +1,6 @@
 from __future__ import absolute_import, division, print_function
+import os
+import sys
 from copy import deepcopy
 from libtbx.mpi4py import MPI
 COMM = MPI.COMM_WORLD
@@ -44,15 +46,16 @@ class GlobalRefinerLauncher(LocalRefinerLauncher):
 
     def launch_refiner(self, pandas_table, miller_data=None):
         self._alias_refiner()
-        if not "opt_exp_name" in list(pandas_table) or not "predictions" in list(pandas_table):
-            raise KeyError("Pandas table needs opt_exp_name and predicictions columns")
+        #if not "opt_exp_name" in list(pandas_table) or not "predictions" in list(pandas_table):
+        #    raise KeyError("Pandas table needs opt_exp_name and predicictions columns")
 
         if COMM.rank == 0:
             self.create_cache_dir()
         COMM.Barrier()
 
         num_exp = len(pandas_table)
-        first_exper_file = pandas_table.opt_exp_name.values[0]
+        #first_exper_file = pandas_table.opt_exp_name.values[0]
+        first_exper_file = pandas_table.exp_name.values[0]
         detector = ExperimentListFactory.from_json_file(first_exper_file, check_format=False)[0].detector
         # TODO verify all shots have the same detector ?
         if self.params.refiner.reference_geom is not None:
@@ -68,7 +71,8 @@ class GlobalRefinerLauncher(LocalRefinerLauncher):
         shot_idx = 0  # each rank keeps index of the shots local to it
         rank_panel_groups_refined = set()
         rank_local_parameters = []
-        exper_names = pandas_table.opt_exp_name.unique()
+        #exper_names = pandas_table.opt_exp_name.unique()
+        exper_names = pandas_table.exp_name.unique()
         # TODO assert all exper are single-file, probably way before this point
         for i_exp, exper_name in enumerate(exper_names):
             if i_exp % COMM.size != COMM.rank:
@@ -80,7 +84,10 @@ class GlobalRefinerLauncher(LocalRefinerLauncher):
             expt.detector = detector  # in case of supplied ref geom
             self._check_experiment_integrity(expt)
 
-            exper_dataframe = pandas_table.query("opt_exp_name=='%s'" % exper_name)
+            #exper_dataframe = pandas_table.query("opt_exp_name=='%s'" % exper_name)
+            exper_dataframe = pandas_table.query("exp_name=='%s'" % exper_name)
+            rotX, rotY, rotZ = exper_dataframe[["rotX", "rotY", "rotZ"]].values[0]
+            self.rotXYZ_inits[shot_idx] = rotX, rotY, rotZ
 
             self._set_initial_model_for_shot(shot_idx, exper_dataframe)
 
@@ -90,7 +97,9 @@ class GlobalRefinerLauncher(LocalRefinerLauncher):
             good_sel = flex.bool([h != (0, 0, 0) for h in list(refls["miller_index"])])
             refls = refls.select(good_sel)
 
-            UcellMan = utils.manager_from_crystal(expt.crystal)
+            #UcellMan = utils.manager_from_crystal(expt.crystal)
+            opt_uc_param = exper_dataframe[["a","b","c","al","be","ga"]].values[0]
+            UcellMan = utils.manager_from_params(opt_uc_param)
 
             if self.symbol is None:
                 if self.params.refiner.force_symbol is not None:
@@ -101,6 +110,9 @@ class GlobalRefinerLauncher(LocalRefinerLauncher):
                 if self.params.refiner.force_symbol is None:
                     if expt.crystal.get_space_group().type().lookup_symbol() != self.symbol:
                         raise ValueError("Crystals should all have the same space group symmetry")
+
+            #if "spectrum_filename" in list(exper_dataframe):
+            #    self.params.simulator.spectrum.filename = exper_dataframe.spectrum_filename.values[0] #self.input_spectrumnames[self.i_exp]
 
             if shot_idx == 0:  # each rank initializes a simulator only once
                 if self.params.simulator.init_scale != 1:
@@ -136,6 +148,10 @@ class GlobalRefinerLauncher(LocalRefinerLauncher):
             self.shot_rois[shot_idx] = shot_data.rois
             self.shot_nanoBragg_rois[shot_idx] = shot_data.nanoBragg_rois
             self.shot_roi_imgs[shot_idx] = shot_data.roi_imgs
+            self.shot_roi_darkRMS[shot_idx] = shot_data.roi_darkRMS if shot_data.roi_darkRMS is not None else None
+            if "rlp" in refls:
+                self.shot_reso[shot_idx] = 1/np.linalg.norm(refls["rlp"], axis=1)
+
             if "spectrum_filename" in list(exper_dataframe):
                 self.shot_spectra[shot_idx] = utils.load_spectra_from_dataframe(exper_dataframe)
             else:
@@ -149,6 +165,7 @@ class GlobalRefinerLauncher(LocalRefinerLauncher):
             self.shot_originZ_init[shot_idx] = 0
             self.shot_selection_flags[shot_idx] = shot_data.selection_flags
             self.shot_background[shot_idx] = shot_data.background
+            self.shot_expernames[shot_idx] = exper_name
 
             shot_panel_groups_refined = self.determine_refined_panel_groups(shot_data.pids, shot_data.selection_flags)
             rank_panel_groups_refined = rank_panel_groups_refined.union(set(shot_panel_groups_refined))
@@ -163,15 +180,17 @@ class GlobalRefinerLauncher(LocalRefinerLauncher):
             else:
                 n_ncells_param = 2
 
+            n_ncells_def_params = 3
             nrot_params = 3
             n_unitcell_params = len(UcellMan.variables)  # TODO verify all crystals have same space group sym
             n_spotscale_params = 1
             n_originZ_params = 1
-            n_eta_params = 1
+            n_eta_params = 3
             n_tilt_params = 3 * len(shot_data.nanoBragg_rois)
             n_sausage_params = 4*self.params.simulator.crystal.num_sausages
-            n_local_unknowns = nrot_params + n_unitcell_params + n_ncells_param + n_spotscale_params + n_originZ_params \
-                               + n_tilt_params + n_eta_params + n_sausage_params
+            n_per_spot_scales = len(shot_data.nanoBragg_rois)
+            n_local_unknowns = nrot_params + n_unitcell_params + n_ncells_param + n_ncells_def_params + n_spotscale_params + n_originZ_params \
+                               + n_tilt_params + n_eta_params + n_sausage_params + n_per_spot_scales
 
             rank_local_parameters.append(n_local_unknowns)
             shot_idx += 1
@@ -183,7 +202,7 @@ class GlobalRefinerLauncher(LocalRefinerLauncher):
             raise RuntimeError("Cannot refine without shots! Probably Ranks than shots!")
         COMM.Barrier()
 
-        # TODO warn that per_spot_scale refinement not recommended in ensemble mode
+        # TODO warn that per_spot_scale refinement not intended for ensemble mode
 
         total_local_param_on_rank = sum(rank_local_parameters)
         local_per_rank = COMM.gather(total_local_param_on_rank)
@@ -208,15 +227,19 @@ class GlobalRefinerLauncher(LocalRefinerLauncher):
         self.panel_groups_refined = list(COMM.bcast(panel_groups_refined))
 
         self._gather_Hi_information()
+        if self.params.roi.cache_dir_only:
+            print("Done creating cache directory and cache_dir_only=True, so goodbye.")
+            sys.exit()
 
-        n_spectra_params = 2 if self.params.refiner.refine_spectra is not None else 0
+        n_spectra_params = 2 # if self.params.refiner.refine_spectra is not None else 0
         n_panelRot_params = 3*self.n_panel_groups
         n_panelXYZ_params = 3*self.n_panel_groups
         n_global_params = n_spectra_params + n_panelRot_params + n_panelXYZ_params
 
-        if self.params.refiner.refine_Fcell is not None and any(self.params.refiner.refine_Fcell):
-            n_global_params += self.num_hkl_global
+        #if self.params.refiner.refine_Fcell is not None and any(self.params.refiner.refine_Fcell):
+        n_global_params += self.num_hkl_global
 
+        #TODO why is this init_refiner call here ?
         self._init_refiner(n_local_unknowns=total_local_param_on_rank,
                            n_global_unknowns=n_global_params,
                            local_idx_start=local_param_offset_per_rank,
@@ -277,14 +300,24 @@ class GlobalRefinerLauncher(LocalRefinerLauncher):
                 ucell_maxs.append(valmax)
             self.RUC.use_ucell_ranges = True
 
-        self.RUC.sausages_init = {}
+        self.sausages_init = {}
         self.RUC.eta_init = {}
         self.RUC.ucell_inits = {}
         self.RUC.ucell_mins = {}
         self.RUC.ucell_maxs = {}
+
+        ncells_def_init = self.params.simulator.crystal.ncells_def
+        self.RUC.ncells_def_init = {}
         for i_shot in range(self.num_shots_on_rank):
-            self.RUC.sausages_init[i_shot] = [0, 0, 0, 1]
-            self.RUC.eta_init[i_shot] = self.params.simulator.crystal.mosaicity
+            self.RUC.ncells_def_init[i_shot] = ncells_def_init # TODO fix
+            #TODO sausages from stage 1 ?
+            self.sausages_init[i_shot] = [0, 0, 0, 1]*self.params.simulator.crystal.num_sausages
+            for i_saus in range(self.params.simulator.crystal.num_sausages):
+                self.sausages_init[i_shot][4*i_saus-1] = i_saus + 0.1
+            #TODO generalize and allow loading of mosaicity crystal model for anisotropic mosaicity
+            if self.params.simulator.crystal.anisotropic_mosaicity is not None:
+                raise NotImplemented("Stage 2 doesnt support aniso mosaicity")
+            self.RUC.eta_init[i_shot] = [self.params.simulator.crystal.mosaicity, 0, 0]
             self.RUC.ucell_inits[i_shot] = self.shot_ucell_managers[i_shot].variables
 
             if ucell_maxs and ucell_mins:
@@ -293,6 +326,15 @@ class GlobalRefinerLauncher(LocalRefinerLauncher):
 
         self.RUC.m_init = self.NCELLS_INIT_PER_SHOT  # enfore these are not None?
         self.RUC.spot_scale_init = self.SCALE_INIT_PER_SHOT
+        # TODO per shot ncells def and per shot eta
+        #TODO sausages
+        #self.sausages_init = {}
+        #for i_shot in self.SCALE_INIT_PER_SHOT:
+        #    scale_fac = self.SCALE_INIT_PER_SHOT[i_shot]
+        #    nsaus = self.params.simulator.crystal.num_sausages
+        #    self.sausages_init[i_shot] = []
+        #    for i_saus in range(nsaus):
+        #        self.sausages_init[i_shot] += [0,0,0,scale_fac / nsaus]
 
     def _prep_blue_sausages(self):
         if self.params.refiner.refine_blueSausages:
@@ -407,9 +449,25 @@ class GlobalRefinerLauncher(LocalRefinerLauncher):
         if shot_idx in self.SCALE_INIT_PER_SHOT or shot_idx in self.NCELLS_INIT_PER_SHOT:
             raise KeyError("Already set initial model for shot %d on rank %d" % (shot_idx, COMM.rank))
 
-        self.SCALE_INIT_PER_SHOT[shot_idx] = dataframe.spot_scales.values[0]
+        self.SCALE_INIT_PER_SHOT[shot_idx] = np.sqrt(dataframe.spot_scales.values[0])
+        # TODO should this be sqrt?
 
         ncells_init = dataframe.ncells.values[0]  # either a 1-tuple or a 3-tuple
         if len(ncells_init) == 1:
             ncells_init += (ncells_init[0], ncells_init[0])
         self.NCELLS_INIT_PER_SHOT[shot_idx] = ncells_init
+
+    def get_parameter_hdf5_path(self):
+        hdf5_path = None
+        if self.params.refiner.parameter_hdf5_path is not None:
+            param_folder = self.params.refiner.parameter_hdf5_path
+            if not os.path.exists(param_folder):
+                os.makedirs(param_folder)
+            hdf5_path = os.path.join(param_folder, "params_rank%d.h5" % COMM.rank)
+        elif self.params.refiner.io.output_dir is not None:
+            param_dir = os.path.join(self.params.refiner.io.output_dir, "params")
+            if COMM.rank == 0:
+                if not os.path.exists(param_dir):
+                    os.makedirs(param_dir)
+            hdf5_path = os.path.join(param_dir, "params_rank%d.h5" %COMM.rank)
+        return hdf5_path

@@ -27,6 +27,7 @@ class BaseRefiner:
 
     def __init__(self):
         # TODO , organize and be more descriptive, also ensure documentation for all attributes from local_refiner.LocalRefiner
+
         self.print_end = "\n"  # value appended to the end of each printed string
         self.S = None   # instance of simtbx.nanoBragg.sim_data.SimData
         self.update_spectra_during_refinement = False
@@ -40,6 +41,7 @@ class BaseRefiner:
         self.sausages_init = {0: [0, 0, 0, 1]}  # starting parameters for the blue sausage in a single image (3 rotation angles and a scale factor of 1)
         self.update_eta = False  # update mosaic spread during refinement, only if refinine_eta = True
         self.sausages_sigma = [1, 1, 1, 1]  # relative senstivity factor for each sausage parameter (rotX, rotY, rotZ, scale)
+        self.rotXYZ_inits = {0: [0, 0, 0]}
 
         self.refine_eta = False  # refine the mosaic spread angle
         self.eta_init = {0: [0,0,0]}  # initialize the mosaic spread angles
@@ -60,6 +62,7 @@ class BaseRefiner:
         self.background = None  # can be a dict of {i_shot: backgroundImage} where bcakgroundImage has shape of the detector
         self.full_image_of_model = None  # a numpy array same shape as detector where the model is written to
         self.save_model_for_shot = None  # whether to save a full image of the model
+        self.only_save_model_for_shot = False
         self.pershot_spectra_refine = False  # refine spectra for every shot?
         self.ncells_mask = None  # use to specify to Ncells parameters that are the same, e.g. ncells_mask = 0,0,1 enforces Na==Nb
         self.record_model_predictions = False  # whether to record xyzcal.pix during refinement

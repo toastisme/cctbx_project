@@ -139,6 +139,7 @@ class LocalRefiner(BaseRefiner):
         self.global_ucell_param = global_ucell
         assert not global_detector_distance, "deprecated"
         self.global_detector_distance_param = False
+        self.special_flag = None
         self.debug = False
         self.num_Fcell_negative_model = 0
         self.perturb_fcell = perturb_fcell
@@ -293,9 +294,9 @@ class LocalRefiner(BaseRefiner):
         self.a = self.b = self.c = None  # tilt plan place holder
 
         # optional properties
-        self.FNAMES = None
-        self.PROC_FNAMES = None
-        self.init_ang_off = None
+        self.FNAMES = None  # dict where index in shot index, and value is experiment name, optional
+        self.PROC_FNAMES = None  # deprecated
+        self.init_ang_off = None  # initial misortientations between model Xtals and reference Xtals
         self.current_ang_off = None  # TODO move me to pixel_refinement
         self.I_AM_ROOT = True
 
@@ -395,14 +396,15 @@ class LocalRefiner(BaseRefiner):
     def _dump_parameters_to_hdf5(self):
         if self.parameter_hdf5_path is not None and self.iterations % self.parameter_hdf5_write_freq == 0:
             with h5py.File(self.parameter_hdf5_path, 'w') as h5:
-                h5.create_dataset("Ncells_abc", data=self.parameters.Ncells_abc)
-                h5.create_dataset("Ncells_def", data=self.parameters.Ncells_def)
-                h5.create_dataset("RotXYZ", data=self.parameters.rotXYZ)
-                h5.create_dataset("Bmat", data=self.parameters.Bmatrix)
-                h5.create_dataset("eta", data=self.parameters.eta)
-                h5.create_dataset("spot_scale", data=self.parameters.spot_scale)
-                h5.create_dataset("wavelen_offset", data=self.parameters.wavelen_offset)
-                h5.create_dataset("wavelen_scale", data=self.parameters.wavelen_scale)
+                for exp_name in self.parameters.keys:
+                    h5.create_dataset("Ncells_abc/%s" % exp_name, data=self.parameters.Ncells_abc[exp_name])
+                    h5.create_dataset("Ncells_def/%s" % exp_name, data=self.parameters.Ncells_def[exp_name])
+                    h5.create_dataset("RotXYZ/%s" % exp_name, data=self.parameters.rotXYZ[exp_name])
+                    h5.create_dataset("Bmat/%s" % exp_name, data=self.parameters.Bmatrix[exp_name])
+                    h5.create_dataset("eta/%s" % exp_name, data=self.parameters.eta[exp_name])
+                    h5.create_dataset("spot_scale/%s" % exp_name, data=self.parameters.spot_scale[exp_name])
+                    h5.create_dataset("wavelen_offset/%s" % exp_name, data=self.parameters.wavelen_offset[exp_name])
+                    h5.create_dataset("wavelen_scale/%s" % exp_name, data=self.parameters.wavelen_scale[exp_name])
 
     def _setup(self):
         # Here we go!  https://youtu.be/7VvkXA6xpqI
@@ -759,9 +761,11 @@ class LocalRefiner(BaseRefiner):
         # See if restarting from save state
 
         if self.x_init is not None: #NOTEX
+            print("Initializing with provided x_init array")
             self.Xall = self.x_init
             self.x = self.x_for_lbfgs
         elif self.restart_file is not None:
+            print("Restarting from parameter file %s" % self.restart_file)
             self.Xall = flex_double(np_load(self.restart_file)["x"])
             self.x = self.x_for_lbfgs
 
@@ -794,38 +798,71 @@ class LocalRefiner(BaseRefiner):
         if self.refine_Umatrix:
             if self.refine_rotX:
                 self.D.refine(0)  # rotX
+            #else:
+            #    self.D.fix(0)
             if self.refine_rotY:
                 self.D.refine(1)  # rotY
+            #else:
+            #    self.D.fix(1)
             if self.refine_rotZ:
                 self.D.refine(2)  # rotZ
+            #else:
+            #    self.D.fix(2)
         if self.refine_Bmatrix:
             for i in range(self.n_ucell_param):
                 self.D.refine(i + 3)  # unit cell params
+            #else:
+            #    self.D.fix(i+3)
         if self.refine_ncells:
             self.D.refine(self._ncells_id)
+        #else:
+        #    self.D.fix(self._ncells_id)
         if self.refine_ncells_def:
             self.D.refine(self._ncells_def_id)
+        #else:
+        #    self.D.fix(self._ncells_def_id)
         if self.refine_detdist or self.refine_panelZ:
             self.D.refine(self._detector_distance_id)
+        #else:
+        #    self.D.fix(self._detector_distance_id)
         if self.refine_panelRotO:
             self.D.refine(self._panelRotO_id)
+        #else:
+        #    self.D.fix(self._panelRotO_id)
         if self.refine_panelRotF:
             self.D.refine(self._panelRotF_id)
+        #else:
+        #    self.D.fix(self._panelRotF_id)
         if self.refine_panelRotS:
             self.D.refine(self._panelRotS_id)
+        #else:
+        #    self.D.fix(self._panelRotS_id)
         if self.refine_panelXY:
             self.D.refine(self._panelX_id)
             self.D.refine(self._panelY_id)
+        #else:
+        #    self.D.fix(self._panelX_id)
+        #    self.D.fix(self._panelY_id)
         if self.refine_Fcell:
             self.D.refine(self._fcell_id)
+        #else:
+        #    self.D.fix(self._fcell_id)
         if self.refine_lambda0:
             self.D.refine(self._lambda0_id)
+        #else:
+        #    self.D.fix(self._lambda0_id)
         if self.refine_lambda1:
             self.D.refine(self._lambda1_id)
+        #else:
+        #    self.D.fix(self._lambda1_id)
         if self.refine_eta:
             self.D.refine(self._eta_id)
+        #else:
+        #    self.D.fix(self._eta_id)
         if self.refine_blueSausages:
             self.D.refine(self._sausage_id)
+        #else:
+        #    self.D.fix(self._sausage_id)
         self.D.initialize_managers()
 
     def _MPI_setup_global_params(self):
@@ -1026,6 +1063,7 @@ class LocalRefiner(BaseRefiner):
 
     def _make_x_identifier_array(self):
         """do this in case we need to identify what the parameters in X are at a later time"""
+        #TODO update for new parameter types
         parameter_dict = {}
         for i_shot in range(self.n_shots):
             if self.FNAMES is None:
@@ -1150,6 +1188,8 @@ class LocalRefiner(BaseRefiner):
                 idx = i_sausage*4 + i_param
                 xpos = self.sausages_xpos[i_shot][idx]
                 sigma = self.sausages_sigma[i_param]
+                #from IPython import embed
+                #embed()
                 init = self.sausages_init[i_shot][idx] #_param]
                 #init = self.sausages_init[i_shot][idx]
                 #xval_init = 1
@@ -1163,19 +1203,20 @@ class LocalRefiner(BaseRefiner):
     def _get_rotX(self, i_shot):
         if self.rescale_params:
             # FIXME ?
-            return self.rotX_sigma*(self.Xall[self.rotX_xpos[i_shot]]-1) + 0.0
+            return self.rotX_sigma*(self.Xall[self.rotX_xpos[i_shot]]-1) + self.rotXYZ_inits[i_shot][0]
         else:
             return self.Xall[self.rotX_xpos[i_shot]]
 
     def _get_rotY(self, i_shot):
         if self.rescale_params:
-            return self.rotY_sigma * (self.Xall[self.rotY_xpos[i_shot]] - 1) + 0.0
+            return self.rotY_sigma * (self.Xall[self.rotY_xpos[i_shot]] - 1) + self.rotXYZ_inits[i_shot][1]
         else:
             return self.Xall[self.rotY_xpos[i_shot]]
 
     def _get_rotZ(self, i_shot):
         if self.rescale_params:
-            return self.rotZ_sigma * (self.Xall[self.rotZ_xpos[i_shot]] - 1) + 0.0
+            return self.rotZ_sigma * (self.Xall[self.rotZ_xpos[i_shot]] - 1) + self.rotXYZ_inits[i_shot][2]
+
         else:
             return self.Xall[self.rotZ_xpos[i_shot]]
 
@@ -1453,6 +1494,12 @@ class LocalRefiner(BaseRefiner):
         if self.randomize_devices is not None:
             dev = np_random_choice(self.randomize_devices)
             self.D.device_Id = dev
+        #p = 136, f = 110, s= 172
+        #pfs = [(136, 110, 172)]
+        #if self.special_flag is not None:
+        #self.D.printout_pixel_fastslow=110,172
+        #self.D.add_diffBragg_spots((136,110,172))
+        #exit()
         self.D.add_diffBragg_spots(self.pfs)
 
     def _get_fcell_val(self, i_fcell):
@@ -1595,6 +1642,7 @@ class LocalRefiner(BaseRefiner):
             rotZ = flex_double(sausage_vals[2::4])
             scales = flex_double(sausage_vals[3::4])
             self.D.set_sausages(rotX, rotY, rotZ, scales)
+            print("Set the sausages!")
 
     def _update_rotXYZ(self):
         #if self.refine_rotX:
@@ -1926,12 +1974,15 @@ class LocalRefiner(BaseRefiner):
 
     def _update_beams(self):
         # sim_data instance has a nanoBragg beam object, which takes spectra and converts to nanoBragg xray_beams
-        self.S.beam.spectra = self.SPECTRA[self._i_shot]
+        #NOTE holy shit this typo was HYOOGE
+        #self.S.beam.spectra = self.SPECTRA[self._i_shot]
+        self.S.beam.spectrum = self.SPECTRA[self._i_shot]
         if self.verbose and self._i_shot == 0:
             self.print("Using %d BEAMZ!" % len(self.SPECTRA[self._i_shot]))
             self.print("Using %d mosaicities" % (self.S.D.mosaic_domains))
             self.print("Using %dx%d oversample rate" % (self.S.D.oversample, self.S.D.oversample))
         self.D.xray_beams = self.S.beam.xray_beams
+        assert len(self.D.xray_beams) == len(self.SPECTRA[self._i_shot])
 
     def _get_panels_fasts_slows(self):
         npan = len(self.S.detector)
@@ -1977,7 +2028,8 @@ class LocalRefiner(BaseRefiner):
             if self.verbose:
                 self._print_iteration_header()
 
-            self._MPI_save_state_of_refiner()
+            if not self.only_save_model_for_shot:
+                self._MPI_save_state_of_refiner()
 
             if self.iteratively_freeze_parameters:
                 if self.param_sels is None:
@@ -1998,15 +2050,18 @@ class LocalRefiner(BaseRefiner):
             self._update_Fcell()  # update the structure factor with the new x
             self._update_spectra_coefficients()  # updates the diffBragg lambda coefficients if refinining spectra
 
-            if self.CRYSTAL_GT is not None:
+            if self.CRYSTAL_GT is not None and not self.only_save_model_for_shot:
                 self._MPI_initialize_GT_crystal_misorientation_analysis()
 
             for self._i_shot in self.shot_ids:
 
-                if self.save_model_for_shot is not None and self.save_model_for_shot == self._i_shot:
-                    self.full_image_of_model = NP_ZEROS(self.image_shape)
-                    self.full_image_of_spots = NP_ZEROS(self.image_shape)
-                    self.full_image_of_sigma_r = NP_ZEROS(self.image_shape)
+                if self.save_model_for_shot is not None:
+                    if self.save_model_for_shot == self._i_shot:
+                        self.full_image_of_model = NP_ZEROS(self.image_shape)
+                        self.full_image_of_spots = NP_ZEROS(self.image_shape)
+                        self.full_image_of_sigma_r = NP_ZEROS(self.image_shape)
+                    elif self.only_save_model_for_shot:
+                        continue
 
                 if self.save_model:
                     self._open_model_output_file()
@@ -2029,6 +2084,8 @@ class LocalRefiner(BaseRefiner):
                 printed_geom_updates = False
 
                 # CREATE THE PANEL FAST SLOW ARRAY AND RUN DIFFBRAGG
+                #from IPython import embed
+                #embed()
                 self._run_diffBragg_current()
 
                 # TODO pre-extractions for all parameters
@@ -2041,7 +2098,8 @@ class LocalRefiner(BaseRefiner):
                         continue
 
                     saving_model = self.save_model_for_shot is not None and self.save_model_for_shot == self._i_shot
-                    if not saving_model and self.selection_flags is not None:
+                    #if not saving_model and self.selection_flags is not None:
+                    if self.selection_flags is not None:
                         if self._i_shot not in self.selection_flags:
                             continue
                         elif not self.selection_flags[self._i_shot][i_spot]:
@@ -2116,21 +2174,24 @@ class LocalRefiner(BaseRefiner):
                     # Done with derivative accumulation
 
             #    self.image_corr[self._i_shot] = self.image_corr[self._i_shot] / self.image_corr_norm[self._i_shot]
-            self._MPI_aggregate_model_data_correlations()
+            if not self.only_save_model_for_shot:
+                self._MPI_aggregate_model_data_correlations()
             # TODO add in the priors:
             self._priors()
             self._parameter_freezes()
-            self._mpi_aggregation()
+            if not self.only_save_model_for_shot:
+                self._mpi_aggregation()
 
-            self._f = self.target_functional
-            self._g = self.g_for_lbfgs
-            self.g = self.g_for_lbfgs  # TODO why all these repeated definitions ?, self.g is needed by _verify_diag
+                self._f = self.target_functional
+                self._g = self.g_for_lbfgs
+                self.g = self.g_for_lbfgs  # TODO why all these repeated definitions ?, self.g is needed by _verify_diag
 
-            self._curvature_analysis()
+                self._curvature_analysis()
 
             # reset ROI pixels TODO: is this necessary
             self.D.raw_pixels_roi *= 0
-
+            if self.only_save_model_for_shot:
+                return
             self._sanity_check_grad()
             self.gnorm = norm(self.grad)
 
@@ -2141,7 +2202,9 @@ class LocalRefiner(BaseRefiner):
                 self._print_image_correlation_analysis()
                 self.print_step()
                 self.print_step_grads()
-                self._dump_parameters_to_hdf5()
+
+            self._append_parameters()
+            self._dump_parameters_to_hdf5()
 
             self.iterations += 1
             self.f_vals.append(self.target_functional)
@@ -2965,7 +3028,7 @@ class LocalRefiner(BaseRefiner):
                   % (Bcolors.HEADER, border, border, border, self.trial_id + 1, refine_str, self.iterations + 1, self.num_positive_curvatures, border, border,border, Bcolors.ENDC))
 
     def _MPI_save_state_of_refiner(self):
-        if self.I_AM_ROOT and self.output_dir is not None:
+        if self.I_AM_ROOT and self.output_dir is not None and self.refine_Fcell:
             outf = os.path.join(self.output_dir, "_fcell_trial%d_iter%d" % (self.trial_id, self.iterations))
             if self.rescale_params:
                 fvals = [self._get_fcell_val(i_fcell) for i_fcell in range(self.n_global_fcell)]
@@ -3162,13 +3225,14 @@ class LocalRefiner(BaseRefiner):
                  std(_sv))
         scale_stat_names =["median", "mean", "min", "max", "sigma"]
         scale_stats = ["%s=%.4f" % name_stat for name_stat in zip(scale_stat_names, stats)]
-        scale_stats_string = "SCALE FACTOR STATS: " + ", ".join(scale_stats)
+        exper_name = self.FNAMES[self._i_shot] if self.FNAMES is not None else "unspecified"
+        scale_stats_string = "Exp %s: SCALE FACTOR STATS: " % exper_name + ", ".join(scale_stats)
         if len(_sv) == 1:
             scale_stats_string = "spot scale=%1.3g, " % _sv[0]
         if self.scale_vals_truths is not None:
             scale_resid = [ABS(s-stru) for s, stru in zip(_sv, self.scale_vals_truths)]
             scale_stats_string += ", truth_resid=%1.2e" % median(scale_resid)
-        self.parameters.add_spot_scale(_sv[0])
+        #self.parameters.add_spot_scale(exper_name, _sv[0])
 
         #if self.curv is not None:
         #    if self.curv[self.spot_scale_xpos[self._i_shot]] <=0:
@@ -3193,18 +3257,18 @@ class LocalRefiner(BaseRefiner):
         if len(ncells_shot) == 1:
             ncells_shot = [ncells_shot[0]]*3
         scale_stats_string += "Ncells=%.1f, %.1f, %.1f, " % tuple(ncells_shot)
-        self.parameters.add_Ncells_abc(ncells_shot)
+        #self.parameters.add_Ncells_abc(exper_name, ncells_shot)
 
         ncells_def_vals = self._get_ncells_def_vals(self._i_shot)
         scale_stats_string += "Ncells_def=%.1f, %.1f, %.1f, " % tuple(ncells_def_vals)
-        self.parameters.add_Ncells_def(ncells_def_vals)
+        #self.parameters.add_Ncells_def(exper_name, ncells_def_vals)
 
         degree = "\u00b0"
         angstrom = "\u212b"
         eta_vals = self._get_eta(i_shot=self._i_shot)
         eta_a, eta_b, eta_c = eta_vals
         scale_stats_string += u"Eta=%.3f%s, %.3f%s, %.3f%s, " % (eta_a, degree, eta_b, degree, eta_c, degree)
-        self.parameters.add_eta(eta_vals)
+        #self.parameters.add_eta(exper_name, eta_vals)
         lam01 = self._get_spectra_coefficients()
         if not lam01:
             lam0, lam1 = 0,1
@@ -3212,8 +3276,8 @@ class LocalRefiner(BaseRefiner):
             lam0, lam1 = lam01
         scale_stats_string += u"wavelen_offset=%1.2g %s, " % (lam0, angstrom)
         scale_stats_string += u"wavelen_scale=%.3f, " % (lam1)
-        self.parameters.add_wavelen_offset(lam0)
-        self.parameters.add_wavelen_scale(lam1)
+        #self.parameters.add_wavelen_offset(exper_name, lam0)
+        #self.parameters.add_wavelen_scale(exper_name, lam1)
 
         uc_string = ""
         ucparam_names = self.UCELL_MAN[0].variable_names
@@ -3223,12 +3287,12 @@ class LocalRefiner(BaseRefiner):
         scale_stats_string += uc_string
 
         Bmat = self.get_refined_Bmatrix(self._i_shot)
-        self.parameters.add_Bmatrix(Bmat)
+        #self.parameters.add_Bmatrix(exper_name, Bmat)
 
         rotX = self._get_rotX(self._i_shot)
         rotY = self._get_rotY(self._i_shot)
         rotZ = self._get_rotZ(self._i_shot)
-        self.parameters.add_rotXYZ((rotX, rotY, rotZ))
+        #self.parameters.add_rotXYZ(exper_name, (rotX, rotY, rotZ))
         rot_labels = ["rotX=%1.1e" % rotX, "rotY=%1.1e" % rotY, "rotZ=%1.1e" % rotZ]
         for r in rot_labels:
             scale_stats_string += u"%s%s, " % (r, degree)
@@ -3276,6 +3340,42 @@ class LocalRefiner(BaseRefiner):
 
         if self.testing_mode:
             self.conv_test()
+
+    def _append_parameters(self):
+        if self.parameter_hdf5_path is None:
+            return
+
+        exper_name = self.FNAMES[self._i_shot] if self.FNAMES is not None else "shot%d" % self._i_shot
+        exper_name = exper_name.replace("/", "+FORWARD+SLASH+")
+
+        crystal_scale = self._get_spot_scale(self._i_shot) ** 2 * self.D.spot_scale
+        self.parameters.add_spot_scale(exper_name, crystal_scale)
+
+        ncells_shot = self._get_m_val(self._i_shot)
+        if len(ncells_shot) == 1:
+            ncells_shot = [ncells_shot[0]]*3
+        self.parameters.add_Ncells_abc(exper_name, ncells_shot)
+
+        ncells_def_vals = self._get_ncells_def_vals(self._i_shot)
+        self.parameters.add_Ncells_def(exper_name, ncells_def_vals)
+
+        eta_vals = self._get_eta(i_shot=self._i_shot)
+        self.parameters.add_eta(exper_name, eta_vals)
+        lam01 = self._get_spectra_coefficients()
+        if not lam01:
+            lam0, lam1 = 0,1
+        else:
+            lam0, lam1 = lam01
+        self.parameters.add_wavelen_offset(exper_name, lam0)
+        self.parameters.add_wavelen_scale(exper_name, lam1)
+
+        Bmat = self.get_refined_Bmatrix(self._i_shot)
+        self.parameters.add_Bmatrix(exper_name, Bmat)
+
+        rotX = self._get_rotX(self._i_shot)
+        rotY = self._get_rotY(self._i_shot)
+        rotZ = self._get_rotZ(self._i_shot)
+        self.parameters.add_rotXYZ(exper_name, (rotX, rotY, rotZ))
 
     def _print_sausages(self):
         sausage_vals = self._get_sausage_parameters(self._i_shot)
@@ -3639,13 +3739,15 @@ class LocalRefiner(BaseRefiner):
                 SIG = 0
         self.full_image_of_sigma_r[self._panel_id, y1:y2, x1:x2] = SIG
 
-    def get_model_image(self, i_shot=0):
+    def get_model_image(self, i_shot=0, only_save_model=False):
         """
         go through each ROI and execute diffBragg, storing the model pixels along the way
         """
         self.save_model_for_shot = i_shot
+        self.only_save_model_for_shot = only_save_model
         self.compute_functional_and_gradients()   # goes thorugh all ROIs
         self.save_model_for_shot = None
+        self.only_save_model_for_shot = False
         return self.full_image_of_model, self.full_image_of_spots, self.full_image_of_sigma_r
 
     def get_optimized_detector(self, i_shot=0):

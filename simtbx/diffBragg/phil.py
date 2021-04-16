@@ -450,6 +450,10 @@ roi {
   shoebox_size = 10
     .type = int
     .help = roi box dimension
+  deltaQ = None
+    .type = float
+    .help = roi dimension in inverse Angstrom, such that shoeboxes at wider angles are larger.
+    .help = If this parameter is supplied, shoebox_size will be ignored.
   reject_edge_reflections = True
     .type = bool
     .help = whether to reject ROIs if they occur near the detector panel edge
@@ -466,6 +470,11 @@ roi {
     .type = str
     .help = panel list for refinement as a string, e.g. "0-8,10,32-40" . The ranges are inclusive, 
     .help = e.g. 0-8 means panels 0,1,2,3,4,5,6,7,8
+  fit_tilt_using_weights = True
+    .type = bool
+    .help = if not using robust estimation for background, and instead using tilt plane fit,
+    .help = then this parameter will toggle the use of weights. Weights are the estimated
+    .help = pixel variance, incuding readout and shot noises.
 }
 """
 

@@ -229,7 +229,10 @@ namespace boost_python { namespace {
         "sets up the managers")
 
       .def("refine", &simtbx::nanoBragg::diffBragg::refine,
-        "sets the refinement flag")
+        "sets the refinement flag to true")
+
+      .def("fix", &simtbx::nanoBragg::diffBragg::fix,
+        "sets the refinement flag to false")
 
       .def("get_value", &simtbx::nanoBragg::diffBragg::get_value, "get value of the refinement parameter")
 
