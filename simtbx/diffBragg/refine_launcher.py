@@ -390,6 +390,8 @@ class LocalRefinerLauncher:
             self.RUC.poisson_only = self.params.refiner.poissononly
             self.RUC.trad_conv_eps = self.params.refiner.tradeps
             self.RUC.verbose = self.verbose
+            if self.params.refiner.quiet:
+                self.RUC.verbose = False
             self.RUC.background = self.shot_background
             # TODO optional properties.. make this obvious
             self.RUC.PROC_FNAMES = None
@@ -398,8 +400,9 @@ class LocalRefinerLauncher:
             self.RUC.output_dir = self.params.refiner.io.output_dir
             #self.RUC.iterations=0
             self.RUC.run(setup_only=True)
-            print("\n<><><><><><><><>TRIAL %d refinement status:" % i_trial)
-            self.RUC.S.D.print_if_refining()
+            if not self.params.refiner.quiet:
+                print("\n<><><><><><><><>TRIAL %d refinement status:" % i_trial)
+                self.RUC.S.D.print_if_refining()
 
             self.RUC.num_positive_curvatures = 0
             self.RUC.use_curvatures = self.params.refiner.start_with_curvatures

@@ -369,9 +369,12 @@ refiner {
       .type = str
       .help = optional output directory
   }
+  quiet = False
+    .type = bool
+    .help = silence the refiner
   verbose = 0
     .type = int
-    .help = verbosity level (0-10)
+    .help = verbosity level (0-10) for nanoBragg
   record_xy_calc = False
     .type = bool
     .help = whether to record xy calcs for Bragg spots modeled with diffBragg

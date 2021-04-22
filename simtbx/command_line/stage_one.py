@@ -1,4 +1,5 @@
 from __future__ import absolute_import, division, print_function
+import h5py
 
 # LIBTBX_SET_DISPATCHER_NAME simtbx.diffBragg.stage_one
 
@@ -411,39 +412,60 @@ class Script:
                     raise RuntimeError("Process failed")
 
 
-def save_model_from_refiner( img_path, refiner, exper,  shot_idx, adu_per_photon):
+def save_model_from_refiner( img_path, refiner, exper,  shot_idx, adu_per_photon, only_Z=False):
     #TODO replace above method with this, verify same results
-    panel_Xdim, panel_Ydim = refiner.S.detector[0].get_image_size()
-    img_shape = len(refiner.S.detector), panel_Ydim, panel_Xdim
-    num_imgs = 4
-    writer_args = {"filename": img_path,
-                   "image_shape": img_shape,
-                   "num_images": num_imgs,
-                   "detector": refiner.S.detector, "beam": refiner.S.beam.nanoBragg_constructor_beam}
     model_img, spots_img, sigma_r_img = refiner.get_model_image(i_shot=shot_idx, only_save_model=True)
-    with H5AttributeGeomWriter(**writer_args) as writer:
-        # model_img *= self.params.refiner.adu_per_photon
-        data = image_data_from_expt(exper)
-        data /= adu_per_photon
-        pids, ys, xs = np.where(model_img == 0)
-        model_img[pids, ys, xs] = data[pids, ys, xs]
-        writer.add_image(model_img)
-        writer.add_image(data)
+    data = image_data_from_expt(exper)
+    data /= adu_per_photon
 
-        Zimg = model_img - data
-        Zimg /= np.sqrt(model_img + sigma_r_img ** 2)
+    if only_Z:
+        pids, ys, xs = np.where(model_img != 0)
+        Zdata = data[pids, ys, xs]
+        Zmodel = model_img[pids, ys, xs]
+        Zpedestal = (sigma_r_img[pids, ys, xs])**2
 
-        Zimg = Zimg * 0.1 + 1
-        Zimg[pids, ys, xs] = 1
+        sigma = np.sqrt(Zdata + Zpedestal)
+        sigma2 = np.sqrt(Zmodel + Zpedestal)
+        Zdiff = Zmodel - Zdata
+        Z = Zdiff / sigma
+        Z2 = Zdiff / sigma2
+        with h5py.File(img_path, "w") as h5:
+            comp = {"compression": "lzf"}
+            h5.create_dataset("Z_data_noise", data=Z, **comp)
+            h5.create_dataset("Z_model_noise", data=Z2, **comp)
+            h5.create_dataset("pids", data=pids, **comp)
+            h5.create_dataset("ys", data=ys, **comp)
+            h5.create_dataset("xs", data=xs, **comp)
+        #np.savez(img_path, Z_data_noise=Z, Z_model_noise=Z2, pids=pids, ys=ys, xs=xs)
+    else:
+        num_imgs = 4
+        panel_Xdim, panel_Ydim = refiner.S.detector[0].get_image_size()
+        img_shape = len(refiner.S.detector), panel_Ydim, panel_Xdim
+        writer_args = {"filename": img_path,
+                       "image_shape": img_shape,
+                       "num_images": num_imgs,
+                       "detector": refiner.S.detector, "beam": refiner.S.beam.nanoBragg_constructor_beam}
+        with H5AttributeGeomWriter(**writer_args) as writer:
+            pids, ys, xs = np.where(model_img == 0)
+            model_img[pids, ys, xs] = data[pids, ys, xs]
+            # model_img *= self.params.refiner.adu_per_photon
+            writer.add_image(model_img)
+            writer.add_image(data)
 
-        Zimg2 = model_img - data
-        Zimg2 /= np.sqrt(data + sigma_r_img ** 2)
+            Zimg = model_img - data
+            Zimg /= np.sqrt(model_img + sigma_r_img ** 2)
 
-        Zimg2 = Zimg2 * 0.1 + 1
-        Zimg2[pids, ys, xs] = 1
+            Zimg = Zimg * 0.1 + 1
+            Zimg[pids, ys, xs] = 1
 
-        writer.add_image(Zimg2)
-        writer.add_image(spots_img)
+            Zimg2 = model_img - data
+            Zimg2 /= np.sqrt(data + sigma_r_img ** 2)
+
+            Zimg2 = Zimg2 * 0.1 + 1
+            Zimg2[pids, ys, xs] = 1
+
+            writer.add_image(Zimg2)
+            writer.add_image(spots_img)
 
 
 if __name__ == '__main__':

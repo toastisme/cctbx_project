@@ -629,8 +629,17 @@ def get_roi_deltaQ(refls, delta_Q, experiment):
     nref = len(refls)
     assert nref >0
 
-    if "rlp" not in list(refls[0].keys()):
-        raise KeyError("Need rlp column in refl table!")
+    keys = list(refls[0].keys())
+    if "rlp" not in  keys:
+        if "s1" in keys:
+            s1 = refls['s1']
+            s1_norm = np.array(s1) / np.linalg.norm(s1,axis=1)[:,None]
+            wavelen = experiment.beam.get_wavelength()
+            s0 = np.array([list(experiment.beam.get_unit_s0())]*len(refls))
+            q_vecs = 1/wavelen*(s1_norm-s0)
+            refls['rlp'] = flex.vec3_double(tuple(map(tuple, q_vecs)))
+        else:
+            raise KeyError("Need rlp or s1 column in refl table!")
 
     beam = experiment.beam
     detector = experiment.detector
@@ -685,6 +694,8 @@ def get_roi_background_and_selection_flags(refls, imgs, shoebox_sz=10, reject_ed
             print("is on edge")
             is_selected = False
         pid = refls[i_roi]['panel']
+        ii = (i1+i2)*.5
+        jj = (j1+j2)*.5
 
         if hotpix_mask is not None:
             is_hotpix = hotpix_mask[pid, j1:j2, i1:i2]
@@ -769,6 +780,9 @@ def get_roi_background_and_selection_flags(refls, imgs, shoebox_sz=10, reject_ed
         panel_ids.append(pid)
         #patches.append(rect)
         selection_flags.append(is_selected)
+        #if pid == 141 and 150 < ii < 160 and 112 < jj < 122:
+        #    from IPython import embed
+        #    embed()
         i_roi += 1
 
     #plt.imshow(imgs[0], vmax=100)
@@ -1294,19 +1308,21 @@ def spots_from_pandas(pandas_frame, mtz_file=None, mtz_col=None,
                       d_max=999, d_min=1.5, defaultF=1e3,
                       njobs=1,
                       output_img=None, omp=False, norm_by_spectrum=False,
-                      symbol_override=None):
+                      symbol_override=None, quiet=False):
+    if time_panels and quiet:
+        print("NOTE: quiet=True will suppress panel simulation timing print output")
     from joblib import Parallel, delayed
     from simtbx.nanoBragg.utils import flexBeam_sim_colors
 
     df = pandas_frame
 
-    print("Loading experiment models")
+    if not quiet:print("Loading experiment models")
     expt_name = df.opt_exp_name.values[0]
     El = ExperimentListFactory.from_json_file(expt_name, check_format=False)
     expt = El[0]
-    print("Done loading models!")
-    print("Crystal model:")
-    El[0].crystal.show()
+    if not quiet:print("Done loading models!")
+    if not quiet:print("Crystal model:")
+    if not quiet:El[0].crystal.show()
     assert len(df) == 1
     Ncells_abc = tuple(map(lambda x: int(round(x)), df.ncells.values[0]))
     if Ncells_abc_override is not None:
@@ -1332,7 +1348,7 @@ def spots_from_pandas(pandas_frame, mtz_file=None, mtz_col=None,
     else:
         fluxes = np.array([total_flux])
         energies = np.array([ENERGY_CONV/expt.beam.get_wavelength()])
-        print("Running MONO sim")
+        if not quiet: print("Running MONO sim")
         nspec = 1
     lam0 = df.lam0.values[0]
     lam1 = df.lam1.values[0]
@@ -1361,8 +1377,8 @@ def spots_from_pandas(pandas_frame, mtz_file=None, mtz_col=None,
         results = flexBeam_sim_colors(CRYSTAL=expt.crystal, DETECTOR=expt.detector, BEAM=expt.beam, Famp=Famp,
                                       fluxes=fluxes, energies=energies, beamsize_mm=beamsize_mm,
                                       Ncells_abc=Ncells_abc, spot_scale_override=spot_scale,
-                                      cuda=cuda, device_Id=device_Id, oversample=oversample, time_panels=time_panels,
-                                      pids=pids, omp=omp)
+                                      cuda=cuda, device_Id=device_Id, oversample=oversample, time_panels=time_panels and not quiet,
+                                      pids=pids, omp=omp, show_params=not quiet)
         return results
 
     results = Parallel(n_jobs=njobs)(delayed(main)(pids_per_job[jid]) for jid in range(njobs))

@@ -52,6 +52,7 @@ from numpy import array as ARRAY
 from numpy import all as np_all
 from numpy import pi as PI
 from numpy import zeros as NP_ZEROS
+from numpy import ones as NP_ONES
 from numpy import nan as NAN
 
 from json import dump as JSON_DUMP
@@ -302,11 +303,12 @@ class LocalRefiner(BaseRefiner):
 
     def print(self, s, *args, **kwargs):
         """cheap logger"""
-        if isinstance(s, str):
-            for line in s.split("\n"):
-                print(line, *args, **kwargs, end=self.print_end)
-        else:
-            print(s, *args, **kwargs, end=self.print_end)
+        if self.verbose:
+            if isinstance(s, str):
+                for line in s.split("\n"):
+                    print(line, *args, **kwargs, end=self.print_end)
+            else:
+                print(s, *args, **kwargs, end=self.print_end)
 
     def setup_plots(self):
         if self.plot_images:
@@ -1188,13 +1190,7 @@ class LocalRefiner(BaseRefiner):
                 idx = i_sausage*4 + i_param
                 xpos = self.sausages_xpos[i_shot][idx]
                 sigma = self.sausages_sigma[i_param]
-                #from IPython import embed
-                #embed()
                 init = self.sausages_init[i_shot][idx] #_param]
-                #init = self.sausages_init[i_shot][idx]
-                #xval_init = 1
-                #if i_param == 3:
-                #    init = self.sausages_init[i_shot][i_param]
                 xval_init = 1 + i_sausage #idx #*0.1
                 val = sigma*(self.Xall[xpos] - xval_init) + init
                 vals.append(val)
@@ -1497,8 +1493,16 @@ class LocalRefiner(BaseRefiner):
         #p = 136, f = 110, s= 172
         #pfs = [(136, 110, 172)]
         #if self.special_flag is not None:
-        #self.D.printout_pixel_fastslow=110,172
-        #self.D.add_diffBragg_spots((136,110,172))
+        #p,f,s = self.pfs[:2]
+        #if True: #self.special_flag is not None: #self.FNAMES[self._i_shot]=="/global/cscratch1/sd/dermen/all_3/expers/rank2/stg1_run796_shot655_indexed_0.expt"
+        #    p,f,s = (2, 149, 236)
+        #    self.D.printout_pixel_fastslow=f,s
+        #    self.D.add_diffBragg_spots((p,f,s))
+        #    exit()
+        #pids = self.pfs[0::3]
+        #xs = self.pfs[1::3]
+        #ys = self.pfs[2::3]
+        #SAVEZ("shit", pids=pids, ys=ys, xs=xs)
         #exit()
         self.D.add_diffBragg_spots(self.pfs)
 
@@ -1988,9 +1992,23 @@ class LocalRefiner(BaseRefiner):
         npan = len(self.S.detector)
         nfast, nslow = self.S.detector[0].get_image_size()
         MASK = NP_ZEROS((npan, nslow, nfast), bool)
+        #mx = 65535
         ROI_ID = NP_ZEROS((npan, nslow, nfast), 'uint16')
-        #DATA = NP_ZEROS((npan, nslow, nfast), "float32")
+        #ROI_ID = NP_ONES((npan, nslow, nfast), 'uint16') * mx
         nspots = len(self.NANOBRAGG_ROIS[self._i_shot])
+        #if nspots > mx:
+        #    raise ValueError("Nspots is too large")
+        #DATA = NP_ZEROS((npan, nslow, nfast), "float32")
+        #import numpy as np
+        #import h5py
+        #h = h5py.File("1_again/imgs/rank0/stg1_run796_shot655_indexed_0.expt_0.h5", "r")
+        #Z =np.abs(h['Z_data_noise'][()])
+        #pids = h['pids'][()]
+        #ys = h['ys'][()]
+        #xs = h['xs'][()]
+        #Zimg = np.zeros((256,254,254))
+        #Zimg[pids, ys,xs] = Z
+
         for i_spot in range(nspots):
             (x1, x2), (y1, y2) = self.NANOBRAGG_ROIS[self._i_shot][i_spot]
             if x2-x1==0 or y2-y1==0:
@@ -2002,9 +2020,15 @@ class LocalRefiner(BaseRefiner):
             pid = self.PANEL_IDS[self._i_shot][i_spot]
             MASK[pid, y1:y2, x1:x2] = True
             ROI_ID[pid, y1:y2, x1:x2] = i_spot
+            #zbad = Zimg[pid, y1:y2, x1:x2]
+            #if np.any(zbad > 4):
+            #    from IPython import embed
+            #    embed()
             #DATA[pid, y1:y2, x1:x2] = self.ROI_IMGS[self._i_shot][i_spot]
         p,s,f = WHERE(MASK)
         roi_id = ROI_ID[p,s,f]
+        #from IPython import embed
+        #embed()
         #data = DATA[p,s,f]
         data = None
         pan_fast_slow = np_ascontiguousarray((np_vstack([p,f,s]).T).ravel())
@@ -2084,13 +2108,12 @@ class LocalRefiner(BaseRefiner):
                 printed_geom_updates = False
 
                 # CREATE THE PANEL FAST SLOW ARRAY AND RUN DIFFBRAGG
-                #from IPython import embed
-                #embed()
                 self._run_diffBragg_current()
 
                 # TODO pre-extractions for all parameters
+                self._append_parameters()
                 self._pre_extract_deriv_arrays()
-
+                #self._per_shot_Z_data = []
                 for i_spot in range(n_spots):
                     self._i_spot = i_spot
                     (x1, x2), (y1, y2) = self.NANOBRAGG_ROIS[self._i_shot][i_spot]
@@ -2147,6 +2170,9 @@ class LocalRefiner(BaseRefiner):
                     #self._max_h_sanity_test()
                     self._derivative_convenience_factors()
 
+                    #if self.save_Z_freq is not None:
+                    #   self._per_shot_Z_data.append((self.u_times_one_over_v, self._panel_id, self.NANOBRAGG_ROIS[self._i_shot]))
+
                     self.target_functional += self._target_accumulate()
 
                     # make any plots (this only matters if proper flags have been set)
@@ -2179,6 +2205,8 @@ class LocalRefiner(BaseRefiner):
             # TODO add in the priors:
             self._priors()
             self._parameter_freezes()
+            #if self.save_Z_freq is not None:
+            #    self._save_Z()
             if not self.only_save_model_for_shot:
                 self._mpi_aggregation()
 
@@ -2203,7 +2231,6 @@ class LocalRefiner(BaseRefiner):
                 self.print_step()
                 self.print_step_grads()
 
-            self._append_parameters()
             self._dump_parameters_to_hdf5()
 
             self.iterations += 1
@@ -3132,6 +3159,10 @@ class LocalRefiner(BaseRefiner):
         self.u_times_one_over_v = self.u*self.one_over_v
         self.u_u_one_over_v = self.u*self.u_times_one_over_v
         self.one_over_v_times_one_minus_2u_minus_u_squared_over_v = self.one_over_v*self.one_minus_2u_minus_u_squared_over_v
+        #if self.compute_Z:
+        #    self._Zscore = self.u*self.one_over_v
+        #    one_over_v2 = 1. / (self.Imeas + self.sigma_r**2)
+        #    self._Zscore2 = (self.model_Lambda - self.Imeas) *one_over_v2
 
     def _evaluate_log_averageI(self):  # for Poisson only stats
         try:
@@ -3227,8 +3258,8 @@ class LocalRefiner(BaseRefiner):
         scale_stats = ["%s=%.4f" % name_stat for name_stat in zip(scale_stat_names, stats)]
         exper_name = self.FNAMES[self._i_shot] if self.FNAMES is not None else "unspecified"
         scale_stats_string = "Exp %s: SCALE FACTOR STATS: " % exper_name + ", ".join(scale_stats)
-        if len(_sv) == 1:
-            scale_stats_string = "spot scale=%1.3g, " % _sv[0]
+        #if len(_sv) == 1:
+        scale_stats_string = "Exp %s: spot scale=%1.3g, " % (exper_name, _sv[0])
         if self.scale_vals_truths is not None:
             scale_resid = [ABS(s-stru) for s, stru in zip(_sv, self.scale_vals_truths)]
             scale_stats_string += ", truth_resid=%1.2e" % median(scale_resid)

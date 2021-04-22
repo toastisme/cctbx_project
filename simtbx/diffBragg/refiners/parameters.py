@@ -79,10 +79,11 @@ class Parameters:
 
   def safe_append(self, some_dict,name,val):
     if name not in some_dict:
-      some_dict[name] = []
+      some_dict[name] = [val]
+    else:
+      some_dict[name].append(val)
+    if name not in self.keys:
       self.keys.append(name)
-      self.keys = list(set(self.keys))
-    some_dict[name].append(val)
 
   def add_Ncells_abc(self,name, val):
     #if len(val) != 3:

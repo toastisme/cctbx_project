@@ -104,6 +104,9 @@ mtz_col = None
 symbol_override = None
   .type = str
   .help = space group lookup symbol if not supplying mtz. If None, comes from crystal model
+quiet = False
+  .type = bool
+  .help = silence a lot of the output
 """
 
 phil_scope = parse(script_phil)
@@ -113,17 +116,23 @@ class Script:
     def __init__(self):
         from dials.util.options import OptionParser
 
-        self.parser = OptionParser(
-            usage="",
-            sort_options=True,
-            phil=phil_scope,
-            read_experiments=False,
-            read_reflections=False,
-            check_format=False,
-            epilog=help_message)
+        self.parser = None
+        if COMM.rank==0:
+            self.parser = OptionParser(
+                usage="",
+                sort_options=True,
+                phil=phil_scope,
+                read_experiments=False,
+                read_reflections=False,
+                check_format=False,
+                epilog=help_message)
+        self.parser = COMM.bcast(self.parser)
 
     def run(self):
-        self.params, _ = self.parser.parse_args(show_diff_phil=True)
+        self.params = None
+        if COMM.rank==0:
+            self.params, _ = self.parser.parse_args(show_diff_phil=True)
+        self.params = COMM.bcast(self.params)
         if self.params.omp and self.params.cuda:
             raise ValueError("omp and cuda cannot be used simultaneously")
 
@@ -214,7 +223,7 @@ class Script:
                     cuda=self.params.cuda, d_max=self.params.d_max, d_min=self.params.d_min,
                     output_img=output_img,
                     njobs=self.params.njobs, device_Id=dev_id, omp=self.params.omp, norm_by_spectrum=True,
-                    symbol_override=self.params.symbol_override, defaultF=self.params.default_F)
+                    symbol_override=self.params.symbol_override, defaultF=self.params.default_F, quiet=self.params.quiet)
 
             # if strong is None, this will just return all the predictions
             # else it returns the strong reflections that are indexed by the prediction model

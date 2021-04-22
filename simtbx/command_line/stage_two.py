@@ -24,6 +24,9 @@ from dials.util import show_mail_on_error
 help_message = "stage 2 (global) diffBragg refinement"
 
 script_phil = """
+debug = False
+  .type = bool
+  .help = debug flag
 pandas_table = None
   .type = str
   .help = path to an input pandas table (usually output by simtbx.diffBragg.predictions)
@@ -80,6 +83,8 @@ class Script:
         COMM.Barrier()
 
         shot_ids = {fname: idx for idx,fname in refiner.FNAMES.items()}
+        if COMM.rank==0:
+            print(list(refiner.FNAMES.items()))
         for i_fname, fname in enumerate(opt_exp_names):
             if fname in shot_ids:
                 print("Saving shot %s" % fname)
@@ -91,7 +96,10 @@ class Script:
                 basename = os.path.basename(fname)
                 shot_name = "%s_%d.h5" %(basename, i_fname)
                 imgpath = os.path.join(output_dir, shot_name)
-                save_model_from_refiner(imgpath, refiner, exper, shot_ids[fname], self.params.refiner.adu_per_photon)
+                #if self.params.debug:
+                #refiner.special_flag = 1
+                save_model_from_refiner(imgpath, refiner, exper, shot_ids[fname], self.params.refiner.adu_per_photon,
+                                        only_Z=True)
 
         #TODO save MTZ
 
