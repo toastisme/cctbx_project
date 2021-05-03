@@ -841,7 +841,8 @@ class map_manager(map_reader, write_ccp4_map):
     self._created_mask = cm(map_manager = self,
       boundary_radius = boundary_radius)
 
-  def create_mask_around_atoms(self, model, mask_atoms_atom_radius = None):
+  def create_mask_around_atoms(self, model, mask_atoms_atom_radius = None,
+      invert_mask = None):
     '''
       Use cctbx.maptbx.mask.create_mask_around_atoms to create a mask around
       atoms in model
@@ -849,6 +850,8 @@ class map_manager(map_reader, write_ccp4_map):
       Does not apply the mask (use apply_mask_to_map etc for that)
 
       mask_atoms_atom_radius default is max(3, resolution)
+
+      invert_mask makes outside 1 and inside 0
     '''
 
     assert model is not None
@@ -858,7 +861,8 @@ class map_manager(map_reader, write_ccp4_map):
     from cctbx.maptbx.mask import create_mask_around_atoms as cm
     self._created_mask = cm(map_manager = self,
       model = model,
-      mask_atoms_atom_radius = mask_atoms_atom_radius)
+      mask_atoms_atom_radius = mask_atoms_atom_radius,
+      invert_mask = invert_mask)
 
   def soft_mask(self, soft_mask_radius = None):
     '''
@@ -999,10 +1003,27 @@ class map_manager(map_reader, write_ccp4_map):
     assert isinstance(sites_cart, flex.vec3_double)
 
     from cctbx.maptbx import real_space_target_simple_per_site
-    return real_space_target_simple_per_site(
+    density_values = real_space_target_simple_per_site(
       unit_cell = self.crystal_symmetry().unit_cell(),
       density_map = self.map_data(),
       sites_cart = sites_cart)
+
+    # Cross off anything outside the box if wrapping is false
+    if not self.wrapping():
+      sites_frac = self.crystal_symmetry().unit_cell().fractionalize(sites_cart)
+      x,y,z = sites_frac.parts()
+      s = (
+         (x < 0) |
+         (y < 0) |
+         (z < 0) |
+         (x > 1) |
+         (y > 1) |
+         (z > 1)
+         )
+      density_values.set_selected(s,0)
+    return density_values
+
+
 
   def get_density_along_line(self,
       start_site = None,
@@ -1799,13 +1820,16 @@ class map_manager(map_reader, write_ccp4_map):
        return self._warning_message
 
   def set_mean_zero_sd_one(self):
-    ''' Function to normalize the map '''
+    '''
+     Function to normalize the map
+     If the map has a constant value, do nothing
+    '''
     map_data = self.map_data()
     map_data = map_data - flex.mean(map_data)
     sd = map_data.sample_standard_deviation()
-    assert sd != 0
-    map_data = map_data/sd
-    self.set_map_data(map_data)
+    if sd != 0:
+      map_data = map_data/sd
+      self.set_map_data(map_data)
 
   def ncs_cc(self):
     if hasattr(self,'_ncs_cc'):

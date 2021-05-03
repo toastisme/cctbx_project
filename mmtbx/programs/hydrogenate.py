@@ -12,6 +12,8 @@ use_neutron_distances = False
   .help = Use neutron distances
 
 keep_existing_H = False
+  .type = bool
+  .help = Do not strip hydrogens from input model
 
 output
   .style = menu_item auto_align
@@ -50,13 +52,16 @@ Inputs:
     make_sub_header('Add H atoms', out=self.logger)
     reduce_add_h_obj = reduce_hydrogen.place_hydrogens(
       model = self.model,
-      use_neutron_distances = self.params.use_neutron_distances)
+      use_neutron_distances = self.params.use_neutron_distances,
+      keep_existing_H = self.params.keep_existing_H)
     reduce_add_h_obj.run()
     self.model = reduce_add_h_obj.get_model()
     reduce_add_h_obj.show(log = self.logger)
     #
     make_sub_header('Optimize H atoms', out=self.logger)
-    self.model = reduce_hydrogen.optimize(model=self.model)
+    # @todo Change this once optimize edits the model in place
+    pdbString = reduce_hydrogen.optimize(model=self.model)
+    #self.model = reduce_hydrogen.optimize(model=self.model)
     #
     if(self.params.output.file_name_prefix is not None):
       base = self.params.output.file_name_prefix
@@ -64,7 +69,8 @@ Inputs:
       fp = self.data_manager.get_default_model_name()
       base = os.path.splitext(os.path.basename(fp))[0]
     of = open("%s_hydrogenate.pdb"%base,"w")
-    of.write(self.model.model_as_pdb())
+    of.write(pdbString)
+    #of.write(self.model.model_as_pdb())
     of.close()
 
 # ------------------------------------------------------------------------------

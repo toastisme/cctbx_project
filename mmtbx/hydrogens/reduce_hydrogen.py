@@ -1,17 +1,23 @@
 from __future__ import absolute_import, division, print_function
 import six
-import sys
+import sys, time
 import mmtbx.model
 import iotbx.pdb
 import boost_adaptbx.boost.python as bp
+import mmtbx_reduce_ext as reduce
 from libtbx.utils import null_out
 from libtbx import group_args
 from cctbx.array_family import flex
 from collections import OrderedDict
+from mmtbx.ligands.ready_set_utils import add_n_terminal_hydrogens_to_residue_group
+
 #
 from cctbx.maptbx.box import shift_and_box_model
 
 ext = bp.import_ext("cctbx_geometry_restraints_ext")
+
+# For development
+print_time = False
 
 # ==============================================================================
 
@@ -20,8 +26,6 @@ def mon_lib_query(residue, mon_lib_srv):
       residue_name=residue.resname,
       atom_names=residue.atoms().extract_name())
     return md
-    # print(md)
-    # print(ani)
     # get_func = getattr(mon_lib_srv, "get_comp_comp_id", None)
     # if (get_func is not None): return get_func(comp_id=residue)
     # return mon_lib_srv.get_comp_comp_id_direct(comp_id=residue)
@@ -53,7 +57,8 @@ class place_hydrogens():
                adp_scale             = 1,
                exclude_water         = True,
                stop_for_unknowns     = False,
-               keep_existing_H       = False):
+               keep_existing_H       = False,
+               validate_e            = False):
 
     self.model                 = model
     self.use_neutron_distances = use_neutron_distances
@@ -61,10 +66,12 @@ class place_hydrogens():
     self.exclude_water         = exclude_water
     self.stop_for_unknowns     = stop_for_unknowns
     self.keep_existing_H       = keep_existing_H
+    self.validate_e            = validate_e
     #
     self.no_H_placed_mlq        = list()
     self.site_labels_disulfides = list()
     self.site_labels_no_para    = list()
+    self.charged_atoms          = list()
     self.n_H_initial = 0
     self.n_H_final   = 0
 
@@ -87,18 +94,39 @@ class place_hydrogens():
     self.n_H_initial = self.model.get_hd_selection().count(True)
     if not self.keep_existing_H:
       self.model = self.model.select(~self.model.get_hd_selection())
+
+    t0 = time.time()
     # Add H atoms and place them at center of coordinates
     pdb_hierarchy = self.add_missing_H_atoms_at_bogus_position()
+    if print_time:
+      print("add_missing_H_atoms_at_bogus_position:", round(time.time()-t0, 2))
+
+
+#    f = open("intermediate1.pdb","w")
+#    f.write(self.model.model_as_pdb())
+
+    # place N-terminal propeller hydrogens
+    for m in pdb_hierarchy.models():
+      for chain in m.chains():
+        rgs = chain.residue_groups()[0]
+        for ag in rgs.atom_groups():
+          if ag.get_atom("H"):
+            ag.remove_atom(ag.get_atom('H'))
+        rc = add_n_terminal_hydrogens_to_residue_group(rgs)
+        # rc is always empty list?
 
     pdb_hierarchy.sort_atoms_in_place()
     pdb_hierarchy.atoms().reset_serial()
-    #pdb_hierarchy.sort_atoms_in_place()
+#    f = open("intermediate2.pdb","w")
+#    f.write(self.model.model_as_pdb())
+
     p = mmtbx.model.manager.get_default_pdb_interpretation_params()
     p.pdb_interpretation.clash_guard.nonbonded_distance_threshold=None
     p.pdb_interpretation.use_neutron_distances = self.use_neutron_distances
     p.pdb_interpretation.proceed_with_excessive_length_bonds=True
     #p.pdb_interpretation.automatic_linking.link_metals = True
 
+    t0 = time.time()
     #p.pdb_interpretation.restraints_library.cdl=False # XXX this triggers a bug !=360
     ro = self.model.get_restraint_objects()
     self.model = mmtbx.model.manager(
@@ -110,8 +138,10 @@ class place_hydrogens():
       restraint_objects         = ro,
       pdb_interpretation_params = p,
       log                       = null_out())
+    if print_time:
+      print("get new model obj and grm:", round(time.time()-t0, 2))
 
-    #f = open("intermediate1.pdb","w")
+    #f = open("intermediate3.pdb","w")
     #f.write(self.model.model_as_pdb())
 
     # Only keep H that have been parameterized in riding H procedure
@@ -125,6 +155,7 @@ class place_hydrogens():
     self.sel_lone_H = sel_h & sel_isolated
     self.model = self.model.select(~self.sel_lone_H)
 
+    t0 = time.time()
     # get riding H manager --> parameterize all H atoms
     sel_h = self.model.get_hd_selection()
     self.model.setup_riding_h_manager(use_ideal_dihedral = True)
@@ -135,22 +166,43 @@ class place_hydrogens():
       for atom in self.model.get_hierarchy().atoms().select(sel_h_not_in_para)]
     #
     self.model = self.model.select(~sel_h_not_in_para)
+    if print_time:
+      print("set up riding H manager and some cleanup:", round(time.time()-t0, 2))
 
+
+    t0 = time.time()
     self.exclude_H_on_disulfides()
     #self.exclude_h_on_coordinated_S()
+    if print_time:
+      print("find disulfides:", round(time.time()-t0, 2))
 
-  #  f = open("intermediate2.pdb","w")
+  #  f = open("intermediate4.pdb","w")
   #  f.write(model.model_as_pdb())
 
+    if self.validate_e:
+      t0 = time.time()
+      self.validate_electrons()
+      if print_time:
+        print("validate electrons:", round(time.time()-t0, 2))
+
+    t0 = time.time()
     # Reset occupancies, ADPs and idealize H atom positions
     self.model.reset_adp_for_hydrogens(scale = self.adp_scale)
     self.model.reset_occupancy_for_hydrogens_simple()
     self.model.idealize_h_riding()
+    if print_time:
+      print("reset adp, occ; idealize:", round(time.time()-t0, 2))
 
+    t0 = time.time()
     self.exclude_h_on_coordinated_S()
-    #
-    self.n_H_final = self.model.get_hd_selection().count(True)
+    if print_time:
+      print("coordinated S:", round(time.time()-t0, 2))
 
+
+
+
+
+    self.n_H_final = self.model.get_hd_selection().count(True)
 
 # ------------------------------------------------------------------------------
 
@@ -212,7 +264,11 @@ class place_hydrogens():
             # TODO end
             missing_h = list(set(expected_h).difference(set(actual)))
             if 0: print(ag.resname, missing_h)
-            new_xyz = ag.atoms().extract_xyz().mean()
+            #new_xyz = ag.atoms().extract_xyz().mean()
+            new_xyz = flex.double(ag.atoms().extract_xyz().mean()) + \
+              flex.double([0.5,0.5,0.5])
+            new_xyz = tuple(new_xyz)
+
             hetero = ag.atoms()[0].hetero
             segid = ag.atoms()[0].segid
 
@@ -229,6 +285,20 @@ class place_hydrogens():
               ag.append_atom(a)
 
     return pdb_hierarchy
+
+# ------------------------------------------------------------------------------
+
+  def validate_electrons(self):
+    from elbow.quantum import electrons
+    atom_valences = electrons.electron_distribution(
+      # XXX How do we get this working on models with alternate locations?
+      self.model.get_hierarchy(), # needs to be altloc free
+      self.model.get_restraints_manager().geometry,
+      verbose=False,
+    )
+    atom_valences.validate(ignore_water=True,
+                           raise_if_error=False)
+    self.charged_atoms = atom_valences.get_charged_atoms()
 
 # ------------------------------------------------------------------------------
 
@@ -330,6 +400,15 @@ The following H atoms were not placed because they could not be parameterized
       print(msg, file=log)
       for label in self.site_labels_no_para:
         print(label)
+    if self.charged_atoms:
+      msg = '''
+The following heavy atom have an unusual electron count. This could be because
+heavy atoms or H atoms are missing.'''
+      print(msg, file=log)
+      for item in self.charged_atoms:
+        idstr = item[0].id_str().replace('pdb=','').replace('"','')
+        if 'HOH' in idstr: continue
+        print(idstr, item[1])
 
 # ------------------------------------------------------------------------------
 
@@ -369,7 +448,8 @@ def optimize(model):
   Returns
   -------
   model
-      mmtbx model object with optimized H atoms
+      mmtbx model object with optimized H atoms as a string
+      @todo Update the model in place.
   """
   # hierarchy object --> has hierarchy of structure
   pdb_hierarchy = model.get_hierarchy()
@@ -378,4 +458,62 @@ def optimize(model):
 
   print("Reduce optimization happens here")
 
-  return model
+  # @todo Point this at the general location.
+  hetdatabase = reduce.CTab("/usr/local/reduce_wwPDB_het_dict.txt")
+
+  # Set up how we're going to run Reduce; just do the optimization, not the placement.
+  # @todo Be able to specify whether this is done or not, and make command-line arguments
+  # in hydrogenate.py that let us choose to do the placement either inside or outside of
+  # Reduce for comparison.
+  reduce.setRemoveATOMHydrogens(False)
+  reduce.setRemoveOtherHydrogens(False)
+  reduce.setAddWaterHydrogens(False)
+  reduce.setAddOtherHydrogens(False)
+  reduce.setStopBeforeOptimizing(False)
+
+  input = model.model_as_pdb()
+
+  models = reduce.inputModels(input)
+  for m in models:
+    if reduce.getRemoveATOMHydrogens() or reduce.getRemoveOtherHydrogens():
+      reduce.dropHydrogens(m, reduce.getRemoveATOMHydrogens(), reduce.getRemoveOtherHydrogens())
+
+    UseSEGIDasChain = reduce.checkSEGIDs(m)
+
+    dotBucket = reduce.DotSphManager(reduce.getVdwDotDensity())
+
+    xyz = reduce.AtomPositions(2000, reduce.getDoOnlyAltA(), reduce.getUseXplorNames(),
+            reduce.getUseOldNames(), reduce.getBackBoneModel(),
+            reduce.getNBondCutoff(), reduce.getMinRegHBgap(),
+            reduce.getMinChargedHBgap(),
+            reduce.getBadBumpGapCut(), dotBucket,
+            reduce.getProbeRadius(),
+            reduce.getPenaltyMagnitude(), reduce.getOccupancyCutoff(),
+            reduce.getVerbose(), reduce.getShowOrientScore(),
+            reduce.getShowCliqueTicks()
+          )
+
+    infoPtr = m.begin()
+
+    reduce.scanAndGroupRecords(m, xyz, infoPtr)
+
+    adjNotes = reduce.StringVector()
+
+    tally = reduce.getTally()
+    tally._num_adj = 0
+    reduce.setTally(tally)
+
+    reduce.reduceList(hetdatabase, m, xyz, adjNotes)
+
+    if not reduce.getStopBeforeOptimizing():
+      ret = reduce.optimize(xyz, adjNotes)
+
+      if reduce.getOKtoAdjust() and xyz.numChanges() > 0:
+        xyz.describeChanges(m, infoPtr, adjNotes)
+
+  pdbText = reduce.outputRecords_all_string(models)
+
+  # @todo Put the modified structure back into a model.
+
+  return pdbText
+  #return model
