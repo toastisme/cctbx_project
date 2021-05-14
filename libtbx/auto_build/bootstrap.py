@@ -982,10 +982,6 @@ class xia2_module(SourceModule):
                'https://github.com/xia2/xia2/archive/main.zip']
 
 # Duke repositories
-class probe_module(SourceModule):
-  module = 'probe'
-  anonymous = ['svn', 'https://github.com/rlabduke/probe.git/trunk']
-
 class suitename_module(SourceModule):
   module = 'suitename'
   anonymous = ['svn', 'https://github.com/rlabduke/suitename.git/trunk']
@@ -1468,7 +1464,7 @@ class Builder(object):
 
   def _add_svn(self, module, url):
     update_list = ['update']
-    if module in ["reduce", "probe", "king", "suitename"]:
+    if module in ["reduce", "king", "suitename"]:
       pass
     elif self.revert:
       update_list = ['update', '-r', self.revert]
@@ -1954,7 +1950,6 @@ class MOLPROBITYBuilder(Builder):
     'molprobity',
     #'chem_data', #chem_data removed from molprobity builder until accessible outside cci, -CJW
     'reduce',
-    'probe',
     'suitename'
   ]
   # Copy these sources from cci.lbl.gov
@@ -2266,7 +2261,6 @@ class PhenixBuilder(CCIBuilder):
     'opt_resources',
     'muscle',
     'reduce',
-    'probe',
     'king',
     'suitename',
     'dials',
@@ -2291,7 +2285,6 @@ class PhenixBuilder(CCIBuilder):
     'elbow',
     'amber_adaptbx',
     'reduce',
-    'probe',
     'dials',
     'xia2',
     'prime',
