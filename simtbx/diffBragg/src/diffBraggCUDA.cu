@@ -35,6 +35,7 @@ void diffBragg_loopy(
         image_type& d_panel_rot_images, image_type& d2_panel_rot_images,
         image_type& d_panel_orig_images, image_type& d2_panel_orig_images,
         image_type& d_sausage_XYZ_scale_images,
+        image_type& d_fp_fdp_images,
         const int Nsteps, int _printout_fpixel, int _printout_spixel, bool _printout, CUDAREAL _default_F,
         int oversample, bool _oversample_omega, CUDAREAL subpixel_size, CUDAREAL pixel_size,
         CUDAREAL detector_thickstep, CUDAREAL _detector_thick, CUDAREAL close_distance, CUDAREAL detector_attnlen,
@@ -70,6 +71,7 @@ void diffBragg_loopy(
         std::vector<bool>& refine_panel_rot,
         bool refine_fcell, std::vector<bool>& refine_lambda, bool refine_eta, std::vector<bool>& refine_Umat,
         bool refine_sausages, int num_sausages,
+        bool refine_fp_fdp,
         std::vector<CUDAREAL>& fdet_vectors, std::vector<CUDAREAL>& sdet_vectors,
         std::vector<CUDAREAL>& odet_vectors, std::vector<CUDAREAL>& pix0_vectors,
         bool _nopolar, bool _point_pixel, CUDAREAL _fluence, CUDAREAL _r_e_sqr, CUDAREAL _spot_scale,
@@ -78,7 +80,10 @@ void diffBragg_loopy(
         bool update_step_positions, bool update_panels_fasts_slows, bool update_sources, bool update_umats,
         bool update_dB_mats, bool update_rotmats, bool update_Fhkl, bool update_detector, bool update_refine_flags ,
         bool update_panel_deriv_vecs, bool update_sausages_on_device, int detector_thicksteps, int phisteps,
-        int Npix_to_allocate){ // diffBragg cuda loopy
+        int Npix_to_allocate, bool no_Nabc_scale,
+        std::vector<CUDAREAL>& fpfdp,
+        std::vector<CUDAREAL>& fpfdp_derivs,
+        std::vector<CUDAREAL>&atom_data){ // diffBragg cuda loopy
 
     bool ALLOC = !cp.device_is_allocated;
 
@@ -160,6 +165,10 @@ void diffBragg_loopy(
         gpuErr(cudaMallocManaged(&cp.cu_odet_vectors, fdet_vectors.size()*sizeof(CUDAREAL)));
         gpuErr(cudaMallocManaged(&cp.cu_pix0_vectors, fdet_vectors.size()*sizeof(CUDAREAL)));
 
+        gpuErr(cudaMallocManaged(&cp.cu_fpfdp, fpfdp.size()*sizeof(CUDAREAL)));
+        gpuErr(cudaMallocManaged(&cp.cu_fpfdp_derivs, fpfdp_derivs.size()*sizeof(CUDAREAL)));
+        gpuErr(cudaMallocManaged(&cp.cu_atom_data, atom_data.size()*sizeof(CUDAREAL)));
+
         gpuErr(cudaMallocManaged(&cp.cu_refine_Bmat, 6*sizeof(bool)));
         gpuErr(cudaMallocManaged(&cp.cu_refine_Umat, 3*sizeof(bool)));
         gpuErr(cudaMallocManaged(&cp.cu_refine_Ncells, 3*sizeof(bool)));
@@ -191,6 +200,7 @@ void diffBragg_loopy(
         gpuErr(cudaMallocManaged(&cp.cu_d_lambda_images, Npix_to_allocate*2*sizeof(CUDAREAL)));
         gpuErr(cudaMallocManaged(&cp.cu_d_Bmat_images, Npix_to_allocate*6*sizeof(CUDAREAL)));
         gpuErr(cudaMallocManaged(&cp.cu_d_sausage_XYZ_scale_images, num_sausages*Npix_to_allocate*4*sizeof(CUDAREAL)));
+        gpuErr(cudaMallocManaged(&cp.cu_d_fp_fdp_images, Npix_to_allocate*2*sizeof(CUDAREAL)));
 
         // allocate curvatures
         //gpuErr(cudaMallocManaged(&cp.cu_d_eta_images, Npix_to_allocate*sizeof(CUDAREAL)));
@@ -329,6 +339,21 @@ void diffBragg_loopy(
     }
 //  END  DETECTOR VECTORS
 
+    if ( ALLOC || FORCE_COPY){
+      for (int i=0; i< atom_data.size(); i++){
+        cp.cu_atom_data[i] = atom_data[i];
+      }
+        if (verbose>1)
+          printf("H2D Done copying atom data\n");
+      for(int i=0; i< fpfdp.size(); i++){
+        cp.cu_fpfdp[i] = fpfdp[i];
+      }
+      for(int i=0; i< fpfdp_derivs.size(); i++){
+        cp.cu_fpfdp_derivs[i] = fpfdp_derivs[i];
+      }
+      if (verbose>1)
+        printf("H2D Done copying fprime and fdblprime\n");
+    }
 
 
 //  BEGIN REFINEMENT FLAGS
@@ -393,6 +418,7 @@ void diffBragg_loopy(
     gettimeofday(&t1, 0);
 
     int Npanels = fdet_vectors.size()/3;
+    int num_atoms = atom_data.size()/5;
     //int sm_size = number_of_sources*5*sizeof(CUDAREAL);
     //gpu_sum_over_steps<<<numblocks, blocksize, sm_size >>>(
     bool aniso_eta = UMATS_RXYZ.size() != UMATS_RXYZ_prime.size();
@@ -408,6 +434,7 @@ void diffBragg_loopy(
         cp.cu_d_panel_rot_images, cp.cu_d2_panel_rot_images,
         cp.cu_d_panel_orig_images, cp.cu_d2_panel_orig_images,
         cp.cu_d_sausage_XYZ_scale_images,
+        cp.cu_d_fp_fdp_images,
         Nsteps, _printout_fpixel, _printout_spixel, _printout, _default_F,
         oversample,  _oversample_omega, subpixel_size, pixel_size,
         detector_thickstep, _detector_thick, close_distance, detector_attnlen,
@@ -443,7 +470,9 @@ void diffBragg_loopy(
         refine_sausages, num_sausages,
         cp.cu_fdet_vectors, cp.cu_sdet_vectors,
         cp.cu_odet_vectors, cp.cu_pix0_vectors,
-        _nopolar, _point_pixel, _fluence, _r_e_sqr, _spot_scale, Npanels, aniso_eta);
+        _nopolar, _point_pixel, _fluence, _r_e_sqr, _spot_scale, Npanels, aniso_eta, no_Nabc_scale,
+        cp.cu_fpfdp,  cp.cu_fpfdp_derivs, cp.cu_atom_data, num_atoms,
+        refine_fp_fdp);
 
     error_msg(cudaGetLastError(), "after kernel call");
 
@@ -484,6 +513,9 @@ void diffBragg_loopy(
     for (int i=0; i< num_sausages*4*Npix_to_model; i++)
         d_sausage_XYZ_scale_images[i] = cp.cu_d_sausage_XYZ_scale_images[i];
 
+    for (int i=0; i< 2*Npix_to_model; i++)
+        d_fp_fdp_images[i] = cp.cu_d_fp_fdp_images[i];
+
     gettimeofday(&t2, 0);
     time = (1000000.0*(t2.tv_sec-t1.tv_sec) + t2.tv_usec-t1.tv_usec)/1000.0;
     if(verbose>1)
@@ -509,6 +541,7 @@ void freedom(diffBragg_cudaPointers& cp){
         gpuErr(cudaFree( cp.cu_d_panel_rot_images));
         gpuErr(cudaFree( cp.cu_d_panel_orig_images));
         gpuErr(cudaFree( cp.cu_d_sausage_XYZ_scale_images));
+        gpuErr(cudaFree( cp.cu_d_fp_fdp_images));
 
         gpuErr(cudaFree(cp.cu_Fhkl));
         if (cp.cu_Fhkl2 != NULL)
@@ -518,6 +551,9 @@ void freedom(diffBragg_cudaPointers& cp){
         gpuErr(cudaFree(cp.cu_sdet_vectors));
         gpuErr(cudaFree(cp.cu_odet_vectors));
         gpuErr(cudaFree(cp.cu_pix0_vectors));
+        gpuErr(cudaFree(cp.cu_atom_data));
+        gpuErr(cudaFree(cp.cu_fpfdp));
+        gpuErr(cudaFree(cp.cu_fpfdp_derivs));
 
         gpuErr(cudaFree(cp.cu_source_X));
         gpuErr(cudaFree(cp.cu_source_Y));

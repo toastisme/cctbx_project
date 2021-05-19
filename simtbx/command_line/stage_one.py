@@ -106,7 +106,6 @@ phil_scope = parse(philz)
 
 
 class Script:
-
     def __init__(self):
         from dials.util.options import OptionParser
 
@@ -433,6 +432,8 @@ def save_model_from_refiner( img_path, refiner, exper,  shot_idx, adu_per_photon
             comp = {"compression": "lzf"}
             h5.create_dataset("Z_data_noise", data=Z, **comp)
             h5.create_dataset("Z_model_noise", data=Z2, **comp)
+            h5.create_dataset("data", data=Zdata, **comp)
+            h5.create_dataset("model", data=Zmodel, **comp)
             h5.create_dataset("pids", data=pids, **comp)
             h5.create_dataset("ys", data=ys, **comp)
             h5.create_dataset("xs", data=xs, **comp)

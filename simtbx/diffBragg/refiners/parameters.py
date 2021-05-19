@@ -4,6 +4,7 @@ from numpy import sin, cos, arcsin
 
 
 class RangedParameter:
+    # TODO, make setting attributes named 'max' and 'min' attributes illegal
 
   def __init__(self):
     self.minval = 0
@@ -75,6 +76,15 @@ class Parameters:
     self.eta ={}
     self.wavelen_offset ={}
     self.wavelen_scale ={}
+    self.panelX = []
+    self.panelY = []
+    self.panelZ = []
+    self.panelO = []
+    self.panelF = []
+    self.panelS = []
+    self.panelOrig = []
+    self.panelFast =[]
+    self.panelSlow = []
     self.keys = []
 
   def safe_append(self, some_dict,name,val):
@@ -84,6 +94,27 @@ class Parameters:
       some_dict[name].append(val)
     if name not in self.keys:
       self.keys.append(name)
+
+  def add_panelOrig(self, vals):
+    self.panelOrig.append(vals)
+  def add_panelFast(self, vals):
+    self.panelFast.append(vals)
+  def add_panelSlow(self, vals):
+    self.panelSlow.append(vals)
+
+  def add_panelX(self, vals):
+    self.panelX.append(vals)
+  def add_panelY(self, vals):
+    self.panelY.append(vals)
+  def add_panelZ(self, vals):
+    self.panelZ.append(vals)
+
+  def add_panelO(self, vals):
+    self.panelO.append(vals)
+  def add_panelF(self, vals):
+    self.panelF.append(vals)
+  def add_panelS(self, vals):
+    self.panelS.append(vals)
 
   def add_Ncells_abc(self,name, val):
     #if len(val) != 3:

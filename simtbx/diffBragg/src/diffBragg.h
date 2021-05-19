@@ -152,6 +152,7 @@ class diffBragg: public nanoBragg{
         image_type& d_panel_rot_images, image_type& d2_panel_rot_images,
         image_type& d_panel_orig_images, image_type& d2_panel_orig_images,
         image_type& d_sausage_RXYZ_scale_images,
+        image_type& d_fp_fdp_images,
         int* subS_pos, int* subF_pos, int* thick_pos,
         int* source_pos, int* phi_pos, int* mos_pos, int* sausage_pos,
         const int Nsteps, int _printout_fpixel, int _printout_spixel, bool _printout, double _default_F,
@@ -189,9 +190,14 @@ class diffBragg: public nanoBragg{
         bool refine_fcell, std::vector<bool>& refine_lambda, bool refine_eta, std::vector<bool>& refine_Umat,
         bool refine_sausages,
         int num_sausages,
+        bool refine_fp_fdp,
         std::vector<double>& fdet_vectors, std::vector<double>& sdet_vectors,
         std::vector<double>& odet_vectors, std::vector<double>& pix0_vectors,
-        bool _nopolar, bool _point_pixel, double _fluence, double _r_e_sqr, double _spot_scale);
+        bool _nopolar, bool _point_pixel, double _fluence, double _r_e_sqr, double _spot_scale,
+        bool no_Nabc_scale,
+        std::vector<double>& fpfdp,
+        std::vector<double>& fpfdp_derivs,
+        std::vector<double>& atom_data);
 
   void diffBragg_rot_mats();
   void linearize_Fhkl();
@@ -258,6 +264,7 @@ class diffBragg: public nanoBragg{
   af::flex_double get_derivative_pixels(int refine_id);
   af::flex_double get_second_derivative_pixels(int refine_id);
   af::flex_double get_raw_pixels_roi();
+  boost::python::tuple get_fp_fdp_derivative_pixels();
   boost::python::tuple get_ncells_derivative_pixels();
   boost::python::tuple get_ncells_def_derivative_pixels();
   boost::python::tuple get_ncells_def_second_derivative_pixels();
@@ -327,6 +334,7 @@ class diffBragg: public nanoBragg{
   //bool vectorized_umats;
 
   /* derivative managers */
+  std::vector<boost::shared_ptr<Fcell_manager> > fp_fdp_managers;
   std::vector<boost::shared_ptr<rot_manager> > sausage_managers;
   std::vector<boost::shared_ptr<derivative_manager> > sausage_scale_managers;
   std::vector<boost::shared_ptr<rot_manager> > rot_managers;
@@ -408,11 +416,17 @@ class diffBragg: public nanoBragg{
   af::shared<double> pythony_amplitudes2;
   bool complex_miller;
   double F_cell2; // for storing the imaginary component
+  std::vector<double> fpfdp;
+  std::vector<double> fpfdp_derivs;
+  std::vector<double> atom_data;
+  void show_heavy_atom_data();
+  void show_fp_fdp();
 
   bool isotropic_ncells;
   bool modeling_anisotropic_mosaic_spread;
   double Nd, Ne, Nf;
   bool refine_Ncells_def;
+  bool no_Nabc_scale;  // if true, then absorb the Nabc scale into an overall scale factor
 
   double source_lambda0, source_lambda1;
   bool use_lambda_coefficients;

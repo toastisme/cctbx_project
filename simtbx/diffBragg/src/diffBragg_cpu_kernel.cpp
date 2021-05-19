@@ -17,6 +17,7 @@ void diffBragg::diffBragg_sum_over_steps(
         image_type& d_panel_rot_images, image_type& d2_panel_rot_images,
         image_type& d_panel_orig_images, image_type& d2_panel_orig_images,
         image_type& d_sausage_XYZ_scale_images,
+        image_type& d_fp_fdp_images,
         int* subS_pos, int* subF_pos, int* thick_pos,
         int* source_pos, int* phi_pos, int* mos_pos, int* sausage_pos,
         const int Nsteps, int _printout_fpixel, int _printout_spixel, bool _printout, double _default_F,
@@ -54,9 +55,13 @@ void diffBragg::diffBragg_sum_over_steps(
         bool refine_fcell, std::vector<bool>& refine_lambda, bool refine_eta, std::vector<bool>& refine_Umat,
         bool refine_sausages,
         int num_sausages,
+        bool refine_fp_fdp,
         std::vector<double>& fdet_vectors, std::vector<double>& sdet_vectors,
         std::vector<double>& odet_vectors, std::vector<double>& pix0_vectors,
-        bool _nopolar, bool _point_pixel, double _fluence, double _r_e_sqr, double _spot_scale ) {
+        bool _nopolar, bool _point_pixel, double _fluence, double _r_e_sqr, double _spot_scale ,
+        bool no_Nabc_scale,
+        std::vector<double>& fpfdp, std::vector<double>& fpfdp_derivs,
+        std::vector<double>& atom_data) {
 
     #pragma omp parallel for
     for (int i_pix=0; i_pix < Npix_to_model; i_pix++){
@@ -84,6 +89,7 @@ void diffBragg::diffBragg_sum_over_steps(
         double eta_manager_dI2[3] = {0,0,0};
         double lambda_manager_dI[2] = {0,0};
         double lambda_manager_dI2[2] = {0,0};
+        double fp_fdp_manager_dI[2] = {0,0};
         std::vector<double> sausage_manager_dI(num_sausages*4,0);
 
         for (int _i_step=0; _i_step < Nsteps; _i_step++){
@@ -200,13 +206,16 @@ void diffBragg::diffBragg_sum_over_steps(
             Eigen::Vector3d delta_H = H_vec - H0;
             Eigen::Vector3d V = _NABC*delta_H;
             double _hrad_sqr = V.dot(V);
-            double _F_latt = Na*Nb*Nc*exp(-( _hrad_sqr / 0.63 * fudge ));
-            //double _F_latt = exp(-( _hrad_sqr / 0.63 * fudge ));
+            double _F_latt;
+            if (no_Nabc_scale)
+                _F_latt = exp(-( _hrad_sqr / 0.63 * fudge ));
+            else
+                _F_latt = Na*Nb*Nc*exp(-( _hrad_sqr / 0.63 * fudge ));
 
             /* no need to go further if result will be zero */
-            if(_F_latt == 0.0 && ! only_save_omega_kahn) {
-                continue;
-            }
+            //if(_F_latt == 0.0 && ! only_save_omega_kahn) {
+            //    continue;
+            //}
 
             /* structure factor of the unit cell */
             double _F_cell = _default_F;
@@ -221,18 +230,88 @@ void diffBragg::diffBragg_sum_over_steps(
             //else{
             // _F_cell = _default_F;
             //}
+            double c_deriv_Fcell_real = 0;
+            double c_deriv_Fcell_imag = 0;
+            double d_deriv_Fcell_real = 0;
+            double d_deriv_Fcell_imag = 0;
+            double c_deriv_Fcell = 0;
+            double d_deriv_Fcell = 0;
+            if (complex_miller){
+            // TODO shouldnt this be constant for each HKL?
+               double S_2 = 1.e-20*(_scattering[0]*_scattering[0]+_scattering[1]*_scattering[1]+_scattering[2]*_scattering[2]);
 
-            if (complex_miller)
-              _F_cell = sqrt(_F_cell*_F_cell + _F_cell2*_F_cell2);
+                // fp is always followed by the fdp value
+               double val_fp = fpfdp[2*_source];
+               double val_fdp = fpfdp[2*_source+1];
+
+               double c_deriv_prime=0;
+               double c_deriv_dblprime=0;
+               double d_deriv_prime = 0;
+               double d_deriv_dblprime = 0;
+               if (refine_fp_fdp){
+               //   currently only supports two parameter model
+                   int nsources_times_two = fpfdp.size();
+                   int d_idx = 2*_source;
+                   c_deriv_prime = fpfdp_derivs[d_idx];
+                   c_deriv_dblprime = fpfdp_derivs[d_idx+1];
+                   d_deriv_prime = fpfdp_derivs[d_idx+nsources_times_two];
+                   d_deriv_dblprime = fpfdp_derivs[d_idx+1+nsources_times_two];
+               }
+               // 5 valeus per atom: x,y,z,B,occupancy
+               int num_atoms = atom_data.size()/5;
+               for (int  i_atom=0; i_atom < num_atoms; i_atom++){
+                    if (verbose>3)
+                      printf("Processing atom %d");
+                    // fractional atomic coordinates
+                   double atom_x = atom_data[i_atom*5];
+                   double atom_y = atom_data[i_atom*5+1];
+                   double atom_z = atom_data[i_atom*5+2];
+                   double B = atom_data[i_atom*5+3]; // B factor
+                   B = exp(-B*S_2/4.0); // TODO: speed me up?
+                   double occ = atom_data[i_atom*5+4]; // occupancy
+                   double r_dot_h = _h0*atom_x + _k0*atom_y + _l0*atom_z;
+                   double phase = 2*M_PI*r_dot_h;
+                   double s_rdoth = sin(phase);
+                   double c_rdoth = cos(phase);
+                   double Bocc = B*occ;
+                   double BC = Bocc*c_rdoth;
+                   double BS = Bocc*s_rdoth;
+                   double real_part = BC*val_fp - BS*val_fdp;
+                   double imag_part = BS*val_fp + BC*val_fdp;
+                   _F_cell += real_part;
+                   _F_cell2 += imag_part;
+                   if (refine_fp_fdp){
+                        c_deriv_Fcell_real += BC*c_deriv_prime - BS*c_deriv_dblprime;
+                        c_deriv_Fcell_imag += BS*c_deriv_prime + BC*c_deriv_dblprime;
+
+                        d_deriv_Fcell_real += BC*d_deriv_prime - BS*d_deriv_dblprime;
+                        d_deriv_Fcell_imag += BS*d_deriv_prime + BC*d_deriv_dblprime;
+                   }
+               }
+               double Freal = _F_cell;
+               double Fimag = _F_cell2;
+               _F_cell = sqrt(pow(Freal,2) + pow(Fimag,2));// TODO work around the sqrt ?
+               if (refine_fp_fdp){
+                   c_deriv_Fcell = Freal*c_deriv_Fcell_real + Fimag*c_deriv_Fcell_imag;
+                   d_deriv_Fcell = Freal*d_deriv_Fcell_real + Fimag*d_deriv_Fcell_imag;
+               }
+            }
 
             /* convert amplitudes into intensity (photons per steradian) */
             if (!_oversample_omega)
                 _omega_pixel = 1;
 
             /* increment to intensity */
-            double Iincrement = _F_cell*_F_cell*_F_latt*_F_latt*source_I[_source]*_capture_fraction*_omega_pixel;
-            Iincrement *= sausages_scale[_sausage_tic]*sausages_scale[_sausage_tic];
+            double I_noFcell = _F_latt*_F_latt*source_I[_source]*_capture_fraction*_omega_pixel*pow(sausages_scale[_sausage_tic],2);
+            double Iincrement = _F_cell*_F_cell*I_noFcell;
+            //Iincrement *= sausages_scale[_sausage_tic]*sausages_scale[_sausage_tic];
             _I += Iincrement;
+
+            // TODO if test?
+            if (refine_fp_fdp){
+                fp_fdp_manager_dI[0] += 2*I_noFcell * (c_deriv_Fcell);
+                fp_fdp_manager_dI[1] += 2*I_noFcell * (d_deriv_Fcell);
+            }
 
             if(verbose > 3)
                 printf("hkl= %f %f %f  hkl1= %d %d %d  Fcell=%f\n", _h,_k,_l,_h0,_k0,_l0, _F_cell);
@@ -505,7 +584,7 @@ void diffBragg::diffBragg_sum_over_steps(
                     printf("%4d %4d : stol = %g, lambda = %g\n", _fpixel,_spixel,_stol, _lambda);
                     printf("at %g %g %g\n", _pixel_pos[0],_pixel_pos[1],_pixel_pos[2]);
                     printf("hkl= %f %f %f  hkl0= %d %d %d\n", _h,_k,_l,_h0,_k0,_l0);
-                    printf(" F_cell=%g  F_latt=%g   I = %g\n", _F_cell,_F_latt,_I);
+                    printf(" F_cell=%g  F_cell_2=%g F_latt=%g   I = %g\n", _F_cell,_F_cell2,_F_latt,_I);
                     printf("I/steps %15.10g\n", _I/steps);
                     printf("Fdet= %g; Sdet= %g ; Odet= %g\n", _Fdet, _Sdet, _Odet);
                     printf("omega   %15.10g\n", _omega_pixel);
@@ -656,6 +735,15 @@ void diffBragg::diffBragg_sum_over_steps(
             d_fcell_images[i_pix] = value;
             d2_fcell_images[i_pix] = value2;
         }/* end Fcell deriv image increment */
+
+        if (refine_fp_fdp){
+            // c derivative
+            double value = _scale_term*fp_fdp_manager_dI[0];
+            d_fp_fdp_images[i_pix] = value;
+            // d derivative
+            value = _scale_term*fp_fdp_manager_dI[1];
+            d_fp_fdp_images[Npix_to_model + i_pix] = value;
+        }
 
         /* update eta derivative image */
         if(refine_eta){

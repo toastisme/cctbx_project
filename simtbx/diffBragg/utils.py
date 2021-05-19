@@ -1,4 +1,7 @@
 from __future__ import absolute_import, division, print_function
+
+from scipy import fft
+from scipy.ndimage import binary_dilation
 from itertools import zip_longest
 import math
 import pickle
@@ -658,7 +661,8 @@ def get_roi_background_and_selection_flags(refls, imgs, shoebox_sz=10, reject_ed
                                    reject_roi_with_hotpix=True, background_mask=None, hotpix_mask=None,
                                    bg_thresh=3.5, set_negative_bg_to_zero=False,
                                    pad_for_background_estimation=None, use_robust_estimation=True, sigma_rdout=3.,
-                                   min_trusted_pix_per_roi=4, deltaQ=None, experiment=None, weighted_fit=True):
+                                   min_trusted_pix_per_roi=4, deltaQ=None, experiment=None, weighted_fit=True,
+                                   tilt_relative_to_corner=False, ret_cov=False):
 
     npan, sdim, fdim = imgs.shape
 
@@ -677,6 +681,7 @@ def get_roi_background_and_selection_flags(refls, imgs, shoebox_sz=10, reject_ed
     tilt_abc = []
     kept_rois = []
     panel_ids = []
+    all_cov =[]
     selection_flags = []
     num_roi_negative_bg = 0
     num_roi_nan_bg = 0
@@ -694,8 +699,6 @@ def get_roi_background_and_selection_flags(refls, imgs, shoebox_sz=10, reject_ed
             print("is on edge")
             is_selected = False
         pid = refls[i_roi]['panel']
-        ii = (i1+i2)*.5
-        jj = (j1+j2)*.5
 
         if hotpix_mask is not None:
             is_hotpix = hotpix_mask[pid, j1:j2, i1:i2]
@@ -740,9 +743,18 @@ def get_roi_background_and_selection_flags(refls, imgs, shoebox_sz=10, reject_ed
                     bg_signal = 0
                 else:
                     is_selected = False
+            #if i_roi==0:
+            #    bg_signal = 3.1936748
+            #if i_roi==1:
+            #    bg_signal = 5.1090536
             tilt_a, tilt_b, tilt_c = 0, 0, bg_signal
+            covariance = None
+
             tilt_plane = tilt_a * Xcoords + tilt_b * Ycoords + tilt_c
         else:
+            if tilt_relative_to_corner:
+                Xcoords += i1
+                Ycoords += j1
             fit_results = fit_plane_equation_to_background_pixels(
                 shoebox_img=shoebox, fit_sel=is_background, sigma_rdout=shoebox_sigma_readout,
                 weighted=weighted_fit)
@@ -753,6 +765,9 @@ def get_roi_background_and_selection_flags(refls, imgs, shoebox_sz=10, reject_ed
                 tilt_plane = np.zeros_like(Xcoords)
             else:
                 (tilt_a, tilt_b, tilt_c), covariance = fit_results
+                #if XY is not None:
+                #    tilt_plane = tilt_a * (Xcoords+XY[0]) + tilt_b * (Ycoords+XY[1]) + tilt_c
+                #else:
                 tilt_plane = tilt_a * Xcoords + tilt_b * Ycoords + tilt_c
                 if np.any(np.isnan(tilt_plane)) and is_selected:
                     is_selected = False
@@ -773,9 +788,13 @@ def get_roi_background_and_selection_flags(refls, imgs, shoebox_sz=10, reject_ed
         if roi_dimY < 2 or roi_dimX < 2:
             is_selected = False
         #assert np.all(background[pid, j1_nopad:j2_nopad, i1_nopad:i2_nopad] == -1), "region of interest already accounted for"
-        background[pid, j1_nopad:j2_nopad, i1_nopad:i2_nopad] = \
-            tilt_plane[j1_nopad-j1: j1_nopad-j1+roi_dimY  , i1_nopad-i1: i1_nopad-i1+roi_dimX]
+
+        j1 = j1_nopad-j1
+        i1 = i1_nopad-i1
+        plane_in_unpadded_roi = tilt_plane[j1: j1 + roi_dimY, i1: i1 + roi_dimX]
+        background[pid, j1_nopad:j2_nopad, i1_nopad:i2_nopad] = plane_in_unpadded_roi
         tilt_abc.append((tilt_a, tilt_b, tilt_c))
+        all_cov.append(covariance)
         kept_rois.append(roi)
         panel_ids.append(pid)
         #patches.append(rect)
@@ -791,7 +810,10 @@ def get_roi_background_and_selection_flags(refls, imgs, shoebox_sz=10, reject_ed
     #plt.show()
     #print("Number of ROI with negative BGs: %d / %d" % (num_roi_negative_bg, len(rois)))
     #print("Number of ROI with NAN in BGs: %d / %d" % (num_roi_nan_bg, len(rois)))
-    return kept_rois, panel_ids, tilt_abc, selection_flags, background
+    if ret_cov:
+        return kept_rois, panel_ids, tilt_abc, selection_flags, background, all_cov
+    else:
+        return kept_rois, panel_ids, tilt_abc, selection_flags, background
 
 
 def determine_shoebox_ROI(detector, delta_Q, wavelength_A, refl):
@@ -835,7 +857,7 @@ def check_if_tilt_dips_below_zero(tilt_coefs, dim_slowfast):
     return dips_below_zero
 
 
-def fit_plane_equation_to_background_pixels(shoebox_img, fit_sel, sigma_rdout=3, weighted=True):
+def fit_plane_equation_to_background_pixels(shoebox_img, fit_sel, sigma_rdout=3, weighted=True, relative_XY=None):
     """
     :param shoebox_img: 2D pixel image (usually less than 100x100 pixels)
     :param fit_sel: pixels to be fit to plane (usually background pixels)
@@ -844,7 +866,11 @@ def fit_plane_equation_to_background_pixels(shoebox_img, fit_sel, sigma_rdout=3,
     """
     # fast scan pixels, slow scan pixels, pixel values (corrected for gain)
     Y, X = np.indices(shoebox_img.shape)
+    if relative_XY is not None:
+        X += relative_XY[0]
+        Y += relative_XY[1]
     fast, slow, rho_bg = X[fit_sel], Y[fit_sel], shoebox_img[fit_sel]
+
 
     try:
         sigma_rdout = sigma_rdout[fit_sel]
@@ -944,7 +970,8 @@ def image_data_from_expt(expt, as_double=True):
 
 def simulator_from_expt_and_params(expt, params=None, oversample=0, device_id=0, init_scale=1, total_flux=1e12,
                                    ncells_abc=(10,10,10), has_isotropic_ncells=True, mosaicity=0, num_mosaicity_samples=1, mtz_name=None,
-                                   mtz_column=None, default_F=0, dmin=1.5, dmax=30, spectra_file=None, spectra_stride=1):
+                                   mtz_column=None, default_F=0, dmin=1.5, dmax=30, spectra_file=None, spectra_stride=1,
+                                   complex_F=None):
 
     if params is not None:
         oversample = params.simulator.oversample
@@ -1007,6 +1034,9 @@ def simulator_from_expt_and_params(expt, params=None, oversample=0, device_id=0,
             unit_cell=expt.crystal.get_unit_cell(), d_min=dmin, d_max=dmax)
     else:
         miller_data = open_mtz(mtz_name, mtz_column)
+    if complex_F is not None:
+        miller_data = complex_F
+
     crystal.miller_array = miller_data
     SIM.crystal = crystal
     #if params is not None:
@@ -1026,6 +1056,7 @@ def simulator_from_expt_and_params(expt, params=None, oversample=0, device_id=0,
     SIM.panel_id = 0
     SIM.instantiate_diffBragg(oversample=oversample, device_Id=device_id, default_F=default_F)
     if init_scale is not None:
+        #TODO phase this parameter out since its redundant?
         SIM.update_nanoBragg_instance("spot_scale", init_scale)
     return SIM
 
@@ -1642,7 +1673,7 @@ def refls_to_q(refls, detector, beam, update_table=False):
     return np.vstack(q_vecs)
 
 
-def strong_spot_mask(refl_tbl, detector):
+def strong_spot_mask(refl_tbl, detector, dilate=None):
     """
 
     :param refl_tbl:
@@ -1655,11 +1686,18 @@ def strong_spot_mask(refl_tbl, detector):
     is_strong_pixel = np.zeros((n_panels, nslow, nfast), bool)
     panel_ids = refl_tbl["panel"]
     # mask the strong spots so they dont go into tilt plane fits
-    for i_refl, (x1, x2, y1, y2, _, _) in enumerate(refl_tbl['bbox']):
+    for i_refl in range(len(refl_tbl)): # (x1, x2, y1, y2, _, _) in enumerate(refl_tbl['bbox']):
         i_panel = panel_ids[i_refl]
+        sb = refl_tbl[i_refl]["shoebox"]
+        x1, x2, y1, y2, _, _ = sb.bbox
+        is_strong = sb.mask.as_numpy_array()[0] == 5
         bb_ss = slice(y1, y2, 1)
         bb_fs = slice(x1, x2, 1)
-        is_strong_pixel[i_panel, bb_ss, bb_fs] = True
+        is_strong_pixel[i_panel, bb_ss, bb_fs] = is_strong
+
+    if dilate is not None:
+        is_strong_pixel = np.array([binary_dilation(m, iterations=dilate) for m in is_strong_pixel])
+
     return is_strong_pixel
 
 
@@ -1846,3 +1884,169 @@ def strong_spot_mask2(refl_tbl, detector):
         is_model = refl_tbl[i_refl]['shoebox'].mask.as_numpy_array()[0] == 5
         is_strong_pixel[i_panel,bb_ss, bb_fs] = is_model
     return is_strong_pixel
+
+def q_to_hkl(q_vecs, crystal):
+    from scitbx.matrix import sqr
+    Ai = sqr(crystal.get_A()).inverse()
+    Ai = Ai.as_numpy_array()
+    HKL = np.dot( Ai, q_vecs.T)
+    HKLi = map( lambda h: np.ceil(h-0.5).astype(int), HKL)
+    return np.vstack(HKL).T, np.vstack(HKLi).T
+
+
+def refls_to_pixelmm(refls, detector):
+    """
+    returns the mm position of the spot in pixels
+    referenced to the panel origin, which I think is the
+    center of the first pixel in memory for the panel
+    :param reflection table
+    :param dxtbx detecotr
+    :return: np.array Nreflsx2 for fast,slow mm coord referenced to panel origin
+        in the plane of the panel
+    """
+    ij_mm = np.zeros( (len(refls),2))
+    for i_r,r in enumerate(refls):
+        panel = detector[r['panel']]
+        i,j,_ = r['xyzobs.px.value']
+        ij_mm[i_r] = panel.pixel_to_millimeter( (i,j) )
+    return ij_mm
+
+
+def refls_to_hkl(refls, detector, beam, crystal,
+                 update_table=False, returnQ=False):
+    """
+    convert pixel panel reflections to miller index data
+    :param refls:  reflecton table for a panel or a tuple of (x,y)
+    :param detector:  dxtbx detector model
+    :param beam:  dxtbx beam model
+    :param crystal: dxtbx crystal model
+    :param update_table: whether to update the refltable
+    :param returnQ: whether to return intermediately computed q vectors
+    :return: if as_numpy two Nx3 numpy arrays are returned
+        (one for fractional and one for whole HKL)
+        else dictionary of hkl_i (nearest) and hkl (fractional)
+    """
+    from scitbx.matrix import sqr
+    if 'rlp' not in list(refls.keys()):
+        q_vecs = refls_to_q(refls, detector, beam, update_table=update_table)
+    else:
+        q_vecs = np.vstack([r['rlp'] for r in refls])
+    Ai = sqr(crystal.get_A()).inverse()
+    Ai = Ai.as_numpy_array()
+    HKL = np.dot( Ai, q_vecs.T)
+    HKLi = map( lambda h: np.ceil(h-0.5).astype(int), HKL)
+    if update_table:
+        refls['miller_index'] = flex.miller_index(len(refls),(0,0,0))
+        mil_idx = flex.vec3_int(tuple(map(tuple, np.vstack(HKLi).T)))
+        for i in range(len(refls)):
+            refls['miller_index'][i] = mil_idx[i]
+    if returnQ:
+        return np.vstack(HKL).T, np.vstack(HKLi).T, q_vecs
+    else:
+        return np.vstack(HKL).T, np.vstack(HKLi).T
+
+
+def refls_to_q(refls, detector, beam, update_table=False):
+
+    orig_vecs = {}
+    fs_vecs = {}
+    ss_vecs = {}
+    u_pids = set(refls['panel'])
+    for pid in u_pids:
+        orig_vecs[pid] = np.array(detector[pid].get_origin())
+        fs_vecs[pid] = np.array(detector[pid].get_fast_axis())
+        ss_vecs[pid] = np.array(detector[pid].get_slow_axis())
+
+    s1_vecs = []
+    q_vecs = []
+    for i_r in range(len(refls)):
+        r = refls[i_r]
+        pid = r['panel']
+        i_fs, i_ss, _ = r['xyzobs.px.value']
+        panel = detector[pid]
+        orig = orig_vecs[pid] #panel.get_origin()
+        fs = fs_vecs[pid] #panel.get_fast_axis()
+        ss = ss_vecs[pid] #panel.get_slow_axis()
+
+        fs_pixsize, ss_pixsize = panel.get_pixel_size()
+        s1 = orig + i_fs*fs*fs_pixsize + i_ss*ss*ss_pixsize  # scattering vector
+        s1 = s1 / np.linalg.norm(s1) / beam.get_wavelength()
+        s1_vecs.append(s1)
+        q_vecs.append(s1-beam.get_s0())
+
+    if update_table:
+        refls['s1'] = flex.vec3_double(tuple(map(tuple,s1_vecs)))
+        refls['rlp'] = flex.vec3_double(tuple(map(tuple,q_vecs)))
+
+    return np.vstack(q_vecs)
+
+
+def get_panels_fasts_slows(expt, pids, rois):
+    npan = len(expt.detector)
+    nfast, nslow = expt.detector[0].get_image_size()
+    MASK = np.zeros((npan, nslow, nfast), bool)
+    ROI_ID = np.zeros((npan, nslow, nfast), 'uint16')
+    #ROI_ID = NP_ONES((npan, nslow, nfast), 'uint16') * mx
+    nspots = len(rois)
+    for i_spot in range(nspots):
+        x1, x2, y1, y2 = rois[i_spot]
+        if x2-x1 == 0 or y2-y1 == 0:
+            continue
+        pid = pids[i_spot]
+        MASK[pid, y1:y2, x1:x2] = True
+        ROI_ID[pid, y1:y2, x1:x2] = i_spot
+    p,s,f = np.where(MASK)
+    roi_id = ROI_ID[p,s,f]
+    pan_fast_slow = np.ascontiguousarray((np.vstack([p,f,s]).T).ravel())
+    pan_fast_slow = flex.size_t(pan_fast_slow)
+    return pan_fast_slow, roi_id
+
+def refls_by_panelname(refls):
+    Nrefl = len(refls)
+    panel_names = np.array([refls["panel"][i] for i in range( Nrefl)])
+    uniq_names = np.unique(panel_names)
+    refls_by_panel = {name: refls.select(flex.bool(panel_names == name))
+                      for name in uniq_names }
+    return refls_by_panel
+
+
+def f_double_prime(energies, a,b,c,d, deriv=None):
+    """
+    generate a 4 parameter f double prime curve based on the sigmoid function
+    :param energies:
+    :param a: offset
+    :param b: amplitude
+    :param c: center
+    :param d: slope
+    :param deriv: string flag, c,d or None,
+        eg 'c' returns deriv of f_dbl_prime w.r.t. c, None returns function f_dbl_prime
+    :return: f double prime as a function of energy
+    """
+    exp_arg = -d * (energies - c)
+    e_term = np.exp(exp_arg)
+    if deriv=="c":
+        return -b*(1+e_term)**-2 * e_term * d
+    elif deriv=="d":
+        return -b*(1+e_term)**-2 * e_term * (c-energies)
+    else:
+        return a + b / (1+e_term)
+
+
+def f_prime(f_double_prime, S=None, padn=5000):
+    """
+    generate an f_prime from an f_double_prime curve
+    using the kramers kronig relationship
+    :param f_double_prime: function or its derivative
+    :param S:
+    :param padn:
+    :return:
+    """
+    if S is None:
+        S = np.sin(np.linspace(-np.pi / 2, np.pi / 2, padn)) * 0.5 + 0.5
+    else:
+        padn = S.shape[0]
+    F = f_double_prime
+    Fin = np.hstack((F[0] * S, F, F[-1] * (1 - S)))  # sin padding as used in Sherrell thesis, TODO window function ?
+    Ft = fft.fft(Fin)
+    iFt = -1 * fft.ifft(1j * np.sign(fft.fftfreq(Ft.shape[0])) * Ft).real
+    return iFt[padn:-padn]

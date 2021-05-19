@@ -400,9 +400,10 @@ class LocalRefinerLauncher:
             self.RUC.output_dir = self.params.refiner.io.output_dir
             #self.RUC.iterations=0
             self.RUC.run(setup_only=True)
-            if not self.params.refiner.quiet:
-                print("\n<><><><><><><><>TRIAL %d refinement status:" % i_trial)
-                self.RUC.S.D.print_if_refining()
+            # for debug purposes:
+            #if not self.params.refiner.quiet:
+            #    print("\n<><><><><><><><>TRIAL %d refinement status:" % i_trial)
+            #    self.RUC.S.D.print_if_refining()
 
             self.RUC.num_positive_curvatures = 0
             self.RUC.use_curvatures = self.params.refiner.start_with_curvatures
@@ -423,6 +424,33 @@ class LocalRefinerLauncher:
                 self.RUC.selection_flags = more_sel_flags
 
             self.RUC.record_model_predictions = self.params.refiner.record_xy_calc
+
+
+            #if True: #self.params.refiner.tryscipy:
+            #    self.RUC.calc_curvatures = False
+            #    self.RUC._setup()
+            #    self.RUC.calc_func = True
+            #    self.RUC.compute_functional_and_gradients()
+
+            #    from scitbx.array_family import flex
+            #    def func(x, RUC):
+            #        RUC.calc_func = True
+            #        RUC.x = flex.double(x)
+            #        f, g = RUC.compute_functional_and_gradients()
+            #        return f
+
+            #    def fprime(x, RUC):
+            #        RUC.calc_func = False
+            #        RUC.x = flex.double(x)
+            #        RUC.x = flex.double(x)
+            #        f, g = RUC.compute_functional_and_gradients()
+            #        return g.as_numpy_array()
+
+            #    from scipy.optimize import fmin_l_bfgs_b
+            #    out = fmin_l_bfgs_b(func=func, x0=np.array(self.RUC.x),
+            #                        fprime=fprime, args=[self.RUC], factr=1e7)# args.scipyfactr)
+
+            #else:
             self.RUC.run(setup=False)
             if self.RUC.hit_break_to_use_curvatures:
                 self.RUC.fix_params_with_negative_curvature = False
@@ -567,7 +595,7 @@ class LocalRefinerLauncher:
         shot_data.nanoBragg_rois = nanoBragg_rois
         shot_data.background = background
         shot_data.roi_imgs = roi_imgs
-        shot_data.roi_darkRMS = roi_darkRMS
+        shot_data.roi_darkRMS = roi_darkRMS if darkRMS_data is not None else None
         shot_data.pids = pids
         shot_data.rois = rois
         shot_data.xrel = xrel

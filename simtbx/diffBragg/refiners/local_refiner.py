@@ -408,6 +408,20 @@ class LocalRefiner(BaseRefiner):
                     h5.create_dataset("wavelen_offset/%s" % exp_name, data=self.parameters.wavelen_offset[exp_name])
                     h5.create_dataset("wavelen_scale/%s" % exp_name, data=self.parameters.wavelen_scale[exp_name])
 
+                # add global parameters
+                if self.I_AM_ROOT:
+                    h5.create_dataset("panelX", data=self.parameters.panelX)
+                    h5.create_dataset("panelY", data=self.parameters.panelY)
+                    h5.create_dataset("panelZ", data=self.parameters.panelZ)
+                    h5.create_dataset("panelO", data=self.parameters.panelO)
+                    h5.create_dataset("panelF", data=self.parameters.panelF)
+                    h5.create_dataset("panelS", data=self.parameters.panelS)
+                    h5.create_dataset("panelOrig", data=self.parameters.panelOrig)
+                    h5.create_dataset("panelFast", data=self.parameters.panelFast)
+                    h5.create_dataset("panelSlow", data=self.parameters.panelSlow)
+                #if self.refine_detdist:
+                #    panZ = [self._get_detector_distance_val(i_shot)] * len(self.S.detector)
+
     def _setup(self):
         # Here we go!  https://youtu.be/7VvkXA6xpqI
 
@@ -2076,6 +2090,7 @@ class LocalRefiner(BaseRefiner):
 
             if self.CRYSTAL_GT is not None and not self.only_save_model_for_shot:
                 self._MPI_initialize_GT_crystal_misorientation_analysis()
+            tshots = time.time()
 
             for self._i_shot in self.shot_ids:
 
@@ -2111,7 +2126,7 @@ class LocalRefiner(BaseRefiner):
                 self._run_diffBragg_current()
 
                 # TODO pre-extractions for all parameters
-                self._append_parameters()
+                self._append_local_parameters()
                 self._pre_extract_deriv_arrays()
                 #self._per_shot_Z_data = []
                 for i_spot in range(n_spots):
@@ -2200,6 +2215,9 @@ class LocalRefiner(BaseRefiner):
                     # Done with derivative accumulation
 
             #    self.image_corr[self._i_shot] = self.image_corr[self._i_shot] / self.image_corr_norm[self._i_shot]
+            tshots =time.time()-tshots
+            self.print("Time rank worked on shots=%.4f" % tshots)
+            self._append_global_parameters()
             if not self.only_save_model_for_shot:
                 self._MPI_aggregate_model_data_correlations()
             # TODO add in the priors:
@@ -2208,7 +2226,10 @@ class LocalRefiner(BaseRefiner):
             #if self.save_Z_freq is not None:
             #    self._save_Z()
             if not self.only_save_model_for_shot:
+                tmpi = time.time()
                 self._mpi_aggregation()
+                tmpi = tmpi-time.time()
+                self.print("Time for MPIaggregation=%.4f" % tmpi)
 
                 self._f = self.target_functional
                 self._g = self.g_for_lbfgs
@@ -2231,7 +2252,10 @@ class LocalRefiner(BaseRefiner):
                 self.print_step()
                 self.print_step_grads()
 
+            tsave = time.time()
             self._dump_parameters_to_hdf5()
+            tsave = time.time()-tsave
+            self.print("Time to save parameters to hdf5=%.4f" % tsave)
 
             self.iterations += 1
             self.f_vals.append(self.target_functional)
@@ -3119,7 +3143,7 @@ class LocalRefiner(BaseRefiner):
 
     def _poisson_d2(self, d, d2):
         cterm = d2 * self.one_minus_k_over_Lambda + d * d * self.k_over_squared_Lambda
-        if self._is_trusted:
+        if self._is_trusted is not None:
             cterm = cterm[self._is_trusted]
         return cterm.sum()
 
@@ -3372,7 +3396,7 @@ class LocalRefiner(BaseRefiner):
         if self.testing_mode:
             self.conv_test()
 
-    def _append_parameters(self):
+    def _append_local_parameters(self):
         if self.parameter_hdf5_path is None:
             return
 
@@ -3407,6 +3431,30 @@ class LocalRefiner(BaseRefiner):
         rotY = self._get_rotY(self._i_shot)
         rotZ = self._get_rotZ(self._i_shot)
         self.parameters.add_rotXYZ(exper_name, (rotX, rotY, rotZ))
+
+    def _append_global_parameters(self):
+        opt_det = self.get_optimized_detector(i_shot=0)
+        origs = []
+        fasts = []
+        slows = []
+        for pid in range(len(opt_det)):
+            orig = list(opt_det[pid].get_origin())
+            fast = list(opt_det[pid].get_fast_axis())
+            slow = list(opt_det[pid].get_slow_axis())
+            origs.append(orig)
+            fasts.append(fast)
+            slows.append(slow)
+        self.parameters.add_panelOrig(origs)
+        self.parameters.add_panelFast(fasts)
+        self.parameters.add_panelSlow(slows)
+        panX, panY, panZ = zip(*[self._get_panelXYZ_val(pid) for pid in range(len(self.S.detector))])
+        panO, panF, panS = zip(*[self._get_panelRot_val(pid) for pid in range(len(self.S.detector))])
+        self.parameters.add_panelX(panX)
+        self.parameters.add_panelY(panY)
+        self.parameters.add_panelZ(panZ)
+        self.parameters.add_panelO(panO)
+        self.parameters.add_panelF(panF)
+        self.parameters.add_panelS(panS)
 
     def _print_sausages(self):
         sausage_vals = self._get_sausage_parameters(self._i_shot)

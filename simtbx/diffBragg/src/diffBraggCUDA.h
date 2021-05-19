@@ -40,6 +40,7 @@ struct diffBragg_cudaPointers {
   CUDAREAL* cu_d2_panel_orig_images;
 
   CUDAREAL* cu_d_sausage_XYZ_scale_images;
+  CUDAREAL* cu_d_fp_fdp_images;
 
   int* cu_subS_pos;
   int* cu_subF_pos;
@@ -56,6 +57,10 @@ struct diffBragg_cudaPointers {
   CUDAREAL * cu_sdet_vectors;
   CUDAREAL * cu_odet_vectors;
   CUDAREAL * cu_pix0_vectors;
+
+  CUDAREAL * cu_fpfdp;
+  CUDAREAL * cu_fpfdp_derivs;
+  CUDAREAL * cu_atom_data;
 
   CUDAREAL * cu_source_X, * cu_source_Y, * cu_source_Z, * cu_source_I, * cu_source_lambda;
   int cu_sources;
@@ -105,6 +110,7 @@ void diffBragg_loopy(
         image_type& d_panel_rot_images, image_type& d2_panel_rot_images,
         image_type& d_panel_orig_images, image_type& d2_panel_orig_images,
         image_type& d_sausage_XYZ_scale_images,
+        image_type& d_fp_fdp_images,
         const int Nsteps, int _printout_fpixel, int _printout_spixel, bool _printout, CUDAREAL _default_F,
         int oversample, bool _oversample_omega, CUDAREAL subpixel_size, CUDAREAL pixel_size,
         CUDAREAL detector_thickstep, CUDAREAL _detector_thick, CUDAREAL close_distance, CUDAREAL detector_attnlen,
@@ -137,6 +143,7 @@ void diffBragg_loopy(
         std::vector<bool>& refine_Bmat, std::vector<bool>& refine_Ncells, bool refine_Ncells_def, std::vector<bool>& refine_panel_origin, std::vector<bool>& refine_panel_rot,
         bool refine_fcell, std::vector<bool>& refine_lambda, bool refine_eta, std::vector<bool>& refine_Umat,
         bool refine_sausages, int num_sausages,
+        bool refine_fp_fdp,
         std::vector<CUDAREAL>& fdet_vectors, std::vector<CUDAREAL>& sdet_vectors,
         std::vector<CUDAREAL>& odet_vectors, std::vector<CUDAREAL>& pix0_vectors,
         bool _nopolar, bool _point_pixel, CUDAREAL _fluence, CUDAREAL _r_e_sqr, CUDAREAL _spot_scale,
@@ -145,7 +152,10 @@ void diffBragg_loopy(
         bool update_step_positions, bool update_panels_fasts_slows, bool update_sources, bool update_umats,
         bool update_dB_mats, bool update_rotmats, bool update_Fhkl, bool update_detector, bool update_refine_flags,
         bool update_panel_deriv_vecs, bool update_sausages_on_device,
-        int detector_thicksteps, int phisteps, int Npix_to_allocate);
+        int detector_thicksteps, int phisteps, int Npix_to_allocate, bool no_Nabc_scale,
+        std::vector<double>& fpfdp,
+        std::vector<double>& fpfdp_derivs,
+        std::vector<double>& atom_data);
 
 
 void freedom(diffBragg_cudaPointers& cp);

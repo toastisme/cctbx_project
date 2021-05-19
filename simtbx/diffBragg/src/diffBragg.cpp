@@ -187,6 +187,7 @@ diffBragg::diffBragg(const dxtbx::model::Detector& detector, const dxtbx::model:
     sdet_vectors.clear();
     odet_vectors.clear();
     pix0_vectors.clear();
+    no_Nabc_scale = false;
 
     dF_vecs.clear();
     dS_vecs.clear();
@@ -228,6 +229,7 @@ diffBragg::diffBragg(const dxtbx::model::Detector& detector, const dxtbx::model:
     R3_2.push_back(EYE);
     R3_2.push_back(EYE);
     R3_2.push_back(EYE);
+
 
     boost::shared_ptr<rot_manager> rotX = boost::shared_ptr<rot_manager>(new rotX_manager());
     boost::shared_ptr<rot_manager> rotY = boost::shared_ptr<rot_manager>(new rotY_manager());
@@ -346,6 +348,13 @@ diffBragg::diffBragg(const dxtbx::model::Detector& detector, const dxtbx::model:
     NABC << 1,0,0,
             0,1,0,
             0,0,1;
+
+    boost::shared_ptr<Fcell_manager> fpfdp1 = boost::shared_ptr<Fcell_manager>(new Fcell_manager());
+    boost::shared_ptr<Fcell_manager> fpfdp2 = boost::shared_ptr<Fcell_manager>(new Fcell_manager());
+    fpfdp1->refine_me=false;
+    fpfdp2->refine_me=false;
+    fp_fdp_managers.push_back(fpfdp1);
+    fp_fdp_managers.push_back(fpfdp2);
 
     O_reference <<0,0,0;
 
@@ -786,6 +795,12 @@ void diffBragg::initialize_managers(){
             sausage_scale_managers[i]->initialize(Npix_total, compute_curvatures);
         }
     }
+    if (fp_fdp_managers[0]->refine_me)
+        fp_fdp_managers[0]->initialize(Npix_total, compute_curvatures);
+    if (fp_fdp_managers[1]->refine_me)
+        fp_fdp_managers[1]->initialize(Npix_total, compute_curvatures);
+
+
 }
 
 void diffBragg::vectorize_umats(){
@@ -937,6 +952,10 @@ void diffBragg::fix(int refine_id){
             sausage_scale_managers[i]->refine_me=false;
         }
     }
+    else if (refine_id==22){
+        fp_fdp_managers[0]->refine_me = false;
+        fp_fdp_managers[1]->refine_me = false;
+    }
 }
 
 
@@ -1052,6 +1071,12 @@ void diffBragg::refine(int refine_id){
         }
         update_sausages_on_device=true;
     }
+    else if(refine_id==22){
+        fp_fdp_managers[0]->refine_me = true;
+        fp_fdp_managers[1]->refine_me = true;
+        fp_fdp_managers[0]->initialize(Npix_total, compute_curvatures);
+        fp_fdp_managers[1]->initialize(Npix_total, compute_curvatures);
+    }
 }
 
 void diffBragg::print_if_refining(){
@@ -1091,6 +1116,10 @@ void diffBragg::print_if_refining(){
     if (eta_managers[2]->refine_me)
         printf("refining eta 2\n");
 
+    if(fp_fdp_managers[0]->refine_me)
+      printf("refining fdp center\n");
+    if(fp_fdp_managers[1]->refine_me)
+      printf("refining fdp slope\n");
     for(int i=0; i < num_sausages; i++){
         if (sausage_scale_managers[i]->refine_me)
             printf("Refining sausage %d\n" , i);
@@ -1217,6 +1246,26 @@ boost::python::tuple diffBragg::get_ncells_values(){
     boost::python::tuple values;
     values = boost::python::make_tuple( NABC(0,0),  NABC(1,1), NABC(2,2));
     return values;
+}
+
+void diffBragg::show_heavy_atom_data(){
+  int natom = atom_data.size()/5;
+  for (i=0; i<natom;i++){
+    double x =atom_data[i*5];
+    double y =atom_data[i*5+1];
+    double z =atom_data[i*5+2];
+    double B =atom_data[i*5+3];
+    double O =atom_data[i*5+4];
+    printf("Atom %d at position %5.3g,%5.3g,%5.3g, Bfactor=%5.2g Ang^2, Occupancy=%2.3g\n",i,x,y,z,B,O);
+  }
+}
+
+void diffBragg::show_fp_fdp(){
+  for(int i=0; i< sources; i++){
+    double fp = fpfdp[2*i];
+    double fdp=fpfdp[2*i+1];
+    printf("Source %d, fp=%8.3g, fdp=%8.3g\n", i,fp,fdp);
+  }
 }
 
 
@@ -1350,6 +1399,15 @@ af::flex_double diffBragg::get_second_derivative_pixels(int refine_id){
         return fcell_man->raw_pixels2;
     else
        printf("Not suppotrted for refine id %d\n", refine_id);
+}
+
+boost::python::tuple diffBragg::get_fp_fdp_derivative_pixels(){
+    boost::python::tuple derivative_pixels;
+    SCITBX_ASSERT(fp_fdp_managers[0]->refine_me);
+    SCITBX_ASSERT(fp_fdp_managers[1]->refine_me);
+    derivative_pixels = boost::python::make_tuple(fp_fdp_managers[0]->raw_pixels,
+      fp_fdp_managers[1]->raw_pixels);
+    return derivative_pixels;
 }
 
 boost::python::tuple diffBragg::get_ncells_derivative_pixels(){
@@ -1668,6 +1726,7 @@ void diffBragg::add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows
     image_type d_panel_orig_images(Npix_to_model*3,0.0);
     image_type d2_panel_orig_images(Npix_to_model*3,0.0);
     image_type d_sausage_XYZ_scale_images(Npix_to_model*num_sausages*4,0.0);
+    image_type d_fp_fdp_images(Npix_to_model*2,0); // for now only support two parameters for fp, fdp
 
     //fudge = 1.1013986013; // from manuscript computation
     struct timeval t1,t2;
@@ -1685,6 +1744,7 @@ void diffBragg::add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows
             d_panel_rot_images,  d2_panel_rot_images,
             d_panel_orig_images,  d2_panel_orig_images,
             d_sausage_XYZ_scale_images,
+            d_fp_fdp_images,
             subS_pos,  subF_pos,  thick_pos,
             source_pos,  phi_pos,  mos_pos, sausage_pos,
             Nsteps, _printout_fpixel, _printout_spixel, _printout, _default_F,
@@ -1716,9 +1776,11 @@ void diffBragg::add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows
             fcell_man->refine_me, refine_lambda, eta_managers[0]->refine_me, refine_Umat,
             refining_sausages,
             num_sausages,
+            fp_fdp_managers[0]->refine_me,
             fdet_vectors, sdet_vectors,
             odet_vectors, pix0_vectors,
-            nopolar, point_pixel, fluence, r_e_sqr, spot_scale);
+            nopolar, point_pixel, fluence, r_e_sqr, spot_scale, no_Nabc_scale,
+            fpfdp, fpfdp_derivs, atom_data);
         }
     else { // we are using cuda
 #ifdef NANOBRAGG_HAVE_CUDA
@@ -1734,6 +1796,7 @@ void diffBragg::add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows
            d_panel_rot_images,  d2_panel_rot_images,
            d_panel_orig_images,  d2_panel_orig_images,
            d_sausage_XYZ_scale_images,
+           d_fp_fdp_images,
            Nsteps, _printout_fpixel, _printout_spixel, _printout, _default_F,
            oversample, oversample_omega, subpixel_size, pixel_size,
            detector_thickstep, detector_thick, close_distance, detector_attnlen,
@@ -1762,6 +1825,7 @@ void diffBragg::add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows
            refine_Bmat, refine_Ncells,refine_Ncells_def,refine_pan_orig, refine_pan_rot,
            fcell_man->refine_me, refine_lambda, eta_managers[0]->refine_me, refine_Umat,
            refining_sausages, num_sausages,
+           fp_fdp_managers[0]->refine_me,
            fdet_vectors, sdet_vectors,
            odet_vectors, pix0_vectors,
            nopolar, point_pixel, fluence, r_e_sqr, spot_scale,
@@ -1772,7 +1836,7 @@ void diffBragg::add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows
            update_dB_matrices_on_device, update_rotmats_on_device,
            update_Fhkl_on_device, update_detector_on_device, update_refine_flags_on_device,
            update_panel_deriv_vecs_on_device, update_sausages_on_device, detector_thicksteps, phisteps,
-           Npix_to_allocate);
+           Npix_to_allocate, no_Nabc_scale, fpfdp, fpfdp_derivs, atom_data);
 #else
        // no statement
 #endif
@@ -1874,6 +1938,12 @@ void diffBragg::add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows
                 panels[i_orig]->increment_image(i_pix, d_panel_orig_images[idx], d2_panel_orig_images[idx], compute_curvatures);
             }
         }
+
+        if (fp_fdp_managers[0]->refine_me)
+            fp_fdp_managers[0]->increment_image(i_pix, d_fp_fdp_images[i_pix], 0, compute_curvatures);
+        if (fp_fdp_managers[1]->refine_me)
+            fp_fdp_managers[1]->increment_image(i_pix, d_fp_fdp_images[i_pix+Npix_to_model], 0, compute_curvatures);
+
     } // END of flex array update
 
     delete[] subS_pos;

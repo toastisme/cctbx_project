@@ -148,7 +148,8 @@ class GlobalRefinerLauncher(LocalRefinerLauncher):
             self.shot_rois[shot_idx] = shot_data.rois
             self.shot_nanoBragg_rois[shot_idx] = shot_data.nanoBragg_rois
             self.shot_roi_imgs[shot_idx] = shot_data.roi_imgs
-            self.shot_roi_darkRMS[shot_idx] = shot_data.roi_darkRMS if shot_data.roi_darkRMS is not None else None
+            if shot_data.roi_darkRMS is not None:
+                self.shot_roi_darkRMS[shot_idx] = shot_data.roi_darkRMS
             if "rlp" in refls:
                 self.shot_reso[shot_idx] = 1/np.linalg.norm(refls["rlp"], axis=1)
 
@@ -201,6 +202,8 @@ class GlobalRefinerLauncher(LocalRefinerLauncher):
         if not self.shot_rois:
             raise RuntimeError("Cannot refine without shots! Probably Ranks than shots!")
         COMM.Barrier()
+        if not self.shot_roi_darkRMS:
+            self.shot_roi_darkRMS = None
 
         # TODO warn that per_spot_scale refinement not intended for ensemble mode
 

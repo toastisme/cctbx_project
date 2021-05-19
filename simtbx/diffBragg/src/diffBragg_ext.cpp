@@ -37,6 +37,100 @@ namespace boost_python { namespace {
       return diffBragg.Na;
   }
 
+  boost::python::tuple get_atom_data(simtbx::nanoBragg::diffBragg &diffBragg){
+    boost::python::tuple values;
+    values = boost::python::make_tuple(0,0);
+    return values;
+  }
+  //TODO override the set_sources function (or xray_beams) property in nanoBragg in order
+  // to set the fpfdp accordingly (if Fhkl2 is set)
+  static void set_atom_data(simtbx::nanoBragg::diffBragg & diffBragg,
+            boost::python::tuple const& atom_XYZBO){
+            /// atom XYZBO is tuple of x coord, ycoords, z coords, B-factors, occupancy
+            // e.g. 5 parameters per atom
+   boost::python::list atom_x = boost::python::extract<boost::python::list>(atom_XYZBO[0]);
+   boost::python::list atom_y = boost::python::extract<boost::python::list>(atom_XYZBO[1]);
+   boost::python::list atom_z = boost::python::extract<boost::python::list>(atom_XYZBO[2]);
+   boost::python::list atom_B = boost::python::extract<boost::python::list>(atom_XYZBO[3]);
+   boost::python::list atom_O = boost::python::extract<boost::python::list>(atom_XYZBO[4]);
+    int natoms = boost::python::len(atom_x);
+    SCITBX_ASSERT( boost::python::len(atom_y)== natoms);
+    SCITBX_ASSERT( boost::python::len(atom_z)== natoms);
+    SCITBX_ASSERT( boost::python::len(atom_B)== natoms);
+    SCITBX_ASSERT( boost::python::len(atom_O)== natoms);
+    diffBragg.atom_data.clear();
+    for (int i=0; i < natoms; i++){
+        diffBragg.atom_data.push_back( boost::python::extract<double>(atom_x[i]));
+        diffBragg.atom_data.push_back(  boost::python::extract<double>(atom_y[i]));
+        diffBragg.atom_data.push_back(  boost::python::extract<double>(atom_z[i]));
+        diffBragg.atom_data.push_back( boost::python::extract<double>(atom_B[i]));
+        diffBragg.atom_data.push_back(  boost::python::extract<double>(atom_O[i]));
+    }
+  }
+
+  boost::python::tuple get_fpfdp_derivs(simtbx::nanoBragg::diffBragg & diffBragg){
+        boost::python::tuple vals;
+        vals = boost::python::make_tuple(0,0);
+        //TODO implement
+        return vals;
+  }
+
+  static void set_fpfdp_derivs(simtbx::nanoBragg::diffBragg & diffBragg,
+                boost::python::tuple const& derivs) {
+    boost::python::list fprime_derivs = boost::python::extract<boost::python::list>(derivs[0]);
+    boost::python::list fdblprime_derivs = boost::python::extract<boost::python::list>(derivs[1]);
+    int num_fprime = boost::python::len(fprime_derivs);
+    int num_fdblprime =   boost::python::len(fdblprime_derivs);
+    SCITBX_ASSERT(num_fprime % diffBragg.sources==0);
+    SCITBX_ASSERT(num_fdblprime % diffBragg.sources == 0 );
+    diffBragg.fpfdp_derivs.clear();
+    //diffBragg.fdp_derivs.clear();
+    int n_deriv = num_fprime / diffBragg.sources;
+    for (int i_deriv=0; i_deriv < n_deriv; i_deriv++ ){
+        for (int i=0; i<diffBragg.sources; i++){
+            int idx=diffBragg.sources*i_deriv + i;
+            double val = boost::python::extract<double>(fprime_derivs[idx]);
+            diffBragg.fpfdp_derivs.push_back(val);
+            val = boost::python::extract<double>(fdblprime_derivs[idx]);
+            diffBragg.fpfdp_derivs.push_back(val);
+        }
+    }
+  }
+
+
+  static void set_fpfdp(simtbx::nanoBragg::diffBragg & diffBragg,
+                boost::python::tuple const& fprime_fdblprime) {
+    boost::python::list fprime = boost::python::extract<boost::python::list>(fprime_fdblprime[0]);
+    boost::python::list fdblprime = boost::python::extract<boost::python::list>(fprime_fdblprime[1]);
+    int num_fprime = boost::python::len(fprime);
+    int num_fdblprime =   boost::python::len(fdblprime);
+    SCITBX_ASSERT(num_fprime==diffBragg.sources);
+    SCITBX_ASSERT(num_fdblprime==diffBragg.sources);
+    diffBragg.fpfdp.clear();
+    for (int i=0; i<diffBragg.sources; i++){
+        double val = boost::python::extract<double>(fprime[i]);
+        diffBragg.fpfdp.push_back(val);
+        val = boost::python::extract<double>(fdblprime[i]);
+        diffBragg.fpfdp.push_back(val);
+    }
+  }
+
+  boost::python::tuple get_fpfdp(simtbx::nanoBragg::diffBragg const& diffBragg){
+    // TODO implement
+    boost::python::list fp;
+    boost::python::list fdp;
+    boost::python::tuple values;
+    int n = diffBragg.fpfdp.size()/2;
+    for(int i=0; i < n; i++ ){
+        double fp_val = diffBragg.fpfdp[2*i];
+        double fdp_val = diffBragg.fpfdp[2*i+1];
+        fp.append(fp_val);
+        fdp.append(fdp_val);
+    }
+    values = boost::python::make_tuple(fp,fdp);
+    return values;
+  }
+
   // change of basis operator see dxtbx.model.crystal.h
   static nanoBragg::mat3 get_O(simtbx::nanoBragg::diffBragg& diffBragg){
     return diffBragg.Omatrix;
@@ -250,6 +344,8 @@ namespace boost_python { namespace {
 
       .def("get_ncells_derivative_pixels", &simtbx::nanoBragg::diffBragg::get_ncells_derivative_pixels, "get derivatives of intensity w.r.t (Na, Nb, Nc)")
 
+      .def("get_fp_fdp_derivative_pixels", &simtbx::nanoBragg::diffBragg::get_fp_fdp_derivative_pixels, "get derivatives of intensity w.r.t c,d that describe fprime and fdblprime (see diffBragg.utils)")
+
       .def("get_ncells_def_derivative_pixels", &simtbx::nanoBragg::diffBragg::get_ncells_def_derivative_pixels, "get derivatives of intensity w.r.t (Nd, Ne, Nf)")
 
       .def("get_aniso_eta_deriv_pixels", &simtbx::nanoBragg::diffBragg::get_aniso_eta_deriv_pixels, "get derivatives of intensity w.r.t anisotropic mosaicity model")
@@ -300,6 +396,10 @@ namespace boost_python { namespace {
 
       .def("free_Fhkl2",&simtbx::nanoBragg::diffBragg::free_Fhkl2)
 
+      .def("show_fp_fdp", &simtbx::nanoBragg::diffBragg::show_fp_fdp)
+
+      .def("show_heavy_atom_data", &simtbx::nanoBragg::diffBragg::show_heavy_atom_data)
+
 #ifdef NANOBRAGG_HAVE_CUDA
       .def("gpu_free",&simtbx::nanoBragg::diffBragg::gpu_free)
 #endif
@@ -326,6 +426,26 @@ namespace boost_python { namespace {
                      make_getter(&simtbx::nanoBragg::diffBragg::oversample_omega,rbv()),
                      make_setter(&simtbx::nanoBragg::diffBragg::oversample_omega,dcp()),
                     "whether to use an average solid angle correction per pixel, or one at the sub pixel level")
+
+      .add_property("fprime_fdblprime",
+             make_function(&get_fpfdp,rbv()),
+             make_function(&set_fpfdp,dcp()),
+             "fprime and fdoubleprime, passed as two lists whose length should be the same")
+
+      .add_property("fprime_fdblprime_derivs",
+             make_function(&get_fpfdp_derivs,rbv()), // TODO implement me
+             make_function(&set_fpfdp_derivs,dcp()),
+             "fprime and fdoubleprime derivatives, as a 2-tuple. e.g. 1st tuple element is fprime derivs, length should be multiple of number of sources")
+
+      .add_property("heavy_atom_data",
+             make_function(&get_atom_data,rbv()),
+             make_function(&set_atom_data,dcp()),
+             "5 tuple of fracx_list,fracy_list,fracz_list,Bfactor_list,Occupancy_list, each list is same length")
+
+      .add_property("no_Nabc_scale",
+                     make_getter(&simtbx::nanoBragg::diffBragg::no_Nabc_scale,rbv()),
+                     make_setter(&simtbx::nanoBragg::diffBragg::no_Nabc_scale,dcp()),
+                    "toggle off the Nabc scale factor in the forward model (such that it is replaced entirely by spot_scale)")
 
       .add_property("__number_of_pixels_modeled_using_diffBragg", // protect this by making it a long name
                      make_getter(&simtbx::nanoBragg::diffBragg::Npix_to_model,rbv()),

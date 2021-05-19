@@ -14,6 +14,7 @@ void gpu_sum_over_steps(
         CUDAREAL* d_panel_rot_images, CUDAREAL* d2_panel_rot_images,
         CUDAREAL* d_panel_orig_images, CUDAREAL* d2_panel_orig_images,
         CUDAREAL* d_sausage_XYZ_scale_images,
+        CUDAREAL* d_fp_fdp_images,
         const int Nsteps, int _printout_fpixel, int _printout_spixel, bool _printout, CUDAREAL _default_F,
         int oversample, bool _oversample_omega, CUDAREAL subpixel_size, CUDAREAL pixel_size,
         CUDAREAL detector_thickstep, CUDAREAL _detector_thick, CUDAREAL close_distance, CUDAREAL detector_attnlen,
@@ -53,13 +54,19 @@ void gpu_sum_over_steps(
         const CUDAREAL* __restrict__ fdet_vectors, const CUDAREAL* __restrict__ sdet_vectors,
         const CUDAREAL* __restrict__ odet_vectors, const CUDAREAL* __restrict__ pix0_vectors,
         bool _nopolar, bool _point_pixel, CUDAREAL _fluence, CUDAREAL _r_e_sqr, CUDAREAL _spot_scale, int Npanels,
-        bool aniso_eta)
+        bool aniso_eta, bool no_Nabc_scale,
+        const CUDAREAL* __restrict__ fpfdp,
+        const CUDAREAL* __restrict__ fpfdp_derivs,
+        const CUDAREAL* __restrict__ atom_data, int num_atoms, bool refine_fp_fdp)
 { // BEGIN GPU kernel
 
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int thread_stride = blockDim.x * gridDim.x;
 
+    __shared__ bool s_refine_fp_fdp;
+    __shared__ int s_num_atoms;
     __shared__ bool s_aniso_eta;
+    __shared__ bool s_no_Nabc_scale;
     __shared__ bool s_compute_curvatures;
     __shared__ MAT3 s_Ot;
     __shared__ MAT3 _NABC;
@@ -106,11 +113,13 @@ void gpu_sum_over_steps(
         for(int i=0; i<6; i++){
             s_refine_Bmat[i] = refine_Bmat[i];
         }
+        s_num_atoms = num_atoms;
         s_refine_fcell = refine_fcell;
         s_refine_eta = refine_eta;
         s_refine_Ncells_def = refine_Ncells_def;
         s_refine_sausages = refine_sausages;
         s_compute_curvatures = compute_curvatures;
+        s_refine_fp_fdp = refine_fp_fdp;
 
         Bmat_realspace = eig_B*1e10;
         s_Ot = eig_O.transpose();
@@ -215,6 +224,7 @@ void gpu_sum_over_steps(
         double eta_manager_dI2[3] = {0,0,0};
         double lambda_manager_dI[2] = {0,0};
         double lambda_manager_dI2[2] = {0,0};
+        double fp_fdp_manager_dI[2] = {0,0};
 
         double sausage_manager_dI[24] = {0,0,0,0,0, // TODO use shared memory determined at runtime to increase max sausages
                                            0,0,0,0,0,
@@ -334,8 +344,12 @@ void gpu_sum_over_steps(
             CUDAREAL _hrad_sqr = V.dot(V);
             CUDAREAL exparg = _hrad_sqr*C/2;
             CUDAREAL I0 =0;
+
             if (exparg< 35) // speed things up?
-                I0 = s_NaNbNc_squared*exp(-2*exparg);
+                if (s_no_Nabc_scale)
+                    I0 = exp(-2*exparg);
+                else
+                    I0 = s_NaNbNc_squared*exp(-2*exparg);
 
             CUDAREAL _F_cell = s_default_F;
             CUDAREAL _F_cell2 = 0;
@@ -348,9 +362,69 @@ void gpu_sum_over_steps(
                 if (complex_miller) _F_cell2 = _Fhkl2Linear[Fhkl_linear_index];
             }
 
-            if (complex_miller)
-              _F_cell = sqrt(_F_cell*_F_cell + _F_cell2*_F_cell2);
+            CUDAREAL c_deriv_Fcell_real = 0;
+            CUDAREAL c_deriv_Fcell_imag = 0;
+            CUDAREAL d_deriv_Fcell_real = 0;
+            CUDAREAL d_deriv_Fcell_imag = 0;
+            CUDAREAL c_deriv_Fcell = 0;
+            CUDAREAL d_deriv_Fcell = 0;
 
+            if (complex_miller){
+               CUDAREAL S_2 = 1.e-20*(_scattering[0]*_scattering[0]+_scattering[1]*_scattering[1]+_scattering[2]*_scattering[2]);
+
+                // fp is always followed by the fdp value
+               CUDAREAL val_fp = fpfdp[2*_source];
+               CUDAREAL val_fdp = fpfdp[2*_source+1];
+
+               CUDAREAL c_deriv_prime=0;
+               CUDAREAL c_deriv_dblprime=0;
+               CUDAREAL d_deriv_prime = 0;
+               CUDAREAL d_deriv_dblprime = 0;
+               if (s_refine_fp_fdp){
+               //   currently only supports two parameter model
+                   int d_idx = 2*_source;
+                   c_deriv_prime = fpfdp_derivs[d_idx];
+                   c_deriv_dblprime = fpfdp_derivs[d_idx+1];
+                   d_deriv_prime = fpfdp_derivs[d_idx+2*s_sources];
+                   d_deriv_dblprime = fpfdp_derivs[d_idx+1+2*s_sources];
+               }
+
+               for (int  i_atom=0; i_atom < s_num_atoms; i_atom++){
+                    // fractional atomic coordinates
+                   CUDAREAL atom_x = atom_data[i_atom*5];
+                   CUDAREAL atom_y = atom_data[i_atom*5+1];
+                   CUDAREAL atom_z = atom_data[i_atom*5+2];
+                   CUDAREAL B = atom_data[i_atom*5+3]; // B factor
+                   B = exp(-B*S_2/4.0); // TODO: speed me up?
+                   CUDAREAL occ = atom_data[i_atom*5+4]; // occupancy
+                   CUDAREAL r_dot_h = _h0*atom_x + _k0*atom_y + _l0*atom_z;
+                   CUDAREAL phase = 2*M_PI*r_dot_h;
+                   CUDAREAL s_rdoth = sin(phase);
+                   CUDAREAL c_rdoth = cos(phase);
+                   CUDAREAL Bocc = B*occ;
+                   CUDAREAL BC = B*c_rdoth;
+                   CUDAREAL BS = B*s_rdoth;
+                   CUDAREAL real_part = BC*val_fp - BS*val_fdp;
+                   CUDAREAL imag_part = BS*val_fp + BC*val_fdp;
+                   _F_cell += real_part;
+                   _F_cell2 += imag_part;
+                   if (s_refine_fp_fdp){
+                        c_deriv_Fcell_real += BC*c_deriv_prime - BS*c_deriv_dblprime;
+                        c_deriv_Fcell_imag += BS*c_deriv_prime + BC*c_deriv_dblprime;
+
+                        d_deriv_Fcell_real += BC*d_deriv_prime - BS*d_deriv_dblprime;
+                        d_deriv_Fcell_imag += BS*d_deriv_prime + BC*d_deriv_dblprime;
+                   }
+               }
+               CUDAREAL Freal = _F_cell;
+               CUDAREAL Fimag = _F_cell2;
+               _F_cell = sqrt(Freal*Freal + Fimag*Fimag);
+               if (s_refine_fp_fdp){
+                   c_deriv_Fcell = Freal*c_deriv_Fcell_real + Fimag*c_deriv_Fcell_imag;
+                   d_deriv_Fcell = Freal*d_deriv_Fcell_real + Fimag*d_deriv_Fcell_imag;
+               }
+
+            }
             if (!s_oversample_omega)
                 _omega_pixel = 1;
 
@@ -358,6 +432,12 @@ void gpu_sum_over_steps(
             CUDAREAL _I_total = _I_cell *I0;
             CUDAREAL Iincrement = _I_total*texture_scale;
             _I += Iincrement;
+
+            if (s_refine_fp_fdp){
+                CUDAREAL I_noFcell = texture_scale*I0;
+                fp_fdp_manager_dI[0] += 2*I_noFcell * (c_deriv_Fcell);
+                fp_fdp_manager_dI[1] += 2*I_noFcell * (d_deriv_Fcell);
+            }
 
             if(s_verbose > 3)
                 printf("hkl= %f %f %f  hkl1= %d %d %d  Fcell=%f\n", _h,_k,_l,_h0,_k0,_l0, _F_cell);
@@ -662,7 +742,7 @@ void gpu_sum_over_steps(
                         AA[0],  AA[1], AA[2]);
                    printf("Iincrement: %f\n", Iincrement);
                    printf("hkl= %f %f %f  hkl0= %d %d %d\n", _h,_k,_l,_h0,_k0,_l0);
-                   printf(" F_cell=%g  I_latt=%g   I = %g\n", _F_cell,I0,_I);
+                   printf(" F_cell=%g  F_cell2=%g I_latt=%g   I = %g\n", _F_cell,_F_cell2,I0,_I);
                    printf("I/steps %15.10g\n", _I/s_Nsteps);
                    printf("omega   %15.10g\n", _omega_pixel);
                    printf("default_F= %f\n", s_default_F);
@@ -804,6 +884,15 @@ void gpu_sum_over_steps(
             d_fcell_images[i_pix] = value;
             //d2_fcell_images[i_pix] = value2;
         }// end Fcell deriv image increment
+
+        if (s_refine_fp_fdp){
+            // c derivative
+            CUDAREAL value = _scale_term*fp_fdp_manager_dI[0];
+            d_fp_fdp_images[i_pix] = value;
+            // d derivative
+            value = _scale_term*fp_fdp_manager_dI[1];
+            d_fp_fdp_images[Npix_to_model + i_pix] = value;
+        }
 
         // update eta derivative image
         if(s_refine_eta){
