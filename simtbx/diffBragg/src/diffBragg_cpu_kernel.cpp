@@ -238,54 +238,56 @@ void diffBragg::diffBragg_sum_over_steps(
             double d_deriv_Fcell = 0;
             if (complex_miller){
             // TODO shouldnt this be constant for each HKL?
-               double S_2 = 1.e-20*(_scattering[0]*_scattering[0]+_scattering[1]*_scattering[1]+_scattering[2]*_scattering[2]);
+              if (fpfdp.size() > 0){
+                   double S_2 = 1.e-20*(_scattering[0]*_scattering[0]+_scattering[1]*_scattering[1]+_scattering[2]*_scattering[2]);
 
-                // fp is always followed by the fdp value
-               double val_fp = fpfdp[2*_source];
-               double val_fdp = fpfdp[2*_source+1];
+                    // fp is always followed by the fdp value
+                   double val_fp = fpfdp[2*_source];
+                   double val_fdp = fpfdp[2*_source+1];
 
-               double c_deriv_prime=0;
-               double c_deriv_dblprime=0;
-               double d_deriv_prime = 0;
-               double d_deriv_dblprime = 0;
-               if (refine_fp_fdp){
-               //   currently only supports two parameter model
-                   int nsources_times_two = fpfdp.size();
-                   int d_idx = 2*_source;
-                   c_deriv_prime = fpfdp_derivs[d_idx];
-                   c_deriv_dblprime = fpfdp_derivs[d_idx+1];
-                   d_deriv_prime = fpfdp_derivs[d_idx+nsources_times_two];
-                   d_deriv_dblprime = fpfdp_derivs[d_idx+1+nsources_times_two];
-               }
-               // 5 valeus per atom: x,y,z,B,occupancy
-               int num_atoms = atom_data.size()/5;
-               for (int  i_atom=0; i_atom < num_atoms; i_atom++){
-                    if (verbose>3)
-                      printf("Processing atom %d");
-                    // fractional atomic coordinates
-                   double atom_x = atom_data[i_atom*5];
-                   double atom_y = atom_data[i_atom*5+1];
-                   double atom_z = atom_data[i_atom*5+2];
-                   double B = atom_data[i_atom*5+3]; // B factor
-                   B = exp(-B*S_2/4.0); // TODO: speed me up?
-                   double occ = atom_data[i_atom*5+4]; // occupancy
-                   double r_dot_h = _h0*atom_x + _k0*atom_y + _l0*atom_z;
-                   double phase = 2*M_PI*r_dot_h;
-                   double s_rdoth = sin(phase);
-                   double c_rdoth = cos(phase);
-                   double Bocc = B*occ;
-                   double BC = Bocc*c_rdoth;
-                   double BS = Bocc*s_rdoth;
-                   double real_part = BC*val_fp - BS*val_fdp;
-                   double imag_part = BS*val_fp + BC*val_fdp;
-                   _F_cell += real_part;
-                   _F_cell2 += imag_part;
+                   double c_deriv_prime=0;
+                   double c_deriv_dblprime=0;
+                   double d_deriv_prime = 0;
+                   double d_deriv_dblprime = 0;
                    if (refine_fp_fdp){
-                        c_deriv_Fcell_real += BC*c_deriv_prime - BS*c_deriv_dblprime;
-                        c_deriv_Fcell_imag += BS*c_deriv_prime + BC*c_deriv_dblprime;
+                   //   currently only supports two parameter model
+                       int nsources_times_two = fpfdp.size();
+                       int d_idx = 2*_source;
+                       c_deriv_prime = fpfdp_derivs[d_idx];
+                       c_deriv_dblprime = fpfdp_derivs[d_idx+1];
+                       d_deriv_prime = fpfdp_derivs[d_idx+nsources_times_two];
+                       d_deriv_dblprime = fpfdp_derivs[d_idx+1+nsources_times_two];
+                   }
+                   // 5 valeus per atom: x,y,z,B,occupancy
+                   int num_atoms = atom_data.size()/5;
+                   for (int  i_atom=0; i_atom < num_atoms; i_atom++){
+                        if (verbose>3)
+                          printf("Processing atom %d");
+                        // fractional atomic coordinates
+                       double atom_x = atom_data[i_atom*5];
+                       double atom_y = atom_data[i_atom*5+1];
+                       double atom_z = atom_data[i_atom*5+2];
+                       double B = atom_data[i_atom*5+3]; // B factor
+                       B = exp(-B*S_2/4.0); // TODO: speed me up?
+                       double occ = atom_data[i_atom*5+4]; // occupancy
+                       double r_dot_h = _h0*atom_x + _k0*atom_y + _l0*atom_z;
+                       double phase = 2*M_PI*r_dot_h;
+                       double s_rdoth = sin(phase);
+                       double c_rdoth = cos(phase);
+                       double Bocc = B*occ;
+                       double BC = Bocc*c_rdoth;
+                       double BS = Bocc*s_rdoth;
+                       double real_part = BC*val_fp - BS*val_fdp;
+                       double imag_part = BS*val_fp + BC*val_fdp;
+                       _F_cell += real_part;
+                       _F_cell2 += imag_part;
+                       if (refine_fp_fdp){
+                            c_deriv_Fcell_real += BC*c_deriv_prime - BS*c_deriv_dblprime;
+                            c_deriv_Fcell_imag += BS*c_deriv_prime + BC*c_deriv_dblprime;
 
-                        d_deriv_Fcell_real += BC*d_deriv_prime - BS*d_deriv_dblprime;
-                        d_deriv_Fcell_imag += BS*d_deriv_prime + BC*d_deriv_dblprime;
+                            d_deriv_Fcell_real += BC*d_deriv_prime - BS*d_deriv_dblprime;
+                            d_deriv_Fcell_imag += BS*d_deriv_prime + BC*d_deriv_dblprime;
+                       }
                    }
                }
                double Freal = _F_cell;

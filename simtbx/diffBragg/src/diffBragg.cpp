@@ -356,6 +356,8 @@ diffBragg::diffBragg(const dxtbx::model::Detector& detector, const dxtbx::model:
     fp_fdp_managers.push_back(fpfdp1);
     fp_fdp_managers.push_back(fpfdp2);
 
+    fpfdp.clear();
+
     O_reference <<0,0,0;
 
     update_oversample_during_refinement = true;

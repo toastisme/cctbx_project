@@ -1,4 +1,5 @@
 #include "diffBraggCUDA.h"
+#include <stdio.h>
 
 __global__
 void gpu_sum_over_steps(
@@ -64,6 +65,7 @@ void gpu_sum_over_steps(
     int thread_stride = blockDim.x * gridDim.x;
 
     __shared__ bool s_refine_fp_fdp;
+    __shared__ bool s_complex_miller;
     __shared__ int s_num_atoms;
     __shared__ bool s_aniso_eta;
     __shared__ bool s_no_Nabc_scale;
@@ -108,6 +110,8 @@ void gpu_sum_over_steps(
             s_refine_panel_rot[i] = refine_panel_rot[i];
         }
         s_aniso_eta = aniso_eta;
+        s_no_Nabc_scale = no_Nabc_scale;
+        s_complex_miller = complex_miller;
         s_refine_lambda[0] = refine_lambda[0];
         s_refine_lambda[1] = refine_lambda[1];
         for(int i=0; i<6; i++){
@@ -359,61 +363,63 @@ void gpu_sum_over_steps(
                 //_F_cell = __ldg(&_FhklLinear[Fhkl_linear_index]);
                 _F_cell = _FhklLinear[Fhkl_linear_index];
                 //if (complex_miller) _F_cell2 = __ldg(&_Fhkl2Linear[Fhkl_linear_index]);
-                if (complex_miller) _F_cell2 = _Fhkl2Linear[Fhkl_linear_index];
+                if (s_complex_miller) _F_cell2 = _Fhkl2Linear[Fhkl_linear_index];
             }
 
-            CUDAREAL c_deriv_Fcell_real = 0;
-            CUDAREAL c_deriv_Fcell_imag = 0;
-            CUDAREAL d_deriv_Fcell_real = 0;
-            CUDAREAL d_deriv_Fcell_imag = 0;
+
             CUDAREAL c_deriv_Fcell = 0;
             CUDAREAL d_deriv_Fcell = 0;
+            if (s_complex_miller){
+                CUDAREAL c_deriv_Fcell_real = 0;
+                CUDAREAL c_deriv_Fcell_imag = 0;
+                CUDAREAL d_deriv_Fcell_real = 0;
+                CUDAREAL d_deriv_Fcell_imag = 0;
+                if(s_num_atoms > 0){
+                   CUDAREAL S_2 = 1.e-20*(_scattering[0]*_scattering[0]+_scattering[1]*_scattering[1]+_scattering[2]*_scattering[2]);
 
-            if (complex_miller){
-               CUDAREAL S_2 = 1.e-20*(_scattering[0]*_scattering[0]+_scattering[1]*_scattering[1]+_scattering[2]*_scattering[2]);
+                    // fp is always followed by the fdp value
+                   CUDAREAL val_fp = fpfdp[2*_source];
+                   CUDAREAL val_fdp = fpfdp[2*_source+1];
 
-                // fp is always followed by the fdp value
-               CUDAREAL val_fp = fpfdp[2*_source];
-               CUDAREAL val_fdp = fpfdp[2*_source+1];
-
-               CUDAREAL c_deriv_prime=0;
-               CUDAREAL c_deriv_dblprime=0;
-               CUDAREAL d_deriv_prime = 0;
-               CUDAREAL d_deriv_dblprime = 0;
-               if (s_refine_fp_fdp){
-               //   currently only supports two parameter model
-                   int d_idx = 2*_source;
-                   c_deriv_prime = fpfdp_derivs[d_idx];
-                   c_deriv_dblprime = fpfdp_derivs[d_idx+1];
-                   d_deriv_prime = fpfdp_derivs[d_idx+2*s_sources];
-                   d_deriv_dblprime = fpfdp_derivs[d_idx+1+2*s_sources];
-               }
-
-               for (int  i_atom=0; i_atom < s_num_atoms; i_atom++){
-                    // fractional atomic coordinates
-                   CUDAREAL atom_x = atom_data[i_atom*5];
-                   CUDAREAL atom_y = atom_data[i_atom*5+1];
-                   CUDAREAL atom_z = atom_data[i_atom*5+2];
-                   CUDAREAL B = atom_data[i_atom*5+3]; // B factor
-                   B = exp(-B*S_2/4.0); // TODO: speed me up?
-                   CUDAREAL occ = atom_data[i_atom*5+4]; // occupancy
-                   CUDAREAL r_dot_h = _h0*atom_x + _k0*atom_y + _l0*atom_z;
-                   CUDAREAL phase = 2*M_PI*r_dot_h;
-                   CUDAREAL s_rdoth = sin(phase);
-                   CUDAREAL c_rdoth = cos(phase);
-                   CUDAREAL Bocc = B*occ;
-                   CUDAREAL BC = B*c_rdoth;
-                   CUDAREAL BS = B*s_rdoth;
-                   CUDAREAL real_part = BC*val_fp - BS*val_fdp;
-                   CUDAREAL imag_part = BS*val_fp + BC*val_fdp;
-                   _F_cell += real_part;
-                   _F_cell2 += imag_part;
+                   CUDAREAL c_deriv_prime=0;
+                   CUDAREAL c_deriv_dblprime=0;
+                   CUDAREAL d_deriv_prime = 0;
+                   CUDAREAL d_deriv_dblprime = 0;
                    if (s_refine_fp_fdp){
-                        c_deriv_Fcell_real += BC*c_deriv_prime - BS*c_deriv_dblprime;
-                        c_deriv_Fcell_imag += BS*c_deriv_prime + BC*c_deriv_dblprime;
+                   //   currently only supports two parameter model
+                       int d_idx = 2*_source;
+                       c_deriv_prime = fpfdp_derivs[d_idx];
+                       c_deriv_dblprime = fpfdp_derivs[d_idx+1];
+                       d_deriv_prime = fpfdp_derivs[d_idx+2*s_sources];
+                       d_deriv_dblprime = fpfdp_derivs[d_idx+1+2*s_sources];
+                   }
 
-                        d_deriv_Fcell_real += BC*d_deriv_prime - BS*d_deriv_dblprime;
-                        d_deriv_Fcell_imag += BS*d_deriv_prime + BC*d_deriv_dblprime;
+                   for (int  i_atom=0; i_atom < s_num_atoms; i_atom++){
+                        // fractional atomic coordinates
+                       CUDAREAL atom_x = atom_data[i_atom*5];
+                       CUDAREAL atom_y = atom_data[i_atom*5+1];
+                       CUDAREAL atom_z = atom_data[i_atom*5+2];
+                       CUDAREAL B = atom_data[i_atom*5+3]; // B factor
+                       B = exp(-B*S_2/4.0); // TODO: speed me up?
+                       CUDAREAL occ = atom_data[i_atom*5+4]; // occupancy
+                       CUDAREAL r_dot_h = _h0*atom_x + _k0*atom_y + _l0*atom_z;
+                       CUDAREAL phase = 2*M_PI*r_dot_h;
+                       CUDAREAL s_rdoth = sin(phase);
+                       CUDAREAL c_rdoth = cos(phase);
+                       CUDAREAL Bocc = B*occ;
+                       CUDAREAL BC = B*c_rdoth;
+                       CUDAREAL BS = B*s_rdoth;
+                       CUDAREAL real_part = BC*val_fp - BS*val_fdp;
+                       CUDAREAL imag_part = BS*val_fp + BC*val_fdp;
+                       _F_cell += real_part;
+                       _F_cell2 += imag_part;
+                       if (s_refine_fp_fdp){
+                            c_deriv_Fcell_real += BC*c_deriv_prime - BS*c_deriv_dblprime;
+                            c_deriv_Fcell_imag += BS*c_deriv_prime + BC*c_deriv_dblprime;
+
+                            d_deriv_Fcell_real += BC*d_deriv_prime - BS*d_deriv_dblprime;
+                            d_deriv_Fcell_imag += BS*d_deriv_prime + BC*d_deriv_dblprime;
+                       }
                    }
                }
                CUDAREAL Freal = _F_cell;
@@ -747,6 +753,8 @@ void gpu_sum_over_steps(
                    printf("omega   %15.10g\n", _omega_pixel);
                    printf("default_F= %f\n", s_default_F);
                    printf("Incident[0]=%g, Incident[1]=%g, Incident[2]=%g\n", _incident[0], _incident[1], _incident[2]);
+                  if (s_complex_miller)printf("COMPLEX MILLER!\n");
+                  if (s_no_Nabc_scale)printf("No Nabc scale!\n");
                 }
               }
             }

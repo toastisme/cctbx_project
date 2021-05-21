@@ -1,10 +1,11 @@
 #include <sys/time.h>
 #include "diffBraggCUDA.h"
 #include "diffBragg_gpu_kernel.h"
+#include <stdio.h>
+//lkalskdlaksdlkalsd
 
 //#define BLOCKSIZE 128
 //#define NUMBLOCKS 128
-
 //https://stackoverflow.com/a/14038590/2077270
 #define gpuErr(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
@@ -165,9 +166,12 @@ void diffBragg_loopy(
         gpuErr(cudaMallocManaged(&cp.cu_odet_vectors, fdet_vectors.size()*sizeof(CUDAREAL)));
         gpuErr(cudaMallocManaged(&cp.cu_pix0_vectors, fdet_vectors.size()*sizeof(CUDAREAL)));
 
-        gpuErr(cudaMallocManaged(&cp.cu_fpfdp, fpfdp.size()*sizeof(CUDAREAL)));
-        gpuErr(cudaMallocManaged(&cp.cu_fpfdp_derivs, fpfdp_derivs.size()*sizeof(CUDAREAL)));
-        gpuErr(cudaMallocManaged(&cp.cu_atom_data, atom_data.size()*sizeof(CUDAREAL)));
+        if (fpfdp.size() > 0){
+            gpuErr(cudaMallocManaged(&cp.cu_fpfdp, fpfdp.size()*sizeof(CUDAREAL)));
+            gpuErr(cudaMallocManaged(&cp.cu_atom_data, atom_data.size()*sizeof(CUDAREAL)));
+        }
+        if(fpfdp_derivs.size() > 0)
+            gpuErr(cudaMallocManaged(&cp.cu_fpfdp_derivs, fpfdp_derivs.size()*sizeof(CUDAREAL)));
 
         gpuErr(cudaMallocManaged(&cp.cu_refine_Bmat, 6*sizeof(bool)));
         gpuErr(cudaMallocManaged(&cp.cu_refine_Umat, 3*sizeof(bool)));
@@ -343,8 +347,8 @@ void diffBragg_loopy(
       for (int i=0; i< atom_data.size(); i++){
         cp.cu_atom_data[i] = atom_data[i];
       }
-        if (verbose>1)
-          printf("H2D Done copying atom data\n");
+      if (verbose>1)
+        printf("H2D Done copying atom data\n");
       for(int i=0; i< fpfdp.size(); i++){
         cp.cu_fpfdp[i] = fpfdp[i];
       }
