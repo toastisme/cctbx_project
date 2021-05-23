@@ -58,9 +58,9 @@ struct diffBragg_cudaPointers {
   CUDAREAL * cu_odet_vectors;
   CUDAREAL * cu_pix0_vectors;
 
-  CUDAREAL * cu_fpfdp;
-  CUDAREAL * cu_fpfdp_derivs;
-  CUDAREAL * cu_atom_data;
+  CUDAREAL * cu_fpfdp=NULL;
+  CUDAREAL * cu_fpfdp_derivs=NULL;
+  CUDAREAL * cu_atom_data=NULL;
 
   CUDAREAL * cu_source_X, * cu_source_Y, * cu_source_Z, * cu_source_I, * cu_source_lambda;
   int cu_sources;

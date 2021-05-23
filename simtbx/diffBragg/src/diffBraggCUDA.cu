@@ -555,9 +555,12 @@ void freedom(diffBragg_cudaPointers& cp){
         gpuErr(cudaFree(cp.cu_sdet_vectors));
         gpuErr(cudaFree(cp.cu_odet_vectors));
         gpuErr(cudaFree(cp.cu_pix0_vectors));
-        gpuErr(cudaFree(cp.cu_atom_data));
-        gpuErr(cudaFree(cp.cu_fpfdp));
-        gpuErr(cudaFree(cp.cu_fpfdp_derivs));
+        if (cp.cu_atom_data != NULL)
+            gpuErr(cudaFree(cp.cu_atom_data));
+        if(cp.cu_fpfdp != NULL)
+            gpuErr(cudaFree(cp.cu_fpfdp));
+        if(cp.cu_fpfdp_derivs != NULL)
+            gpuErr(cudaFree(cp.cu_fpfdp_derivs));
 
         gpuErr(cudaFree(cp.cu_source_X));
         gpuErr(cudaFree(cp.cu_source_Y));
