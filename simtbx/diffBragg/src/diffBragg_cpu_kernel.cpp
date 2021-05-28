@@ -71,7 +71,11 @@ void diffBragg::diffBragg_sum_over_steps(
 
         // reset photon count for this pixel
         double _I=0;
-
+        double II_max = -1;
+        double max_stats[11] = {0,0,0,0,0,
+                               0,0,0,0,0,0};
+        double max_stats2[11] = {0,0,0,0,0,
+                               0,0,0,0,0,0};
         // reset derivative photon counts for the various parameters
         double rot_manager_dI[3] = {0,0,0};
         double rot_manager_dI2[3] = {0,0,0};
@@ -216,6 +220,12 @@ void diffBragg::diffBragg_sum_over_steps(
             //if(_F_latt == 0.0 && ! only_save_omega_kahn) {
             //    continue;
             //}
+            /* convert amplitudes into intensity (photons per steradian) */
+            if (!_oversample_omega)
+                _omega_pixel = 1;
+
+            /* increment to intensity */
+            double I_noFcell = _F_latt*_F_latt*source_I[_source]*_capture_fraction*_omega_pixel*pow(sausages_scale[_sausage_tic],2);
 
             /* structure factor of the unit cell */
             double _F_cell = _default_F;
@@ -230,6 +240,30 @@ void diffBragg::diffBragg_sum_over_steps(
             //else{
             // _F_cell = _default_F;
             //}
+            bool do_max = false;
+            if(verbose > 3){//} && _i_step==0){
+                double F2 = sqrt(_F_cell*_F_cell + _F_cell2*_F_cell2);
+                double II = I_noFcell*F2*F2;
+                if (I_noFcell > II_max){
+                    do_max = true;
+                    max_stats[0] = _F_cell;
+                    max_stats[1] = _F_cell2;
+                    max_stats[2] = I_noFcell;
+                    max_stats[3] = _F_latt;
+                    max_stats[4] = II;
+                    max_stats[5] = _omega_pixel;
+                    max_stats[6] = source_I[_source];
+                    max_stats[7]= source_lambda[_source];
+                    max_stats[8] = _h;
+                    max_stats[9] = _k;
+                    max_stats[10] = _l;
+                    II_max = I_noFcell;
+                }
+                else{
+                do_max=false;}
+                //printf("hkl= %f %f %f  hkl1= %d %d %d  |Fcell| before=%f, Ino=%f, I=%f, Flatt=%f, cap_frac=%f, omega_pix=%f, sourceI=%f\n", _h,_k,_l,_h0,_k0,_l0, F2, I_noFcell, II, _F_latt,
+                //_capture_fraction, _omega_pixel, source_I[_source] );
+            }
             double c_deriv_Fcell_real = 0;
             double c_deriv_Fcell_imag = 0;
             double d_deriv_Fcell_real = 0;
@@ -261,9 +295,9 @@ void diffBragg::diffBragg_sum_over_steps(
                    // 5 valeus per atom: x,y,z,B,occupancy
                    int num_atoms = atom_data.size()/5;
                    for (int  i_atom=0; i_atom < num_atoms; i_atom++){
-                        if (verbose>3)
-                          printf("Processing atom %d");
-                        // fractional atomic coordinates
+                       if (verbose>5)
+                         printf("Processing atom %d, _F_cell=%10.3f\n", i_atom, _F_cell);
+                       // fractional atomic coordinates
                        double atom_x = atom_data[i_atom*5];
                        double atom_y = atom_data[i_atom*5+1];
                        double atom_z = atom_data[i_atom*5+2];
@@ -293,18 +327,33 @@ void diffBragg::diffBragg_sum_over_steps(
                double Freal = _F_cell;
                double Fimag = _F_cell2;
                _F_cell = sqrt(pow(Freal,2) + pow(Fimag,2));// TODO work around the sqrt ?
+               //if (verbose> 3 && _i_step==0){
+               //     double II = I_noFcell*_F_cell*_F_cell;
+               //     printf("hkl= %f %f %f  hkl1= %d %d %d  |Fcell| after=%f, Ino=%f, I=%f\n", _h,_k,_l,_h0,_k0,_l0, _F_cell, I_noFcell, II);
+               // }
                if (refine_fp_fdp){
                    c_deriv_Fcell = Freal*c_deriv_Fcell_real + Fimag*c_deriv_Fcell_imag;
                    d_deriv_Fcell = Freal*d_deriv_Fcell_real + Fimag*d_deriv_Fcell_imag;
                }
             }
 
-            /* convert amplitudes into intensity (photons per steradian) */
-            if (!_oversample_omega)
-                _omega_pixel = 1;
-
-            /* increment to intensity */
-            double I_noFcell = _F_latt*_F_latt*source_I[_source]*_capture_fraction*_omega_pixel*pow(sausages_scale[_sausage_tic],2);
+            if(verbose > 3){
+                double F2 = sqrt(_F_cell*_F_cell + _F_cell2*_F_cell2);
+                double II = I_noFcell*F2*F2;
+                if (do_max){
+                    max_stats2[0] = F2 ;
+                    max_stats2[1] = 0 ; //_F_cell2;
+                    max_stats2[2] = I_noFcell;
+                    max_stats2[3] = _F_latt;
+                    max_stats2[4] = II;
+                    max_stats2[5] = _omega_pixel;
+                    max_stats2[6] = source_I[_source];
+                    max_stats2[7]= source_lambda[_source];
+                    max_stats2[8] = _h;
+                    max_stats2[9] = _k;
+                    max_stats2[10] = _l;
+                }
+            }
             double Iincrement = _F_cell*_F_cell*I_noFcell;
             //Iincrement *= sausages_scale[_sausage_tic]*sausages_scale[_sausage_tic];
             _I += Iincrement;
@@ -315,8 +364,8 @@ void diffBragg::diffBragg_sum_over_steps(
                 fp_fdp_manager_dI[1] += 2*I_noFcell * (d_deriv_Fcell);
             }
 
-            if(verbose > 3)
-                printf("hkl= %f %f %f  hkl1= %d %d %d  Fcell=%f\n", _h,_k,_l,_h0,_k0,_l0, _F_cell);
+            //if(verbose > 3)
+            //    printf("hkl= %f %f %f  hkl1= %d %d %d  Fcell=%f\n", _h,_k,_l,_h0,_k0,_l0, _F_cell);
 
             double two_C = 2*C;
             Eigen::Matrix3d UBOt = U*Bmat_realspace*(eig_O.transpose());
@@ -623,6 +672,20 @@ void diffBragg::diffBragg_sum_over_steps(
                 }
             }
         } /* end of i_steps loop */
+
+        if (verbose >3){
+            printf("hkl= %f %f %f  |Fcell| before=(%f,%f), Ino=%f, I=%f, Flatt=%f, omega_pix=%2.3e, sourceI=%f, sourceLambda=%f\n",
+             max_stats[8],max_stats[9],max_stats[10],
+             max_stats[0], max_stats[1], max_stats[2], max_stats[4], max_stats[3],
+            max_stats[5], max_stats[6], max_stats[7]*1e10 );
+
+            printf("hkl= %f %f %f  |Fcell| after=(%f,%f), Ino=%f, I=%f, Flatt=%f, omega_pix=%2.3e, sourceI=%f, sourceLambda=%f\n",
+             max_stats2[8],max_stats2[9],max_stats2[10],
+             max_stats2[0], max_stats2[1], max_stats2[2], max_stats2[4], max_stats2[3],
+            max_stats2[5], max_stats2[6], max_stats2[7]*1e10 );
+
+        }
+
 
         double _Fdet_ave = pixel_size*_fpixel + pixel_size/2.0;
         double _Sdet_ave = pixel_size*_spixel + pixel_size/2.0;

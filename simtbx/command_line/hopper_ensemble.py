@@ -1,5 +1,7 @@
 from __future__ import absolute_import, division, print_function
+import time
 from copy import deepcopy
+from collections import Counter
 from scipy.interpolate import interp1d
 from scipy.optimize import basinhopping
 from libtbx import easy_pickle
@@ -7,7 +9,7 @@ import h5py
 from dxtbx.model.experiment_list import ExperimentList
 import pandas
 from scitbx.matrix import sqr, col
-from simtbx.nanoBragg.anisotropic_mosaicity import AnisoUmats
+#from simtbx.nanoBragg.anisotropic_mosaicity import AnisoUmats
 
 # diffBragg internal parameter indices
 ROTX_ID = 0
@@ -30,9 +32,18 @@ from libtbx.phil import parse
 
 from simtbx.diffBragg import utils
 from simtbx.diffBragg.phil import philz
-from simtbx.diffBragg.refiners.parameters import RangedParameter
+from simtbx.diffBragg.refiners.parameters import NormalParameter, RangedParameter
 
 hopper_phil = """
+rescale_params = True
+  .type = bool
+  .help = use rescaled range parameters
+test_finite_diff = False
+  .type = bool
+  .help = if True, quickly test finite differences on the fdp center and slope params, then exit 
+use_modeled_fdp = True
+  .type = bool
+  .help = whether to use the modeled fdp curve based on init.slope and init.center
 refine_fdp_center_and_slope=True
   .type = bool
   .help = refine the two parameter model for fprime, fdblprime
@@ -60,6 +71,9 @@ complex_F = None
   .help = path to a pickle file containing a complex-type miller array
   .help = that will override the mtz path (if provided) 
 betas {
+  ucell = [0,0,0,0,0,0]
+    .type = floats
+    .help = beta values for unit cell constants
   RotXYZ = 0
     .type = float
     .help = restraint factor for the rotXYZ restraint
@@ -71,6 +85,9 @@ betas {
     .help = restraint factor for scale
 }
 centers {
+  ucell = [63.66, 28.87, 35.86, 1.8425]
+    .type = floats
+    .help = centers for unit cell constants
   RotXYZ = [0,0,0]
     .type = floats(size=3)
     .help = restraint target for Umat rotations 
@@ -192,8 +209,11 @@ sigmas {
     .type = float
     .help = init for scale factor
   ucell = [1,1,1,1,1,1]
-    .type = ints
+    .type = floats
     .help = sensitivity for unit cell params
+  center_and_slope = [1,1]
+    .type = floats
+    .help = sensitivity for fdp center,slope parameters
 }
 init {
   fdp_center_and_slope = [0.5, 3.43, 7120, 0.4]
@@ -220,7 +240,7 @@ init {
     .help = initial value for the fp, fdp shift param
 }
 mins {
-  fdp_center_and_slope = [0,0]
+  fdp_center_and_slope = [7060,0.01]
     .type = floats(size=2)
     .help = min edge center and min edge slope
   Nabc = [3,3,3] 
@@ -237,7 +257,7 @@ mins {
     .help = min for scale G
 }
 maxs {
-  fdp_center_and_slope = [100000,100]
+  fdp_center_and_slope = [7180,4]
     .type = floats(size=2)
     .help = max edge center and max edge slope
   eta = 0.1
@@ -419,10 +439,16 @@ class Script:
         # (sometimes this can be the same value, however if shots are skipped when gathering data above, then we must account for that)
         shot_mapping = {}
         rank_exp_indices = COMM.gather(list(shot_roi_dict.keys()))
+        ntimes = None
         if COMM.rank == 0:
-            all_indices = set([i_exp for indices in rank_exp_indices for i_exp in indices])
-            shot_mapping = {i_exp: ii for ii, i_exp in enumerate(all_indices)}
+            all_indices = [i_exp for indices in rank_exp_indices for i_exp in indices]
+            # count how many ranks a shot is divided amongst, this number
+            # should be reported back to all ranks to allow ease in computing
+            # the restraint terms
+            ntimes = Counter(all_indices)
+            shot_mapping = {i_exp: ii for ii, i_exp in enumerate(set(all_indices))}
         shot_mapping = COMM.bcast(shot_mapping)
+        ntimes = COMM.bcast(ntimes)
         Nshots = len(shot_mapping)
         nucell_param = len(self.SIM.ucell_man.variables)
         nparam_per_shot =7*self.SIM.num_xtals + nucell_param
@@ -433,7 +459,6 @@ class Script:
         elif self.params.refine_fp_fdp_shift:
             total_params += 1
 
-        x0 = [1] * total_params
 
         rank_xidx ={}
         for i_exp in shot_roi_dict:
@@ -445,7 +470,63 @@ class Script:
                 xidx += [total_params-1]
             rank_xidx[i_exp] = xidx
 
-        x = Minimize(x0, rank_xidx, self.params, self.SIM, Modelers)
+        if self.params.rescale_params:
+            x0 = [1] * total_params
+        else:
+            x0 = [np.nan]*total_params
+            nuc = len(self.SIM.ucell_man.variables)
+            nper = 7 + nuc
+            start_dict = {}
+            for i_shot in rank_xidx:
+                PAR = Modelers[i_shot].PAR
+                for i_xtal in range(self.SIM.num_xtals):
+                    n = nper*i_xtal
+                    xidx_vals = rank_xidx[i_shot]
+                    Gidx = xidx_vals[0+n]
+                    Gstart = PAR.Scale[i_xtal].init
+                    start_dict[Gidx] = Gstart
+
+                    rotX,rotY,rotZ = xidx_vals[1+n:4+n]
+                    rotX_start = PAR.RotXYZ[i_xtal*3].init
+                    rotY_start = PAR.RotXYZ[i_xtal*3+1].init
+                    rotZ_start = PAR.RotXYZ[i_xtal*3+2].init
+                    start_dict[rotX] = rotX_start
+                    start_dict[rotY] = rotY_start
+                    start_dict[rotZ] = rotZ_start
+
+                    Na,Nb,Nc = xidx_vals[4+n:7+n]
+                    Na_start = PAR.Nabc[i_xtal*3].init
+                    Nb_start = PAR.Nabc[i_xtal*3+1].init
+                    Nc_start = PAR.Nabc[i_xtal*3+2].init
+                    start_dict[Na] = Na_start
+                    start_dict[Nb] = Nb_start
+                    start_dict[Nc] = Nc_start
+
+                    ucell_idx = xidx_vals[7+n:7+nuc+n]
+                    for i_uc in range(nuc):
+                        init = PAR.ucell[i_uc].init
+                        start_dict[ucell_idx[i_uc]] = init
+
+            start_dict = COMM.gather(start_dict)
+            if COMM.rank==0:
+                # TODO verify that duplicate dict entries are the same
+                for SD in start_dict:
+                    for idx in SD:
+                        x0[idx] = SD[idx]
+                #print(start_dict)
+                #print("X0:", x0)
+                i_shot = list(Modelers.keys())[0]
+                num_unset = sum(np.isnan(x0))
+                if num_unset==2:
+                    x0[-2] = Modelers[i_shot].PAR.center.init
+                    x0[-1] = Modelers[i_shot].PAR.slope.init
+                elif num_unset==1:
+                    x0[-1] = Modelers[i_shot].PAR.shift.init
+                print("X0", x0)
+
+            x0 = COMM.bcast(x0)
+
+        x = Minimize(x0, rank_xidx, self.params, self.SIM, Modelers, ntimes, Nshots)
         #def Minimize(x0, rank_xidx, params, SIM, Modelers):
         save_up(x, rank_xidx, Modelers, self.SIM)
 
@@ -662,6 +743,7 @@ class DataModeler:
     def SimulatorParamsForExperiment(self,SIM, best=None):
         """optional best parameter is a single row of a pandas datafame containing the starting
         models, presumably optimized from a previous minimzation using this program"""
+        ParameterType = RangedParameter if self.params.rescale_params else NormalParameter
         PAR = SimParams()
 
         if self.params.refine_fdp_center_and_slope:
@@ -675,8 +757,8 @@ class DataModeler:
             SIM.fdp_offset = offset
             SIM.D.fprime_fdblprime = list(fp_modeled), list(fdp_modeled)
 
-            p_center, p_slope = RangedParameter(), RangedParameter()
-            p_center.sigma, p_slope.sigma = 1, 1
+            p_center, p_slope = ParameterType(), ParameterType()
+            p_center.sigma, p_slope.sigma = self.params.sigmas.center_and_slope
             p_center.minval, p_slope.minval = self.params.mins.fdp_center_and_slope
             p_center.maxval, p_slope.maxval = self.params.maxs.fdp_center_and_slope
             p_center.init,  p_slope.init = center, slope
@@ -711,7 +793,7 @@ class DataModeler:
         PAR.Scale = []
         for i_xtal in range(SIM.num_xtals):
             for ii in range(3):
-                p = RangedParameter()
+                p = ParameterType()
                 p.sigma = self.params.sigmas.Nabc[ii]
                 p.init = self.params.init.Nabc[ii]
                 # set the mosaic block size
@@ -719,14 +801,14 @@ class DataModeler:
                 p.maxval = self.params.maxs.Nabc[ii]
                 PAR.Nabc.append(p)
 
-                p = RangedParameter()
+                p = ParameterType()
                 p.sigma = self.params.sigmas.RotXYZ[ii]
                 p.init = 0 #self.params.init.RotXYZ[ii]
                 p.minval = self.params.mins.RotXYZ[ii] * np.pi / 180.
                 p.maxval = self.params.maxs.RotXYZ[ii] * np.pi / 180.
                 PAR.RotXYZ.append(p)
 
-            p = RangedParameter()
+            p = ParameterType()
             p.sigma = self.params.sigmas.G
             p.init = self.params.init.G
             p.minval = self.params.mins.G
@@ -736,7 +818,7 @@ class DataModeler:
 
         ucell_vary_perc = self.params.ucell_edge_perc / 100.
         PAR.ucell = []
-        for name, val in zip(ucell_man.variable_names, ucell_man.variables):
+        for i_ucell, (name, val) in enumerate(zip(ucell_man.variable_names, ucell_man.variables)):
             if "Ang" in name:
                 minval = val - ucell_vary_perc * val
                 maxval = val + ucell_vary_perc * val
@@ -744,19 +826,22 @@ class DataModeler:
                 val_in_deg = val * 180 / np.pi
                 minval = (val_in_deg - self.params.ucell_ang_abs) * np.pi / 180.
                 maxval = (val_in_deg + self.params.ucell_ang_abs) * np.pi / 180.
-            p = RangedParameter()
-            p.sigma = 1
+            p = ParameterType()
+            if self.params.sigmas.ucell is not None:
+                p.sigma = self.params.sigmas.ucell[i_ucell]
+            else:
+                p.sigma = 1
             p.minval = minval
             p.maxval = maxval
             p.init = val
-            if not self.params.quiet: print(
-                "Unit cell variable %s (currently=%f) is bounded by %f and %f" % (name, val, minval, maxval))
+            #if not self.params.quiet: print(
+            #    "Unit cell variable %s (currently=%f) is bounded by %f and %f" % (name, val, minval, maxval))
             PAR.ucell.append(p)
 
         if self.params.refine_fp_fdp_shift and not self.params.refine_fdp_center_and_slope:
             if self.params.method not in [None, "Nelder-Mead", "Powell"]:
                 raise NotImplementedError("method %s not supported for refining shift" % self.params.method)
-            p = RangedParameter()
+            p = ParameterType()
             p.init = self.params.init.shift
             p.minval = -200
             p.maxval = 200
@@ -766,7 +851,7 @@ class DataModeler:
         return PAR
 
 
-def Minimize(x0, rank_xidx, params, SIM, Modelers):
+def Minimize(x0, rank_xidx, params, SIM, Modelers, ntimes, nshots_total):
     if params.method is None:
         method = "Nelder-Mead"
     else:
@@ -780,8 +865,12 @@ def Minimize(x0, rank_xidx, params, SIM, Modelers):
     H = hopper_minima(SIM, Modelers, rank_xidx)
     if params.quiet:
         H = None
+    H = None
     if COMM.rank != 0:
         H = None
+
+    target = TargetFunc()
+
     if method in ["L-BFGS-B", "BFGS", "CG", "dogleg", "SLSQP", "Newton-CG", "trust-ncg", "trust-krylov", "trust-exact", "trust-ncg", "levmar"]:
         niter = params.niter
         SIM.D.refine(ROTX_ID)
@@ -792,12 +881,15 @@ def Minimize(x0, rank_xidx, params, SIM, Modelers):
         for i_ucell in range(len(SIM.ucell_man.variables)):
             SIM.D.refine(UCELL_ID_OFFSET + i_ucell)
 
-        #def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_grad=True):
-        args = (rank_xidx, SIM, Modelers, not params.quiet, params, True)
-        out = basinhopping(target_func, x0,
+        args = (rank_xidx, SIM, Modelers, not params.quiet, params, True, ntimes)
+
+        bounds = None
+        if method=="L-BFGS-B":
+            bounds = get_the_bounds(params,x0, SIM, nshots_total)
+        out = basinhopping(target, x0,
                            niter=niter,
                            minimizer_kwargs={'args': args, "method": method, "jac": True,
-                                             'hess': params.hess },
+                                             'hess': params.hess, "bounds":bounds },
                            T=params.temp,
                            callback=H,
                            disp=not params.quiet and COMM.rank==0,
@@ -806,14 +898,22 @@ def Minimize(x0, rank_xidx, params, SIM, Modelers):
         #args = (self.SIM, self.pan_fast_slow, self.all_data,
         #        self.all_sigmas, self.all_trusted, self.all_background, pos_data, not self.params.quiet)
         args = (rank_xidx, SIM, Modelers,
-                not params.quiet, params, False)
-        out = basinhopping(target_func, x0,
+                not params.quiet, params, False, ntimes)
+        out = basinhopping(target, x0,
                            niter=params.niter,
                            minimizer_kwargs={'args': args, "method": method},
                            T=params.temp,
                            callback=H,
                            disp=not params.quiet and COMM.rank==0,
                            stepsize=params.stepsize)
+
+    from IPython import embed
+    embed()
+
+    start_en = params.init.fdp_center_and_slope[2]
+    start_slope = params.init.fdp_center_and_slope[3]
+    target_func(out.x, *args, save="rank%d_%d_%f.h5" %(COMM.rank, start_en, start_slope))
+
 
     P = out.x
     return P
@@ -875,6 +975,7 @@ def get_data_model_pairs(rois, pids, roi_id, best_model, all_data, strong_flags=
 
 
 def look_at_x(x, SIM, PAR):
+    return
     num_per_xtal_params = SIM.num_xtals * (7)
     n_ucell_param = len(SIM.ucell_man.variables)
     #if n_ucell_param + num_per_xtal_params != len(x):
@@ -1016,10 +1117,64 @@ def model(x, SIM, Modeler, verbose=True, compute_grad=True):
         if verbose: print("\trotXYZ= %f %f %f (degrees)" % angles)
         SIM.D.add_diffBragg_spots(pfs)
 
+        # quick finite differences check:
+        #center_deriv, slope_deriv = [d.as_numpy_array()[:npix] for d in SIM.D.get_fp_fdp_derivative_pixels()]
+        #img0 = SIM.D.raw_pixels_roi.as_numpy_array()[:npix]
+        ## change the center lambda_o
+        #center = PAR.center.get_val(x[-2])
+        #slope = PAR.slope.get_val(x[-1])
+        ## steps for center:
+        #steps_center = [0.1*(2**x) for x in range(5)]
+        ## steps for slope:
+        #steps_slope = [0.001*(2**x) for x in range(5)]
+        #all_error_center = []
+        #all_error_slope = []
+        #print("Center:")
+        #for s_center,s_slope in zip(steps_center, steps_slope):
+        #    img = update_fdp_and_sim(SIM, pfs, center+s_center, slope)
+        #    fdiff = (img[:npix] - img0) / s_center
+        #    # check error in brightest pix
+        #    sel = img0 > np.percentile(img0, 80)
+        #    error = np.abs(fdiff[sel]-center_deriv[sel]).mean()
+        #    print("step=%f, error=%f" %(s_center, error))
+        #    all_error_center.append(error)
+
+        #print("Slope:")
+        #for s_center, s_slope in zip(steps_center, steps_slope):
+        #    img = update_fdp_and_sim(SIM, pfs, center, slope + s_slope)
+        #    fdiff = (img[:npix] - img0) / s_slope
+        #    error = np.abs(fdiff[sel]-slope_deriv[sel]).mean()
+        #    print("step=%f, error=%f" %(s_slope, error))
+        #    all_error_slope.append(error)
+
+        #from scipy.stats import linregress
+        #l = linregress(steps_center, all_error_center)
+        #l2 = linregress(steps_slope, all_error_slope)
+        #assert l.rvalue > .99
+        #assert l.slope > 0
+        #assert l2.rvalue > .99
+        #assert l2.slope > 0
+        #print("OK!")
+        #exit()
+        # END quick finite differences check:
+
         if model_pix is None:
             model_pix = scale*SIM.D.raw_pixels_roi.as_numpy_array()[:npix]
         else:
             model_pix += scale*SIM.D.raw_pixels_roi.as_numpy_array()[:npix]
+        #max_px = np.argmax(model_pix)
+        #pid = pfs[3*max_px]
+        #fmax = pfs[3*max_px+1]
+
+        #smax = pfs[3*max_px+2]
+        #SIM.D.raw_pixels_roi*=0
+        #SIM.D.verbose=4
+        ##SIM.D.printout_pixel_fastslow = fmax, smax
+        #SIM.D.add_diffBragg_spots((pid, fmax, smax))
+        #SIM.D.verbose=0
+        #from IPython import embed
+        #embed()
+        #exit()
 
         if compute_grad:
             scale_grad = model_pix / scale
@@ -1064,30 +1219,65 @@ def model(x, SIM, Modeler, verbose=True, compute_grad=True):
     return model_pix, J
 
 
+class TargetFunc:
+    def __init__(self):
+        self.all_x = []
 
-def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_grad=True):
+    def __call__(self, x, *args, **kwargs):
+        self.all_x.append(x)
+        return target_func(x, *args, **kwargs)
+
+
+def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_grad=True, ntimes=None, save=None):
     verbose = verbose and COMM.rank==0
+    t_start = time.time()
     timestamps = list(Modelers.keys())
     fchi = frot = fG = fN = 0
+    LL = params.use_likelihood_target
+    fa=fb=fc=fbeta =  0  # generalize TODO
+    n_uc_param = len(SIM.ucell_man.variables)
+    fucell = [0]*n_uc_param
     g = np.zeros_like(x)
+    #bragg = []
+    #skip = params.skip
+    #start_en = params.init.fdp_center_and_slope[2]
+    if save is not None:
+        h = h5py.File(save, 'w')
     for t in timestamps:
+        restraint_n = ntimes[t]
         trusted_t = Modelers[t].all_trusted
         #rank_x should be [G0,rXYZ0, Nabc0, G1,rXYZ1,Nabc1.. Ucell0,Ucell1,... shift, slow]
         x_t = x[rank_xidx[t]]
 
+        #print("<><><><><><><><><><><>")
+        #print("\tDoing shot", t)
+        #print("<><><><><><><><><><><>")
         model_bragg, Jac = model(x_t, SIM, Modelers[t],
                                  verbose=verbose, compute_grad=compute_grad)
 
+        Mod_t = Modelers[t]
+        #h = h5py.File("t%d_7110.h5py" % t, "w")
+        if save is not None:
+            for i_roi, (x1,x2,y1,y2) in enumerate(Mod_t.rois):
+                sel = Mod_t.roi_id==i_roi
+                mod = model_bragg[sel].reshape((y2-y1,x2-x1))
+                dat = Mod_t.all_data[sel].reshape((y2-y1,x2-x1))
+                h.create_dataset("t%d/roi%d/model"%(t,i_roi), data=mod)
+                h.create_dataset("t%d/roi%d/data"%(t,i_roi), data=dat)
+        #bragg += list(model_bragg)
         # Jac has shape of num_param x num_pix ( or its None if not computing grad)
 
         model_pix = model_bragg + Modelers[t].all_background
 
         W = 1/(Modelers[t].all_sigmas)**2
-        resid = (model_pix - Modelers[t].all_data)
+        if LL:
+            resid = (Modelers[t].all_data - model_pix)  # just being lazy and following whats in the notes
+        else:
+            resid = (model_pix - Modelers[t].all_data)
 
         fchi += (resid[trusted_t]**2 * W[trusted_t]).sum()
 
-        G, RotXYZ, Nabc, ucparams = get_param_from_x(x_t,SIM, Modelers[t].PAR)
+        G, RotXYZ, Nabc, ucparams = get_param_from_x(x_t, SIM, Modelers[t].PAR)
 
         delG = []
         del_Na = []
@@ -1098,11 +1288,27 @@ def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_
         del_rZ = []
 
         deg = 180 / np.pi
+
+        #if a shot is divided across ranks, then the restraint term
+        # for that shot will be computed n times, hence we need to reduce
+        # restraint terms by that factor
+        nn = 1. / restraint_n
+
+        ucvar = SIM.ucell_man.variables
         for i_xtal in range(SIM.num_xtals):
+            for i_ucell in range(n_uc_param):
+                beta = params.betas.ucell[i_ucell]
+                if beta==0:
+                    continue
+                cent = params.centers.ucell[i_ucell]
+                fucell[i_ucell] += nn*beta*(cent-ucvar[i_ucell])**2
+
+            # scale factor restraint
             G0 = params.centers.G
             delG.append(G0 - G[i_xtal*3])
-            fG += params.betas.G*delG[-1]**2
+            fG += nn*params.betas.G*delG[-1]**2
 
+            # rot matrix restraint
             rotX = deg*RotXYZ[i_xtal*3]
             rotY = deg*RotXYZ[i_xtal*3+1]
             rotZ = deg*RotXYZ[i_xtal*3+1]
@@ -1114,13 +1320,14 @@ def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_
             del_rY.append(rotY0-rotY)
             del_rZ.append(rotZ0-rotZ)
             frot_term = (del_rX[-1]/sig_rX)**2+ (del_rY[-1]/sig_rY)**2 + (del_rZ[-1] / sig_rZ)**2
-            frot += frot_term * params.betas.RotXYZ*frot
+            frot += nn*frot_term * params.betas.RotXYZ*frot
 
+            # Ncells abc restraint
             del_Na .append(Na0 - Nabc[i_xtal*3])
             del_Nb .append(Nb0 - Nabc[i_xtal*3+1])
             del_Nc .append(Nc0 - Nabc[i_xtal*3+2])
             fN_term = (del_Na[-1] / sig_Na)**2 +(del_Nb[-1] / sig_Nb)**2 + (del_Nc[-1] / sig_Nc)**2
-            fN += fN_term*params.betas.Nabc*fN
+            fN += nn*fN_term*params.betas.Nabc*fN
 
         if compute_grad:
             grad_term = (2*resid*W)[trusted_t]
@@ -1130,7 +1337,6 @@ def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_
             beN = params.betas.Nabc
             # update the per shot gradients
             n_perxtal = 7*SIM.num_xtals
-            n_uc_param = len(SIM.ucell_man.variables)
             xidx_xtal = rank_xidx[t][:n_perxtal]
             Gidx = xidx_xtal[0::7]
             rX_idx= xidx_xtal[1::7]
@@ -1143,15 +1349,21 @@ def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_
 
             for i_uc in range(n_uc_param):
                 g[uc_idx[i_uc]] += g_t[n_perxtal+i_uc]
+                beta = params.betas.ucell[i_uc]
+                if beta==0:
+                    continue
+                cent = params.centers.ucell[i_uc]
+                g[uc_idx[i_uc]] += -nn*2*beta*ucvar[i_uc] *(cent-ucvar[i_uc])
 
             for i_xtal in range(SIM.num_xtals):
-                g[Gidx[i_xtal]] += -2*params.betas.G*delG[i_xtal]
-                g[rX_idx[i_xtal]] += -ber*2*deg*del_rX[i_xtal]/sig_rX**2
-                g[rY_idx[i_xtal]] += -ber*2*deg*del_rY[i_xtal]/sig_rY**2
-                g[rZ_idx[i_xtal]] += -ber*2*deg*del_rZ[i_xtal]/sig_rZ**2
-                g[Na_idx[i_xtal]] += -beN*2*del_Na[i_xtal]/sig_Na**2
-                g[Nb_idx[i_xtal]] += -beN*2*del_Nb[i_xtal]/sig_Nb**2
-                g[Nc_idx[i_xtal]] += -beN*2*del_Nc[i_xtal]/sig_Nc**2
+                # restraing contributions
+                g[Gidx[i_xtal]] += -nn*2*params.betas.G*delG[i_xtal]
+                g[rX_idx[i_xtal]] += -nn*ber*2*deg*del_rX[i_xtal]/sig_rX**2
+                g[rY_idx[i_xtal]] += -nn*ber*2*deg*del_rY[i_xtal]/sig_rY**2
+                g[rZ_idx[i_xtal]] += -nn*ber*2*deg*del_rZ[i_xtal]/sig_rZ**2
+                g[Na_idx[i_xtal]] += -nn*beN*2*del_Na[i_xtal]/sig_Na**2
+                g[Nb_idx[i_xtal]] += -nn*beN*2*del_Nb[i_xtal]/sig_Nb**2
+                g[Nc_idx[i_xtal]] += -nn*beN*2*del_Nc[i_xtal]/sig_Nc**2
 
                 g[Gidx[i_xtal]] += g_t[7*i_xtal]
                 g[rX_idx[i_xtal]] += g_t[7*i_xtal+1]
@@ -1166,27 +1378,48 @@ def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_
                 g[-2] += g_t[-2]  # for fdp shift
                 g[-1] += g_t[-1]  # for fdp slope
 
+    if save is not None:
+        h.close()
+        exit()
+    #skip = params.skip
+    #start_en = params.init.fdp_center_and_slope[2]
+    #np.save("bragg_%d_skip_%d" %(skip, start_en), bragg)
+    #exit()
+#   TODO generalize ucell
+    t_mpi_start = time.time()
+    fucell_len = COMM.bcast(COMM.reduce(sum(fucell[:3])))
+    fucell_ang = COMM.bcast(COMM.reduce(sum(fucell[3:])))
     fchi = COMM.bcast(COMM.reduce(fchi))
     frot = COMM.bcast(COMM.reduce(frot))
     fN = COMM.bcast(COMM.reduce(fN))
     fG = COMM.bcast(COMM.reduce(fG))
     g = COMM.bcast(COMM.reduce(g))
+    t_mpi_done = time.time()
 
     # TODO MPI step
-    f = fchi + frot + fN + fG
+    f = fchi + frot + fN + fG + fucell_len + fucell_ang
     chi = fchi / f *100
     rot = frot / f*100
     G = fG / f*100
     n = fN / f*100
+    uc_len = fucell_len / f *100
+    uc_ang = fucell_ang / f *100
     gnorm = np.linalg.norm(g)
     #shift = 0
     #shift = Modelers[timestamps[0]].PAR.shift.get_val(x[-1])
+    center = slope = 0
+    if params.refine_fdp_center_and_slope:
+        center = Modelers[timestamps[0]].PAR.center.get_val(x[-2])
+        slope = Modelers[timestamps[0]].PAR.slope.get_val(x[-1])
 
+    t_done = time.time()
+    t_mpi = t_mpi_done - t_mpi_start
+    t_total = t_done - t_start
     if compute_grad:
-        if verbose: print("F=%10.7g (chi: %.1f%%, rot: %.1f%% N: %.1f%%, G:%.1f%%, shift=%2.1f), |g|=%10.7g" % (f, chi, rot, n, G,0, gnorm))
+        if verbose: print("F=%10.7g (chi: %.1f%%, rot: %.1f%% N: %.1f%%, G:%.1f%%, UC:(%.1f%%, %.1f%%), center=%.1f, slope=%.3f), |g|=%10.7g; time=%1.5e sec (%1.5e sec for mpi)" % (f, chi, rot, n, G,uc_len, uc_ang,center, slope, gnorm, t_total, t_mpi))
         return f, g
     else:
-        if verbose: print("F=%10.7g (chi: %.1f%%, rot: %.1f%% N: %.1f%%, G:%.1f%%, shift=%2.1f), |g|=NA" % (f, chi, rot, n, G,0))
+        if verbose: print("F=%10.7g (chi: %.1f%%, rot: %.1f%% N: %.1f%%, G:%.1f%%, UC:(%.1f%%, %.1f%%), cent=%.1f, slope=%.3f), |g|=NA; time=%1.5e sec (%1.5e sec for mpi)" % (f, chi, rot, n, G,uc_len, uc_ang,center, slope, t_total, t_mpi))
         return f
 
 
@@ -1345,6 +1578,42 @@ def shift_fp_fdp(fp, fdp, shift, pad=1000):
     fp_shift = np.roll(fp_pad, shift)[sl]
     fdp_shift = np.roll(fdp_pad, shift)[sl]
     return fp_shift, fdp_shift
+
+
+def update_fdp_and_sim(SIM, pfs, center, slope):
+    SIM.D.raw_pixels_roi*=0
+    fdp = utils.f_double_prime(SIM.en_model, SIM.fdp_offset, SIM.fdp_amp, center, slope)
+    fp = utils.f_prime(fdp)
+    SIM.D.fprime_fdblprime = list(fp), list(fdp)
+    SIM.D.add_diffBragg_spots(pfs)
+    return SIM.D.raw_pixels_roi.as_numpy_array()
+
+
+def get_the_bounds(params, x0, SIM, nshots_total):
+    bounds = [(None, None)] *len(x0)
+    n_xtal = SIM.num_xtals
+    n_pershot_param = n_xtal*7 + len(SIM.ucell_man.variables)
+    for i_shot in range(nshots_total):
+        for i_xtal in range(n_xtal):
+            offset = n_pershot_param*i_shot + i_xtal*7
+            if not params.G_refine:
+                bounds[offset] = (1, 1)
+
+            if not params.RotXYZ_refine:
+                bounds[offset + 1] = (1,1)
+                bounds[offset + 2] = (1, 1)
+                bounds[offset + 3] = (1, 1)
+
+            if not params.Nabc_refine:
+                bounds[offset + 4] = (1, 1)
+                bounds[offset + 5] = (1, 1)
+                bounds[offset + 6] = (1, 1)
+
+        if not params.ucell_refine:
+            for i_uc in range(len(SIM.ucell_man.variables)):
+                bounds[offset + 7*n_xtal+i_uc] = (1, 1)
+
+    return bounds
 
 
 if __name__ == '__main__':

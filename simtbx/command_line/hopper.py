@@ -4,14 +4,10 @@ from scipy.interpolate import interp1d
 from scipy.optimize import lsq_linear
 from scipy.optimize import basinhopping
 from libtbx import easy_pickle
-from scipy.ndimage.filters import gaussian_filter
 import h5py
 from dxtbx.model.experiment_list import ExperimentList
 import pandas
-from scipy.sparse.linalg import lsmr
-from scipy.optimize import minimize
 from scitbx.matrix import sqr, col
-import lmfit
 from simtbx.nanoBragg.anisotropic_mosaicity import AnisoUmats
 
 ROTX_ID = 0
@@ -39,9 +35,23 @@ from libtbx.phil import parse
 
 from simtbx.diffBragg import utils
 from simtbx.diffBragg.phil import philz
-from simtbx.diffBragg.refiners.parameters import RangedParameter
+from simtbx.diffBragg.refiners.parameters import NormalParameter, RangedParameter
 
 hopper_phil = """
+niter_per_J = 3
+  .type = int
+  .help = if using gradient descent, compute gradients 
+  .help = every niter_per_J iterations . 
+rescale_params = True
+  .type = bool
+  .help = use rescaled range parameters
+use_likelihood_target = False
+  .type = bool
+  .help = if True, then use negative log Likelihood derived from a gaussian noise model
+  .help = as opposed to the least squares target equation
+model_fdp = False
+  .type = bool
+  .help = use the sigmoid model for fdp
 refine_fp_fdp_shift = False
   .type = bool
   .help = refine an energy shift in the fp, fdp 
@@ -68,6 +78,9 @@ betas {
   Nabc = 0
     .type = float
     .help = restraint factor for the ncells abc
+  G = 0
+    .type = float
+    .help = restraint factor for the scale G 
 }
 centers {
   RotXYZ = [0,0,0]
@@ -76,6 +89,9 @@ centers {
   Nabc = [100,100,100]
     .type = floats(size=3)
     .help = restraint target for Nabc
+  G = 100
+    .type = float
+    .help = restraint target for scale G 
 }
 widths {
   RotXYZ = [0.02,0.02,0.02]
@@ -192,6 +208,13 @@ sigmas {
     .help = sensitivity for unit cell params
 }
 init {
+  fdp_center_and_slope = [0.5, 3.43, 7120, 0.4]
+    .type = floats(size=4)
+    .help = initial values a,b,c,d for the 
+    .help = fdlprime model   a + b/(1+exp[-d*(lambda-c)])
+    .help = the first two terms a and b are currently treated as constants, and the second two
+    .help = correspond to the center of the edge and the steepness of the edge
+    .help = and they are refined 
   Nabc = [100,100,100]
     .type = floats(size=3)
     .help = init for Nabc
@@ -294,6 +317,46 @@ def label_strong_region(subimg):
     bs = generate_binary_structure(2, 1)
     peakmask = binary_dilation(peakmask, bs, iterations=2)
     return peakmask
+
+
+class TargetFunc:
+    def __init__(self, SIM, niter_per_J=1):
+        self.niter_per_J = niter_per_J
+        self.all_x = []
+        self.old_J = None
+        self.old_model = None
+        self.delta_x = None
+        self.iteration = 0
+        self.minima = []
+        self.SIM = SIM
+
+    def at_minimum_quiet(self, x, f, accept):
+        self.iteration = 0
+        self.all_x = []
+        self.minima.append((f,x,accept))
+
+    def at_minimum(self, x, f, accept):
+        self.iteration = 0
+        self.all_x = []
+        look_at_x(x,self.SIM)
+        self.minima.append((f,x,accept))
+
+    def __call__(self, x, *args, **kwargs):
+        if self.all_x:
+            self.delta_x = x - self.all_x[-1]
+        update_terms = None
+        if not self.iteration % (self.niter_per_J) == 0:
+            update_terms = (self.delta_x, self.old_J, self.old_model)
+        self.all_x.append(x)
+        f, g, model, J = target_func(x, update_terms, *args, **kwargs)
+        self.old_model = model
+        self.old_J = J
+        self.iteration += 1
+        if g is not None:
+            return f, g
+        else:
+            return f
+
 
 
 from scipy.optimize import OptimizeResult
@@ -420,9 +483,28 @@ class Script:
 
 
             # initial parameters (all set to 1, 7 parameters (scale, rotXYZ, Ncells_abc) per crystal (sausage) and then the unit cell parameters
-            x0 = [1] * (7 * Modeler.SIM.num_xtals) + [1] * len(Modeler.SIM.ucell_man.variables)
+            nparam = 7 * Modeler.SIM.num_xtals + len(Modeler.SIM.ucell_man.variables)
             if self.params.refine_fp_fdp_shift:
-                x0 += [1]  ## add a special shift parameter for fprime, fdblprime
+                nparam += 1
+            if self.params.rescale_params:
+                x0 = [1] * nparam
+            else:
+                x0 = [np.nan]*nparam
+                for i_xtal in range(Modeler.SIM.num_xtals):
+                    x0[7*i_xtal] = Modeler.SIM.Scale_params[i_xtal].init
+                    x0[7*i_xtal+1] = Modeler.SIM.RotXYZ_params[3*i_xtal].init
+                    x0[7*i_xtal+2] = Modeler.SIM.RotXYZ_params[3*i_xtal+1].init
+                    x0[7*i_xtal+3] = Modeler.SIM.RotXYZ_params[3*i_xtal+2].init
+                    x0[7*i_xtal+4] = Modeler.SIM.Nabc_params[3*i_xtal].init
+                    x0[7*i_xtal+5] = Modeler.SIM.Nabc_params[3*i_xtal+1].init
+                    x0[7*i_xtal+6] = Modeler.SIM.Nabc_params[3*i_xtal+2].init
+
+                nucell = len(Modeler.SIM.ucell_man.variables)
+                for i_ucell in range(nucell):
+                    x0[7*Modeler.SIM.num_xtals+i_ucell] = Modeler.SIM.ucell_params[i_ucell].init
+
+                if np.isnan(x0[-1]):
+                    x0[-1] = Modeler.SIM.shift_param.init
             x = Modeler.Minimize(x0)
             Modeler.save_up(x, exp, i_exp)
 
@@ -554,6 +636,9 @@ class DataModeler:
     def SimulatorFromExperiment(self, best=None):
         """optional best parameter is a single row of a pandas datafame containing the starting
         models, presumably optimized from a previous minimzation using this program"""
+
+        ParameterType = RangedParameter if self.params.rescale_params else NormalParameter
+
         complex_F = None
         if self.params.complex_F is not None:
             complex_F = easy_pickle.load(self.params.complex_F)
@@ -591,7 +676,7 @@ class DataModeler:
         self.SIM.Scale_params = []
         for i_xtal in range(self.SIM.num_xtals):
             for ii in range(3):
-                p = RangedParameter()
+                p = ParameterType()
                 p.sigma = self.params.sigmas.Nabc[ii]
                 p.init = self.params.init.Nabc[ii]
                 # set the mosaic block size
@@ -599,14 +684,14 @@ class DataModeler:
                 p.maxval = self.params.maxs.Nabc[ii]
                 self.SIM.Nabc_params.append(p)
 
-                p = RangedParameter()
+                p = ParameterType()
                 p.sigma = self.params.sigmas.RotXYZ[ii]
                 p.init = 0
                 p.minval = self.params.mins.RotXYZ[ii] * np.pi / 180.
                 p.maxval = self.params.maxs.RotXYZ[ii] * np.pi / 180.
                 self.SIM.RotXYZ_params.append(p)
 
-            p = RangedParameter()
+            p = ParameterType()
             p.sigma = self.params.sigmas.G
             p.init = self.params.init.G
             p.minval = self.params.mins.G
@@ -616,7 +701,7 @@ class DataModeler:
         ucell_man = utils.manager_from_crystal(self.E.crystal)
         ucell_vary_perc = self.params.ucell_edge_perc / 100.
         self.SIM.ucell_params = []
-        for name, val in zip(ucell_man.variable_names, ucell_man.variables):
+        for i_uc, (name, val) in enumerate(zip(ucell_man.variable_names, ucell_man.variables)):
             if "Ang" in name:
                 minval = val - ucell_vary_perc * val
                 maxval = val + ucell_vary_perc * val
@@ -624,8 +709,8 @@ class DataModeler:
                 val_in_deg = val * 180 / np.pi
                 minval = (val_in_deg - self.params.ucell_ang_abs) * np.pi / 180.
                 maxval = (val_in_deg + self.params.ucell_ang_abs) * np.pi / 180.
-            p = RangedParameter()
-            p.sigma = 1
+            p = ParameterType()
+            p.sigma = self.params.sigmas.ucell[i_uc]
             p.init = val
             p.minval = minval
             p.maxval = maxval
@@ -637,7 +722,20 @@ class DataModeler:
         # P.add("eta_a", value=0, min=0, max=eta_max * rad, vary=self.params.eta_refine)
         # P.add("eta_b", value=0, min=0, max=eta_max * rad, vary=self.params.eta_refine)
         # P.add("eta_c", value=0, min=0, max=eta_max * rad, vary=self.params.eta_refine)
-        if self.params.fp_fdp_file is not None:
+        if self.params.model_fdp:
+            offset, amp, center, slope = self.params.init.fdp_center_and_slope
+            wavelens_modeled, _ = zip(*self.SIM.beam.spectrum)
+            en_model = utils.ENERGY_CONV / np.array(wavelens_modeled)
+            fdp_modeled = utils.f_double_prime(en_model, offset, amp, center, slope)
+            fp_modeled = utils.f_prime(fdp_modeled)
+            self.SIM.en_model = en_model  # NOTE, this assumes the energy axis shouldn't change across experiments
+            self.SIM.fdp_amp = amp
+            self.SIM.fdp_offset = offset
+            self.SIM.D.fprime_fdblprime = list(fp_modeled), list(fdp_modeled)
+            assert self.params.atom_data_file is not None
+            assert complex_F is not None
+
+        elif self.params.fp_fdp_file is not None:
             en, fp, fdblp = np.loadtxt(self.params.fp_fdp_file).T
             wavelens_modeled,_ = zip(*self.SIM.beam.spectrum)
             en_model = utils.ENERGY_CONV / np.array(wavelens_modeled)
@@ -651,6 +749,9 @@ class DataModeler:
 
             fp_modeled, fdp_modeled = shift_fp_fdp(self.SIM.fp_reference,self.SIM.fdp_reference, self.params.init.shift)
             self.SIM.D.fprime_fdblprime = list(fp_modeled), list(fdp_modeled)
+            assert self.params.atom_data_file is not None
+            assert complex_F is not None
+
         if self.params.atom_data_file is not None:
             x,y,z,B,o = map(list, np.loadtxt(self.params.atom_data_file).T)
             self.SIM.D.heavy_atom_data =x,y,z,B,o
@@ -658,7 +759,7 @@ class DataModeler:
         if self.params.refine_fp_fdp_shift:
             if self.params.method not in [None, "Nelder-Mead", "Powell"]:
                 raise NotImplemented("method %s not supported for refining shift" % self.params.method)
-            p = RangedParameter()
+            p = ParameterType()
             p.init = self.params.init.shift
             p.minval = -200
             p.maxval = 200
@@ -666,12 +767,12 @@ class DataModeler:
             self.SIM.shift_param = p
 
     def Minimize(self, x0):
+        target = TargetFunc(SIM=self.SIM, niter_per_J=self.params.niter_per_J)
+
         if self.params.method is None:
             method = "Nelder-Mead"
         else:
             method = self.params.method
-        # print("done")
-
 
         if self.params.refiner.randomize_devices is not None:
             dev = np.random.choice(self.params.refiner.num_devices)
@@ -682,21 +783,21 @@ class DataModeler:
         pos_data[ pos_data <0]= 0
         maxfev = self.params.nelder_mead_maxfev * self.npix_total
         H = hopper_minima(self.SIM)
+        at_min = target.at_minimum
         if self.params.quiet:
-            H = None
+            at_min = target.at_minimum_quiet # H = None
+            #target.at_minimum = None
         out = None
         if method=="hybrid":
             # note for reference, the args for target_func
-            #def target_func(x, SIM, pfs, data, sigmas, trusted, background, verbose=True, params=None,
-            #                compute_grad=True):
             args = (self.SIM, self.pan_fast_slow, self.all_data,
                     self.all_sigmas, self.all_trusted, self.all_background, not self.params.quiet, self.params, False)
             # in hybrid mode, start with a nelder-mead descent hop
-            out = basinhopping(target_func, x0,
+            out = basinhopping(target, x0,
                                niter=self.params.niter,
                                minimizer_kwargs={'args': args, "method": "Nelder-Mead", 'options':{'maxfev': maxfev}},
                                T=self.params.temp,
-                               callback=H,
+                               callback=at_min,
                                disp=not self.params.quiet,
                                stepsize=self.params.stepsize)
 
@@ -733,12 +834,12 @@ class DataModeler:
                 args = (self.SIM, self.pan_fast_slow,
                         self.all_background, not self.params.quiet)
                 args = args + (self.params.levmar.damper, self.params.levmar.maxiter)
-            out = basinhopping(target_func, x0,
+            out = basinhopping(target, x0,
                                niter=niter,
                                minimizer_kwargs={'args': args, "method": method, "jac": True,
                                                  'hess': self.params.hess },
                                T=self.params.temp,
-                               callback=H,
+                               callback=at_min, #H,
                                disp=not self.params.quiet,
                                stepsize=self.params.stepsize)
         else:
@@ -746,14 +847,27 @@ class DataModeler:
             #        self.all_sigmas, self.all_trusted, self.all_background, pos_data, not self.params.quiet)
             args = (self.SIM, self.pan_fast_slow, self.all_data,
                     self.all_sigmas, self.all_trusted, self.all_background, not self.params.quiet, self.params, False)
-            out = basinhopping(target_func, x0,
+            out = basinhopping(target, x0,
                                niter=self.params.niter,
                                minimizer_kwargs={'args': args, "method": method, 'options':{'maxfev': maxfev}},
                                T=self.params.temp,
-                               callback=H,
+                               callback=at_min, #$H,
                                disp=not self.params.quiet,
                                stepsize=self.params.stepsize)
 
+        if not self.params.rescale_params:
+            X = np.array(target.all_x)
+            sig = 1 / np.std(X, 0)
+            sig2 = sig/ sig.sum()
+            print("G", sig[0], sig2[0])
+            print("rotX", sig[1], sig2[1])
+            print("rotY", sig[2], sig2[2])
+            print("rotZ", sig[3], sig2[3])
+            print("Na", sig[4], sig2[4])
+            print("Nb", sig[5], sig2[5])
+            print("Nc", sig[6], sig2[6])
+            for i_uc, name in enumerate(self.SIM.ucell_man.variable_names):
+                print(name, sig[7+i_uc], sig2[7+i_uc])
 
         P = out.x
         return P
@@ -761,7 +875,7 @@ class DataModeler:
     def save_up(self, x, exp, i_exp):
         # NOTE fixme
         best_model,_ = model(x, self.SIM, self.pan_fast_slow, compute_grad=False)
-        best_model += self.all_background
+        #best_model += self.all_background
         print("Optimized:")
         look_at_x(x,self.SIM)
 
@@ -775,13 +889,15 @@ class DataModeler:
         img_path = os.path.join(rank_imgs_outdir, "%s_%s_%d.h5" % ("simplex", basename, i_exp))
         # save_model_Z(img_path, all_data, best_model, pan_fast_slow, sigma_rdout)
 
-        data_subimg, model_subimg, strong_subimg = get_data_model_pairs(self.rois, self.pids, self.roi_id, best_model, self.all_data)  # img_data)
+        data_subimg, model_subimg, strong_subimg, bragg_subimg = get_data_model_pairs(self.rois, self.pids, self.roi_id, best_model, self.all_data, background=self.all_background)
 
         comp = {"compression": "lzf"}
         with h5py.File(img_path, "w") as h5:
             for i_roi in range(len(data_subimg)):
                 h5.create_dataset("data/roi%d" % i_roi, data=data_subimg[i_roi], **comp)
                 h5.create_dataset("model/roi%d" % i_roi, data=model_subimg[i_roi], **comp)
+                if bragg_subimg[0] is not None:
+                    h5.create_dataset("bragg/roi%d" % i_roi, data=bragg_subimg[i_roi], **comp)
             h5.create_dataset("rois", data=self.rois)
             h5.create_dataset("pids", data=self.pids)
             h5.create_dataset("sigma_rdout", data=self.sigma_rdout)
@@ -824,9 +940,10 @@ class DataModeler:
 
 
 
-def get_data_model_pairs(rois, pids, roi_id, best_model, all_data, strong_flags=None):
+def get_data_model_pairs(rois, pids, roi_id, best_model, all_data, strong_flags=None, background=None):
     all_dat_img, all_mod_img = [], []
     all_strong = []
+    all_bragg = []
     for i_roi in range(len(rois)):
         x1, x2, y1, y2 = rois[i_roi]
         pid = pids[i_roi]
@@ -836,12 +953,20 @@ def get_data_model_pairs(rois, pids, roi_id, best_model, all_data, strong_flags=
             all_strong.append(strong)
         else:
             all_strong.append(None)
+
         # dat = img_data[pid, y1:y2, x1:x2]
         dat = all_data[roi_id == i_roi].reshape((y2 - y1, x2 - x1))
         all_dat_img.append(dat)
-        all_mod_img.append(mod)
+        if background is not None:
+            bg = background[roi_id==i_roi].reshape((y2-y1, x2-x1))
+            # assume mod does not contain background
+            all_bragg.append(mod)
+            all_mod_img.append(mod+bg)
+        else:  # assume mod contains background
+            all_mod_img.append(mod)
+            all_bragg.append(None)
         # print("Roi %d, max in data=%f, max in model=%f" %(i_roi, dat.max(), mod.max()))
-    return all_dat_img, all_mod_img, all_strong
+    return all_dat_img, all_mod_img, all_strong, all_bragg
 
 
 def look_at_x(x, SIM):
@@ -878,6 +1003,7 @@ def look_at_x(x, SIM):
         print("\tfp_fdp shift= %3.1f" % shift)
 
 
+@profile
 def model(x, SIM, pfs, verbose=True, compute_grad=True):
     verbose = False
     #if compute_grad and SIM.num_xtals > 1:
@@ -926,7 +1052,7 @@ def model(x, SIM, pfs, verbose=True, compute_grad=True):
     J = np.zeros((nparam, npix))  # note: order is: scale, rotX, rotY, rotZ, Na, Nb, Nc, ... (for each xtal), then ucell0, ucell1 , ucell2, ..
     model_pix = None
     for i_xtal in range(SIM.num_xtals):
-        SIM.D.raw_pixels_roi *= 0
+        #SIM.D.raw_pixels_roi *= 0 #todo do i matter?
         scale_reparam, rotX_reparam, rotY_reparam, rotZ_reparam, \
         Na_reparam, Nb_reparam, Nc_reparam = params_per_xtal[i_xtal]
 
@@ -962,10 +1088,12 @@ def model(x, SIM, pfs, verbose=True, compute_grad=True):
         if verbose: print("\trotXYZ= %f %f %f (degrees)" % angles)
         SIM.D.add_diffBragg_spots(pfs)
 
+        pix = SIM.D.raw_pixels_roi[:npix]
+        pix = pix.as_numpy_array()
         if model_pix is None:
-            model_pix = scale*SIM.D.raw_pixels_roi.as_numpy_array()[:npix]
+            model_pix = scale*pix #SIM.D.raw_pixels_roi.as_numpy_array()[:npix]
         else:
-            model_pix += scale*SIM.D.raw_pixels_roi.as_numpy_array()[:npix]
+            model_pix += scale*pix #SIM.D.raw_pixels_roi.as_numpy_array()[:npix]
 
         if compute_grad:
             scale_grad = model_pix / scale
@@ -982,7 +1110,13 @@ def model(x, SIM, pfs, verbose=True, compute_grad=True):
             J[7*i_xtal + 2] += rotY_grad
             J[7*i_xtal + 3] += rotZ_grad
 
-            Na_grad, Nb_grad, Nc_grad = [scale*d.as_numpy_array()[:npix] for d in SIM.D.get_ncells_derivative_pixels()]
+            Nabc_grad = SIM.D.get_ncells_derivative_pixels()
+            #Na_grad = scale*SIM.D.get_Na_derivative_pixels()[:npix]
+            Na_grad = scale*(Nabc_grad[0][:npix].as_numpy_array())
+            Nb_grad = scale*(Nabc_grad[1][:npix].as_numpy_array())
+            Nc_grad = scale*(Nabc_grad[2][:npix].as_numpy_array())
+
+            #Na_grad, Nb_grad, Nc_grad = [scale*d.as_numpy_array()[:npix] for d in SIM.D.get_ncells_derivative_pixels()]
             Na_grad = SIM.Nabc_params[i_xtal * 3].get_deriv(Na_reparam, Na_grad)
             Nb_grad = SIM.Nabc_params[i_xtal * 3 + 1].get_deriv(Nb_reparam, Nb_grad)
             Nc_grad = SIM.Nabc_params[i_xtal * 3 + 2].get_deriv(Nc_reparam, Nc_grad)
@@ -1048,22 +1182,59 @@ class Minimizer:
         return f, g
 
 
-def target_func(x, SIM, pfs, data, sigmas, trusted, background, verbose=True, params=None, compute_grad=True):
-    model_bragg, Jac = model(x, SIM, pfs, verbose=verbose, compute_grad=compute_grad)
+def target_func(x, udpate_terms, SIM, pfs, data, sigmas, trusted, background, verbose=True, params=None, compute_grad=True):
+
+    if udpate_terms is not None:
+        # if approximating the gradients, then fix the refiners
+        # so we dont waste time computing them
+        _compute_grad = False
+        SIM.D.fix(NCELLS_ID)
+        SIM.D.fix(ROTX_ID)
+        SIM.D.fix(ROTY_ID)
+        SIM.D.fix(ROTZ_ID)
+        for i_ucell in range(len(SIM.ucell_man.variables)):
+            SIM.D.fix(UCELL_ID_OFFSET + i_ucell)
+    elif compute_grad:
+        # actually compute the gradients
+        _compute_grad = True
+        SIM.D.let_loose(NCELLS_ID)
+        SIM.D.let_loose(ROTX_ID)
+        SIM.D.let_loose(ROTY_ID)
+        SIM.D.let_loose(ROTZ_ID)
+        for i_ucell in range(len(SIM.ucell_man.variables)):
+            SIM.D.let_loose(UCELL_ID_OFFSET + i_ucell)
+    else:
+        _compute_grad = False
+    model_bragg, Jac = model(x, SIM, pfs, verbose=verbose, compute_grad=_compute_grad)
+
+    if udpate_terms is not None:
+        # try a Broyden update ?
+        # https://people.duke.edu/~hpgavin/ce281/lm.pdf  equation 19
+        delta_x, prev_J, prev_model_bragg = udpate_terms
+        delta_y = model_bragg - prev_model_bragg
+
+        delta_J = (delta_y - np.dot(prev_J.T, delta_x))
+        delta_J /= np.dot(delta_x,delta_x)
+        Jac = prev_J + delta_J
+
     # Jac has shape of num_param x num_pix
 
     model_pix = model_bragg + background
 
+    LL = params.use_likelihood_target
+
+    #if not LL:
     W = 1/sigmas**2
-    resid = (model_pix - data)
+    if LL:
+        resid = (data - model_pix)  #minor technicality , to accommodate hand-written notes
+    else:
+        resid = (model_pix - data)
 
     G, rotX,rotY, rotZ, Na,Nb,Nc,a,b,c,al,be,ga = get_param_from_x(x, SIM)
 
-    #TODO vectorize  / generalize
+    #TODO vectorize  / generalized framework for restraints
     G0 = params.centers.G
-    delG = (G-G0)
-    fG = params.betas.G*delG**2
-
+    delG = (G0-G)
 
     deg = 180 / np.pi
     rotX = deg*rotX
@@ -1076,41 +1247,80 @@ def target_func(x, SIM, pfs, data, sigmas, trusted, background, verbose=True, pa
     del_rX = rotX0-rotX
     del_rY = rotY0-rotY
     del_rZ = rotZ0-rotZ
-    frot = (del_rX/sig_rX)**2+ (del_rY/sig_rY)**2 + (del_rZ / sig_rZ)**2
-    frot = frot * params.betas.RotXYZ*frot
 
     del_Na = Na0 - Na
     del_Nb = Nb0 - Nb
     del_Nc = Nc0 - Nc
-    fN = (del_Na / sig_Na)**2 +(del_Nb / sig_Nb)**2 + (del_Nc / sig_Nc)**2
-    fN = fN*params.betas.Nabc*fN
 
-    fchi = (resid[trusted]**2 * W[trusted]).sum()
-    f = fchi + frot + fN
+    if LL:
+        sigma_rdout = params.refiner.sigma_r / params.refiner.adu_per_photon
+        V = model_pix + sigma_rdout**2
+        resid_square = resid**2
+        fchi = (.5*(np.log(2*np.pi*V) + resid_square / V))[trusted].sum()   # negative log Likelihood target
+        # TODO make betas.Nabc a 3-vector and remove sig_* terms
+        # TODo make this a method the __call__ method of a class, and cache these terms
+        Na_V = params.betas.Nabc / sig_Na**2
+        Nb_V = params.betas.Nabc / sig_Nb**2
+        Nc_V = params.betas.Nabc / sig_Nc**2
+        rx_V = params.betas.RotXYZ / sig_rX**2
+        ry_V = params.betas.RotXYZ / sig_rY**2
+        rz_V = params.betas.RotXYZ / sig_rZ**2
+        fN = .5*(np.log(2*np.pi*Na_V) + del_Na**2  / Na_V)
+        fN += .5*(np.log(2*np.pi*Nb_V) + del_Nb**2  / Nb_V)
+        fN += .5*(np.log(2*np.pi*Nc_V) + del_Nc**2  / Nc_V)
+
+        frot = .5*(np.log(2*np.pi*rx_V) + del_rX**2  / rx_V)
+        frot += .5*(np.log(2*np.pi*ry_V) + del_rY**2  / ry_V)
+        frot += .5*(np.log(2*np.pi*rz_V) + del_rZ**2  / rz_V)
+
+        G_V = params.betas.G
+        fG = .5*(np.log(2*np.pi*G_V) + delG**2  /G_V)
+
+    else:
+        fchi = (resid[trusted] ** 2 * W[trusted]).sum()   # weighted least squares target
+        fN = params.betas.Nabc*((del_Na / sig_Na)**2 +(del_Nb / sig_Nb)**2 + (del_Nc / sig_Nc)**2)
+        frot = params.betas.RotXYZ*((del_rX/sig_rX)**2+ (del_rY/sig_rY)**2 + (del_rZ / sig_rZ)**2)
+        fG = params.betas.G*delG**2
+
+    f = fchi + frot + fN + fG
     chi = fchi / f *100
     rot = frot / f*100
     n = fN / f*100
+    gg = fG / f *100
     if compute_grad:
-        grad_term = (2*resid*W)[trusted]
-        Jac = Jac[:,trusted]
-        g = np.array([np.sum(grad_term*Jac[param_idx]) for param_idx in range(Jac.shape[0])])
-        ber = params.betas.RotXYZ
-        beN = params.betas.Nabc
-        g[0] += -2*params.betas.G*delG
-        g[1] += -ber*2*deg*del_rX/sig_rX**2
-        g[2] += -ber*2*deg*del_rY/sig_rY**2
-        g[3] += -ber*2*deg*del_rZ/sig_rZ**2
-        g[4] += -beN*2*del_Na/sig_Na**2
-        g[5] += -beN*2*del_Nb/sig_Nb**2
-        g[6] += -beN*2*del_Nc/sig_Nc**2
+        if LL:
+            grad_term = (0.5 /V * (1-2*resid - resid_square / V))[trusted]
+        else:
+            grad_term = (2*resid*W)[trusted]
+        Jac_t = Jac[:,trusted]
+        g = np.array([np.sum(grad_term*Jac_t[param_idx]) for param_idx in range(Jac_t.shape[0])])
+        if LL:
+            g[0] += -delG /G_V
+            # TODO , do we need the deg conversion factor?
+            g[1] += -deg * del_rX / rx_V
+            g[2] += -deg * del_rY / ry_V
+            g[3] += -deg * del_rZ / rz_V
+            g[4] += -del_Na / Na_V
+            g[5] += -del_Nb / Nb_V
+            g[6] += -del_Nc / Nc_V
+        else:
+            ber = params.betas.RotXYZ
+            beN = params.betas.Nabc
+            g[0] += -2*params.betas.G*delG
+            g[1] += -ber*2*deg*del_rX/sig_rX**2
+            g[2] += -ber*2*deg*del_rY/sig_rY**2
+            g[3] += -ber*2*deg*del_rZ/sig_rZ**2
+            g[4] += -beN*2*del_Na/sig_Na**2
+            g[5] += -beN*2*del_Nb/sig_Nb**2
+            g[6] += -beN*2*del_Nc/sig_Nc**2
         gnorm = np.linalg.norm(g)
 
     if compute_grad:
-        if verbose: print("F=%10.7g (chi: %.1f%%, rot: %.1f%% N: %.1f%%), |G|=%10.7g" % (f, chi, rot, n, gnorm))
-        return f, g
+        if verbose: print("F=%10.7g (chi: %.1f%%, rot: %.1f%% N: %.1f%%, G: %.1f%%), |g|=%10.7g" % (f, chi, rot, n, gg,gnorm))
     else:
-        if verbose: print("F=%10.7g (chi: %.1f%%, rot: %.1f%% N: %.1f%%), |G|=NA" % (f, chi, rot, n))
-        return f
+        if verbose: print("F=%10.7g (chi: %.1f%%, rot: %.1f%% N: %.1f%%, G: %.1f%%), |g|=NA" % (f, chi, rot, n, gg))
+
+    return f, g, model_bragg, Jac
 
 
 class hopper_minima:

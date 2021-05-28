@@ -423,6 +423,9 @@ void diffBragg_loopy(
 
     int Npanels = fdet_vectors.size()/3;
     int num_atoms = atom_data.size()/5;
+    if (fpfdp.size() == 0){ // note cannot use atom data if fpfdp is 0, make this cleaner
+        num_atoms=0;
+    }
     //int sm_size = number_of_sources*5*sizeof(CUDAREAL);
     //gpu_sum_over_steps<<<numblocks, blocksize, sm_size >>>(
     bool aniso_eta = UMATS_RXYZ.size() != UMATS_RXYZ_prime.size();

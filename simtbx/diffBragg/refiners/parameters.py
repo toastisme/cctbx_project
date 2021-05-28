@@ -65,6 +65,18 @@ class RangedParameter:
     return dtheta_dx*dtheta_dx*second_deriv + d2theta_dx2*deriv
 
 
+class NormalParameter(RangedParameter):
+
+  def __init__(self):
+    super().__init__()
+
+  def get_val(self, x):
+    return x
+
+  def get_deriv(self, x, deriv):
+    return deriv
+
+
 class Parameters:
 
   def __init__(self):

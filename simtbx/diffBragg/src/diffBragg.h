@@ -5,7 +5,7 @@
 #include <Eigen/Dense>
 #include <boost/python.hpp>
 #include<Eigen/StdVector>
-
+#include <boost/python/numpy.hpp>
 typedef std::vector<double> image_type;
 
 #ifdef NANOBRAGG_HAVE_CUDA
@@ -246,6 +246,7 @@ class diffBragg: public nanoBragg{
   /* methods for interacting with the derivative managers */
   void refine(int refine_id);
   void fix(int refine_id);
+  void let_loose(int refine_id);
   int detector_panel_id;
   void update_dxtbx_geoms(const dxtbx::model::Detector& detector, const dxtbx::model::Beam& beam,
         int panel_id, double panel_rot_angO=0,
@@ -266,6 +267,7 @@ class diffBragg: public nanoBragg{
   af::flex_double get_raw_pixels_roi();
   boost::python::tuple get_fp_fdp_derivative_pixels();
   boost::python::tuple get_ncells_derivative_pixels();
+  boost::python::numpy::ndarray get_Na_derivative_pixels();
   boost::python::tuple get_ncells_def_derivative_pixels();
   boost::python::tuple get_ncells_def_second_derivative_pixels();
   boost::python::tuple get_ncells_second_derivative_pixels();

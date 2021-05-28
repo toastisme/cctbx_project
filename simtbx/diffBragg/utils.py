@@ -15,6 +15,9 @@ from cctbx import miller, sgtbx
 from cctbx.crystal import symmetry
 
 import numpy as np
+#np.seterr(all='warn')
+#import warnings
+#warnings.filterwarnings('error')
 from simtbx.nanoBragg.utils import ENERGY_CONV
 from dxtbx.model import Detector, Panel
 from scipy import ndimage
@@ -2046,7 +2049,28 @@ def f_prime(f_double_prime, S=None, padn=5000):
     else:
         padn = S.shape[0]
     F = f_double_prime
-    Fin = np.hstack((F[0] * S, F, F[-1] * (1 - S)))  # sin padding as used in Sherrell thesis, TODO window function ?
+    Fin = np.hstack((F[0] * S,
+                     F,
+                     F[-1] * (1 - S)))  # sin padding as used in Sherrell thesis, TODO window function ?
     Ft = fft.fft(Fin)
     iFt = -1 * fft.ifft(1j * np.sign(fft.fftfreq(Ft.shape[0])) * Ft).real
     return iFt[padn:-padn]
+
+
+def make_gauss(sig, mu):
+    return lambda x: 1 / (sig * (2*np.pi)**.5) * np.e ** (-(x-mu)**2/(2 * sig**2))
+
+def make_lrntz(gam, mu):
+    return lambda x: gam / (np.pi*((x-mu)**2 + gam**2))
+
+def make_voigt(sig, gam, mu, x):
+    #
+    #
+    from scipy.interpolate import interp1d
+    gauss = make_gauss(sig, mu)(x)
+    lrntz = make_lrntz(gam, mu)(x)
+    voigt = np.convolve(gauss, lrntz)
+    voigt /= abs(voigt.max())
+    r = np.linspace(x[0], x[-1], len(voigt))
+    voigt_intrp = interp1d(r, voigt, kind='linear')(x)
+    return voigt, voigt_intrp

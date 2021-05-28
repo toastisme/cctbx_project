@@ -883,6 +883,22 @@ void diffBragg::vectorize_umats(){
     }
 }
 
+void diffBragg::let_loose(int refine_id){
+//experimental
+    if (refine_id >= 0 && refine_id < 3  ){
+        rot_managers[refine_id]->refine_me=true;
+    }
+    else if (refine_id >=3 and refine_id < 9 ){
+        // 6 possible unit cell managers (a,b,c,al,be,ga)
+        ucell_managers[refine_id-3]->refine_me=true;
+    }
+    else if (refine_id==9){
+        for (int i_nc=0; i_nc < 3; i_nc ++){
+            Ncells_managers[i_nc]->refine_me=true;
+        }
+    }
+}
+
 void diffBragg::fix(int refine_id){
     if (refine_id >= 0 && refine_id < 3  ){
         rot_managers[refine_id]->refine_me=false;
@@ -1320,6 +1336,22 @@ double diffBragg::get_value(int refine_id){
 }
 /* End parameter set/get */
 
+
+//af::flex_double diffBragg::get_Na_derivative_pixels(){
+// experimental
+boost::python::numpy::ndarray diffBragg::get_Na_derivative_pixels(){
+    SCITBX_ASSERT(Ncells_managers[0]->refine_me);
+    //https://stackoverflow.com/a/10705352/2077270
+    // note seems slow, best would be to drop in a contiguous 1-d numpy array instead of flex
+    // but is is possible using boost ?
+    af::flex_double v = Ncells_managers[0]->raw_pixels;
+    Py_intptr_t shape[1] = { v.size() };
+    boost::python::numpy::ndarray result = boost::python::numpy::zeros(
+            1, shape, boost::python::numpy::dtype::get_builtin<double>());
+    std::copy(v.begin(), v.end(), reinterpret_cast<double*>(result.get_data()));
+    return result;
+}
+
 af::flex_double diffBragg::get_derivative_pixels(int refine_id){
 
     SCITBX_ASSERT(refine_id >=0 && refine_id <= 19);
@@ -1728,7 +1760,7 @@ void diffBragg::add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows
     image_type d_panel_orig_images(Npix_to_model*3,0.0);
     image_type d2_panel_orig_images(Npix_to_model*3,0.0);
     image_type d_sausage_XYZ_scale_images(Npix_to_model*num_sausages*4,0.0);
-    image_type d_fp_fdp_images(Npix_to_model*2,0); // for now only support two parameters for fp, fdp
+    image_type d_fp_fdp_images(Npix_to_model*2,0.0); // for now only support two parameters for fp, fdp
 
     //fudge = 1.1013986013; // from manuscript computation
     struct timeval t1,t2;

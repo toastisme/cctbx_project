@@ -328,6 +328,9 @@ namespace boost_python { namespace {
       .def("fix", &simtbx::nanoBragg::diffBragg::fix,
         "sets the refinement flag to false")
 
+      .def("let_loose", &simtbx::nanoBragg::diffBragg::let_loose,
+        "sets the refinement flag to True(but doesnt initialize)")
+
       .def("get_value", &simtbx::nanoBragg::diffBragg::get_value, "get value of the refinement parameter")
 
       .def("set_value", &simtbx::nanoBragg::diffBragg::set_value, "set value of the refinement parameter")
@@ -347,6 +350,8 @@ namespace boost_python { namespace {
       .def("get_fp_fdp_derivative_pixels", &simtbx::nanoBragg::diffBragg::get_fp_fdp_derivative_pixels, "get derivatives of intensity w.r.t c,d that describe fprime and fdblprime (see diffBragg.utils)")
 
       .def("get_ncells_def_derivative_pixels", &simtbx::nanoBragg::diffBragg::get_ncells_def_derivative_pixels, "get derivatives of intensity w.r.t (Nd, Ne, Nf)")
+
+      .def("get_Na_derivative_pixels", &simtbx::nanoBragg::diffBragg::get_Na_derivative_pixels, "get derivatives of intensity w.r.t (Nd, Ne, Nf)")
 
       .def("get_aniso_eta_deriv_pixels", &simtbx::nanoBragg::diffBragg::get_aniso_eta_deriv_pixels, "get derivatives of intensity w.r.t anisotropic mosaicity model")
 
