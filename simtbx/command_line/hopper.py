@@ -1,8 +1,9 @@
 from __future__ import absolute_import, division, print_function
+import glob
 from copy import deepcopy
 from scipy.interpolate import interp1d
 from scipy.optimize import lsq_linear
-from scipy.optimize import basinhopping
+from scipy.optimize import dual_annealing, basinhopping
 from libtbx import easy_pickle
 import h5py
 from dxtbx.model.experiment_list import ExperimentList
@@ -15,13 +16,10 @@ ROTY_ID = 1
 ROTZ_ID = 2
 NCELLS_ID = 9
 UCELL_ID_OFFSET = 3
+DETZ_ID = 10
 
 
 # LIBTBX_SET_DISPATCHER_NAME simtbx.diffBragg.hopper
-
-class levmar_out:
-    def __init__(self, x):
-        self.x = x  # parameters
 
 
 import numpy as np
@@ -38,6 +36,24 @@ from simtbx.diffBragg.phil import philz
 from simtbx.diffBragg.refiners.parameters import NormalParameter, RangedParameter
 
 hopper_phil = """
+apply_best_crystal_model = False
+  .type = bool
+  .help = depending on what experiments in the exper refl file, one may want
+  .help = to apply the optimal crystal transformations (this parameter only matters
+  .help = if params.best_pickle is not None)
+filter_unpredicted_refls_in_output = True
+  .type = bool
+  .help = filter reflections in the output refl table for which there was no model bragg peak
+  .help = after stage 1 termination
+tag = simplex
+  .type = str
+  .help = output name tag
+ignore_existing = False
+  .type = bool
+  .help = experimental, ignore expts that already have optimized models in the output dir
+global_method = *basinhopping annealing
+  .type = choice
+  .help = the method of global optimization to use
 niter_per_J = 3
   .type = int
   .help = if using gradient descent, compute gradients 
@@ -72,17 +88,44 @@ complex_F = None
   .help = path to a pickle file containing a complex-type miller array
   .help = that will override the mtz path (if provided) 
 betas {
+  detz_shift = 10
+    .type = float
+    .help = restraint variance for detector shift target 
+  ucell = [0,0,0,0,0,0]
+    .type = floats
+    .help = beta values for unit cell constants
   RotXYZ = 0
     .type = float
     .help = restraint factor for the rotXYZ restraint
-  Nabc = 0
-    .type = float
+  Nabc = [0,0,0]
+    .type = floats(size=3)
     .help = restraint factor for the ncells abc
   G = 0
     .type = float
     .help = restraint factor for the scale G 
 }
+dual {
+  initial_temp = 5230
+    .type = float
+    .help = init temp for dual annealing
+  no_local_search = False 
+    .type = bool
+    .help = whether to try local search procedure with dual annealing
+    .help = if False, then falls back on classical simulated annealing
+  visit = 2.62 
+    .type = float
+    .help = dual_annealing visit param, see scipy optimize docs
+  accept = -5
+    .type = float 
+    .help = dual_annealing accept param, see scipy optimize docs
+}
 centers {
+  detz_shift = 0
+    .type = float
+    .help = restraint target for detector shift along z-direction
+  ucell = [63.66, 28.87, 35.86, 1.8425]
+    .type = floats
+    .help = centers for unit cell constants
   RotXYZ = [0,0,0]
     .type = floats(size=3)
     .help = restraint target for Umat rotations 
@@ -92,14 +135,6 @@ centers {
   G = 100
     .type = float
     .help = restraint target for scale G 
-}
-widths {
-  RotXYZ = [0.02,0.02,0.02]
-    .type = floats(size=3)
-    .help = 1 sigma spread of the RotXYZ rotations
-  Nabc = [30,30,30]
-    .type = floats(size=3)
-    .help = 1 sigma spread of the Nabc 
 }
 levmar {
   damper = 1e-5
@@ -118,9 +153,6 @@ levmar {
     .type = float
     .help = metric improvement threshold for accepting parameter shift
 }
-hybrid_iter = None
-  .type = int
-  .help = number of iters for second gradient based basinhop if running in hybrid mode
 skip = None
   .type = int
   .help = skip this many exp
@@ -151,24 +183,12 @@ method = None
 nelder_mead_maxfev = None
   .type = int
   .help = max number of fevals
-strong_factor = 10
-  .type = float
-  .help = strong pixel weight
-weight_strongs_more = False
-  .type = bool
-  .help = if true, apply a factor to strong pixels when computing loss
 opt_det = None
   .type = str
   .help = path to experiment with optimized detector model
 number_of_xtals = 1
   .type = int
   .help = number of crystal domains to model per shot
-strong_only = False
-  .type = bool
-  .help = only use the strong spot pixels
-strong_dilation = None
-  .type = int 
-  .help = dilate the strong spot mask
 sanity_test_input = True
   .type = bool
   .help = sanity test input
@@ -191,23 +211,29 @@ embed_at_end = False
   .type = bool
   .help = embedto ipython at end of minimize
 sigmas {
+  detz_shift = 1
+    .type = float
+    .help = sensitivity shift for the overall detector shift along z-direction
   Nabc = [1,1,1]
     .type = floats(size=3)
-    .help = init for Nabc
+    .help = sensitivity for Nabc
   Ndef = [1,1,1]
     .type = floats(size=3)
-    .help = init for Ndef
+    .help = sensitivity for Ndef
   RotXYZ = [1,1,1]
     .type = floats(size=3)
-    .help = init for RotXYZ
+    .help = sensitivity for RotXYZ
   G = 1
     .type = float
-    .help = init for scale factor
+    .help = sensitivity for scale factor
   ucell = [1,1,1,1,1,1]
     .type = ints
     .help = sensitivity for unit cell params
 }
 init {
+  detz_shift = 0
+    .type = float
+    .help = initial value for the detector position overall shift along z-direction in millimeters
   fdp_center_and_slope = [0.5, 3.43, 7120, 0.4]
     .type = floats(size=4)
     .help = initial values a,b,c,d for the 
@@ -232,6 +258,9 @@ init {
     .help = initial value for the fp, fdp shift param
 }
 mins {
+  detz_shift = -10
+    .type = float
+    .help = min value for detector z-shift in millimeters
   Nabc = [3,3,3] 
     .type = floats(size=3)
     .help = min for Nabc
@@ -246,6 +275,9 @@ mins {
     .help = min for scale G
 }
 maxs {
+  detz_shift = 10
+    .type = float
+    .help = max value for detector z-shift in millimeters
   eta = 0.1
     .type = float
     .help = maximum mosaic spread in degrees
@@ -310,18 +342,10 @@ phil_scope = parse(philz)
 from scipy.ndimage import binary_dilation, label, generate_binary_structure, find_objects
 
 
-def label_strong_region(subimg):
-    lab, nlab = label(subimg > np.percentile(subimg, 95))
-    counts = [(lab == i).sum() for i in range(1, nlab + 1)]
-    peakmask = lab == (np.argmax(counts) + 1)
-    bs = generate_binary_structure(2, 1)
-    peakmask = binary_dilation(peakmask, bs, iterations=2)
-    return peakmask
-
-
 class TargetFunc:
     def __init__(self, SIM, niter_per_J=1):
         self.niter_per_J = niter_per_J
+        self.global_x = []
         self.all_x = []
         self.old_J = None
         self.old_model = None
@@ -341,6 +365,9 @@ class TargetFunc:
         look_at_x(x,self.SIM)
         self.minima.append((f,x,accept))
 
+    def jac(self, x, *args):
+        return self.g
+
     def __call__(self, x, *args, **kwargs):
         if self.all_x:
             self.delta_x = x - self.all_x[-1]
@@ -352,77 +379,12 @@ class TargetFunc:
         self.old_model = model
         self.old_J = J
         self.iteration += 1
-        if g is not None:
-            return f, g
-        else:
-            return f
-
-
-
-from scipy.optimize import OptimizeResult
-
-
-class LevMar:
-
-    def __init__(self, data,trusted,sigmas, up, down, eps4):
-        self.trusted = trusted
-        self.weights = (1/sigmas**2)[trusted]
-        self.W = np.diag(self.weights)
-        self.data = data
-        self.up = up
-        self.down = down
-        self.eps4 = eps4
-
-    def chi_sq(self, model):
-        resid = (self.data-model)[self.trusted]**2
-        return (resid*self.weights).sum()
-
-    def __call__(self, fun, x0, args=(), maxfev=None, **options):
-        SIM,pfs,background,verbose,damper,maxiter = args
-        x = np.array(x0).astype(float)
-        iteration = 0
-        curr_model_pix = curr_sumsq = J = None
-        while 1:
-            if iteration > maxiter:
-                break
-            if curr_model_pix is None:
-                curr_model_pix, J = model(x, SIM, pfs, verbose=False, compute_grad=True)
-                J = J[:, self.trusted].T
-                curr_model_pix += background
-                curr_sumsq = self.chi_sq(curr_model_pix)
-
-            dBeta = self.data - curr_model_pix
-            JTW = np.dot(J.T, self.W)
-            JTWJ = np.dot(JTW,J)
-            damp_diag_JTWJ = damper*np.diag(JTWJ)
-            a = JTWJ + damp_diag_JTWJ  # should be nparam x nparm
-            b = np.dot(JTW, dBeta[self.trusted])
-            out = lsq_linear(a,b)
-            delta_x = out.x
-            #delta_x, stop_condition, niters, solver_resid = lsmr(a, b)[:4]
-
-            new_x = x + delta_x
-            new_model_pix, newJ = model(new_x, SIM, pfs, verbose=False, compute_grad=True)
-            newJ = newJ[:,self.trusted].T
-            new_model_pix += background
-            new_sumsq = self.chi_sq(new_model_pix)
-            shift_norm = np.dot(delta_x, np.dot(damp_diag_JTWJ, delta_x) + b)
-            rho = (curr_sumsq-new_sumsq) / shift_norm
-            if rho > self.eps4:
-                damper = max(damper/self.down, 1e-10)
-                x = new_x
-                curr_sumsq = new_sumsq
-                curr_model_pix = new_model_pix
-                J = newJ
-                step_success = True
-            else:
-                damper = min(damper*self.up, 1e10)
-                step_success = False
-            print("iter%5d: step %s; Resid=%5.5g, ShiftedResid=%5.5g; rho=%5.5g damper=%5.1f " % (
-                iteration + 1, "succeed" if step_success else "fail", curr_sumsq, new_sumsq, rho , damper))
-            iteration += 1
-
-        return OptimizeResult(fun=new_sumsq, x=x, nit=iteration, nfev=iteration, success=iteration > 1)
+        self.g = g
+        return f
+        #if g is not None:
+        #    return f, g
+        #else:
+        #    return f
 
 
 class Script:
@@ -462,6 +424,12 @@ class Script:
         best_models = COMM.bcast(best_models)
 
         input_lines = input_lines[self.params.skip:]
+        if self.params.ignore_existing:
+            exp_names_already =None
+            if COMM.rank==0:
+                exp_names_already = {os.path.basename(f) for f in glob.glob("%s/expers/rank*/*.expt" % self.params.outdir)}
+            exp_names_already = COMM.bcast(exp_names_already)
+
         for i_exp, line in enumerate(input_lines):
             if i_exp == self.params.max_process:
                 break
@@ -470,20 +438,29 @@ class Script:
 
             print("COMM.rank %d on shot  %d / %d" % (COMM.rank, i_exp + 1, len(input_lines)))
             exp, ref, spec = line.strip().split()
+
+            if self.params.ignore_existing:
+                basename = os.path.splitext(os.path.basename(exp))[0]
+                opt_exp = "%s_%s_%d.expt" % (self.params.tag, basename, i_exp)
+                if opt_exp in exp_names_already:
+                    continue
+
             best = None
             if best_models is not None:
                 best = best_models.query("exp_name=='%s'" % exp)
+                if len(best) == 0:
+                    best = best_models.query("opt_exp_name=='%s'" % exp)
                 if len(best) != 1:
                     raise ValueError("Should be 1 entry for exp %s in best pickle %s" % (exp, self.params.best_pickle))
             self.params.simulator.spectrum.filename = spec
             Modeler = DataModeler(self.params)
             if not Modeler.GatherFromExperiment(exp, ref):
+                print("No refls in %s; CONTINUE; COMM.rank=%d" % (ref, COMM.rank))
                 continue
             Modeler.SimulatorFromExperiment(best)
 
-
             # initial parameters (all set to 1, 7 parameters (scale, rotXYZ, Ncells_abc) per crystal (sausage) and then the unit cell parameters
-            nparam = 7 * Modeler.SIM.num_xtals + len(Modeler.SIM.ucell_man.variables)
+            nparam = 7 * Modeler.SIM.num_xtals + len(Modeler.SIM.ucell_man.variables) + 1
             if self.params.refine_fp_fdp_shift:
                 nparam += 1
             if self.params.rescale_params:
@@ -502,6 +479,7 @@ class Script:
                 nucell = len(Modeler.SIM.ucell_man.variables)
                 for i_ucell in range(nucell):
                     x0[7*Modeler.SIM.num_xtals+i_ucell] = Modeler.SIM.ucell_params[i_ucell].init
+                x0[7*Modeler.SIM.num_xtals+nucell] = Modeler.SIM.DetZ_param.init
 
                 if np.isnan(x0[-1]):
                     x0[-1] = Modeler.SIM.shift_param.init
@@ -533,6 +511,8 @@ class DataModeler:
         self.background=None
         self.tilt_cov = None
         self.simple_weights = None
+        self.refls_idx = None
+        self.refls = None
 
     def GatherFromExperiment(self, exp, ref):
         self.E = ExperimentListFactory.from_json_file(exp)[0]
@@ -548,6 +528,7 @@ class DataModeler:
         if is_trusted is not None:
             hotpix_mask = ~is_trusted
         self.sigma_rdout = self.params.refiner.sigma_r / self.params.refiner.adu_per_photon
+
         roi_packet = utils.get_roi_background_and_selection_flags(
             refls, img_data, shoebox_sz=self.params.roi.shoebox_size,
             reject_edge_reflections=self.params.roi.reject_edge_reflections,
@@ -561,11 +542,16 @@ class DataModeler:
             weighted_fit=self.params.roi.fit_tilt_using_weights,
             tilt_relative_to_corner=self.params.relative_tilt, ret_cov=True)
 
+        if roi_packet is None:
+            return False
+
         self.rois, self.pids, self.tilt_abc, self.selection_flags, self.background, self.tilt_cov = roi_packet
         if sum(self.selection_flags) == 0:
             if not self.params.quiet: print("No pixels slected, continuing")
             return False
         # print("sel")
+        self.refls = refls
+        self.refls_idx = [i_roi for i_roi in range(len(refls)) if self.selection_flags[i_roi]]
         self.rois = [roi for i_roi, roi in enumerate(self.rois) if self.selection_flags[i_roi]]
         self.tilt_abc = [abc for i_roi, abc in enumerate(self.tilt_abc) if self.selection_flags[i_roi]]
         self.pids = [pid for i_roi, pid in enumerate(self.pids) if self.selection_flags[i_roi]]
@@ -582,29 +568,25 @@ class DataModeler:
         all_background = []
         roi_id = []
         all_a, all_b, all_c = [], [], []
-        is_strong = None
-        all_strongs = []
         all_bgs = []
-        if self.params.strong_only or self.params.weight_strongs_more:
-            is_strong = utils.strong_spot_mask(refls, self.E.detector, self.params.strong_dilation)
         for i_roi in range(len(self.rois)):
             pid = self.pids[i_roi]
             x1, x2, y1, y2 = self.rois[i_roi]
             Y, X = np.indices((y2 - y1, x2 - x1))
             data = img_data[pid, y1:y2, x1:x2].copy()
 
-            if is_strong is not None:
-                strong_region = is_strong[pid, y1:y2, x1:x2].ravel()
-
             data = data.ravel()
-            trusted = is_trusted[pid, y1:y2, x1:x2].ravel()
-            if self.params.weight_strongs_more or self.params.strong_only:
-                strongs = trusted * strong_region
-                bgs = trusted * ~strong_region
-                all_strongs += list(strongs)
-                all_bgs += list(bgs)
             all_background += list(self.background[pid, y1:y2, x1:x2].ravel())
+            trusted = is_trusted[pid, y1:y2, x1:x2].ravel()
+
+            # TODO implement per-shot masking here
+            #lower_cut = np.percentile(data, 20)
+            #trusted[data < lower_cut] = False
+
+            #d_strong_order = np.argsort(data)
+            #trusted[d_strong_order[-1:]] = False
             all_trusted += list(trusted)
+            #TODO ignore invalid value warning, or else mitigate it!
             all_sigmas += list(np.sqrt(data + self.sigma_rdout ** 2))
             all_fast += list(X.ravel() + x1)
             all_fast_relative += list(X.ravel())
@@ -645,25 +627,30 @@ class DataModeler:
         if best is not None:
             # set the crystal Umat (rotational displacement) and Bmat (unit cell)
             # Umatrix
-            xax = col((-1, 0, 0))
-            yax = col((0, -1, 0))
-            zax = col((0, 0, -1))
-            rotX,rotY,rotZ = best[["rotX", "rotY", "rotZ"]].values[0]
-            RX = xax.axis_and_angle_as_r3_rotation_matrix(rotX, deg=False)
-            RY = yax.axis_and_angle_as_r3_rotation_matrix(rotY, deg=False)
-            RZ = zax.axis_and_angle_as_r3_rotation_matrix(rotZ, deg=False)
-            M = RX * RY * RZ
-            U = M * sqr(self.E.crystal.get_U())
-            self.E.crystal.set_U(U)
+            if self.params.apply_best_crystal_model:
+                xax = col((-1, 0, 0))
+                yax = col((0, -1, 0))
+                zax = col((0, 0, -1))
+                rotX,rotY,rotZ = best[["rotX", "rotY", "rotZ"]].values[0]
+                RX = xax.axis_and_angle_as_r3_rotation_matrix(rotX, deg=False)
+                RY = yax.axis_and_angle_as_r3_rotation_matrix(rotY, deg=False)
+                RZ = zax.axis_and_angle_as_r3_rotation_matrix(rotZ, deg=False)
+                M = RX * RY * RZ
+                U = M * sqr(self.E.crystal.get_U())
+                self.E.crystal.set_U(U)
 
-            # Bmatrix:
-            ucparam = best[["a","b","c","al","be","ga"]].values[0]
-            ucman = utils.manager_from_params(ucparam)
-            self.E.crystal.set_B(ucman.B_recipspace)
+                # Bmatrix:
+                ucparam = best[["a","b","c","al","be","ga"]].values[0]
+                ucman = utils.manager_from_params(ucparam)
+                self.E.crystal.set_B(ucman.B_recipspace)
+
             # mosaic block
             self.params.init.Nabc = tuple(best.ncells.values[0])
             # scale factor
             self.params.init.G = best.spot_scales.values[0]
+
+            if "detz_shift_mm" in list(best):
+                self.params.init.detz_shift = best.detz_shift_mm.values[0]
 
         self.SIM = utils.simulator_from_expt_and_params(self.E, self.params, complex_F=complex_F)
 
@@ -718,6 +705,14 @@ class DataModeler:
                 "Unit cell variable %s (currently=%f) is bounded by %f and %f" % (name, val, minval, maxval))
             self.SIM.ucell_params.append(p)
         self.SIM.ucell_man = ucell_man
+
+        p = ParameterType()
+        p.init = self.params.init.detz_shift *1e-3
+        p.sigma = self.params.sigmas.detz_shift
+        p.minval = self.params.mins.detz_shift * 1e-3
+        p.maxval = self.params.maxs.detz_shift * 1e-3
+        self.SIM.DetZ_param = p
+
         # eta_max = self.params.maxs.eta
         # P.add("eta_a", value=0, min=0, max=eta_max * rad, vary=self.params.eta_refine)
         # P.add("eta_b", value=0, min=0, max=eta_max * rad, vary=self.params.eta_refine)
@@ -779,81 +774,58 @@ class DataModeler:
         else:
             dev = COMM.rank % self.params.refiner.num_devices
         self.SIM.D.device_Id = dev
-        pos_data = self.all_data.copy()
-        pos_data[ pos_data <0]= 0
         maxfev = self.params.nelder_mead_maxfev * self.npix_total
-        H = hopper_minima(self.SIM)
+
         at_min = target.at_minimum
         if self.params.quiet:
-            at_min = target.at_minimum_quiet # H = None
-            #target.at_minimum = None
-        out = None
-        if method=="hybrid":
-            # note for reference, the args for target_func
-            args = (self.SIM, self.pan_fast_slow, self.all_data,
-                    self.all_sigmas, self.all_trusted, self.all_background, not self.params.quiet, self.params, False)
-            # in hybrid mode, start with a nelder-mead descent hop
-            out = basinhopping(target, x0,
-                               niter=self.params.niter,
-                               minimizer_kwargs={'args': args, "method": "Nelder-Mead", 'options':{'maxfev': maxfev}},
-                               T=self.params.temp,
-                               callback=at_min,
-                               disp=not self.params.quiet,
-                               stepsize=self.params.stepsize)
+            at_min = target.at_minimum_quiet
 
-        if method in ["hybrid", "L-BFGS-B", "BFGS", "CG", "dogleg", "SLSQP", "Newton-CG", "trust-ncg", "trust-krylov", "trust-exact", "trust-ncg", "levmar"]:
-            if method == "hybrid":
-                assert out is not None
-                method = "L-BFGS-B"
-                x0 = out.x
-                niter = self.params.hybrid_iter
-            else:
-                niter = self.params.niter
+        if method in ["L-BFGS-B", "BFGS", "CG", "dogleg", "SLSQP", "Newton-CG", "trust-ncg", "trust-krylov", "trust-exact", "trust-ncg"]:
             self.SIM.D.refine(ROTX_ID)
             self.SIM.D.refine(ROTY_ID)
             self.SIM.D.refine(ROTZ_ID)
             self.SIM.D.refine(NCELLS_ID)
             for i_ucell in range(len(self.SIM.ucell_man.variables)):
                 self.SIM.D.refine(UCELL_ID_OFFSET + i_ucell)
-                #self.SIM.D.set_ucell_derivative_matrix(
-                #    i_ucell + UCELL_ID_OFFSET,
-                #    self.SIM.ucell_man.derivative_matrices[i_ucell])
+            self.SIM.D.refine(DETZ_ID)
 
             args = (self.SIM, self.pan_fast_slow, self.all_data,
                     self.all_sigmas, self.all_trusted, self.all_background, not self.params.quiet, self.params, True)
-            #from scipy.optimize import shgo
-            #bounds = [(None, None)] *len(x0)
-            #bounds = [(None,None)]*len(x0)#(-np.inf,np.inf)]+ [(-p,5)]*3 + [(3,500)]*3 + [ (self.SIM.ucell_params[i].minval, self.SIM.ucell_params[i].maxval) for i in range(len(self.SIM.ucell_params))]
-            #out = shgo(lbfgs_func, bounds, args=args) #, options={"jac": True})#, minimizer_kwargs={"method": "SLSQP"} )
-            #from IPython import embed
-            #embed()
-            if method=="levmar":
-                raise NotImplemented("Nope Levmar")
-                method = LevMar(self.all_data, self.all_trusted, self.all_sigmas, up=self.params.levmar.up,
-                                down=self.params.levmar.down, eps4=self.params.levmar.eps4)
-                args = (self.SIM, self.pan_fast_slow,
-                        self.all_background, not self.params.quiet)
-                args = args + (self.params.levmar.damper, self.params.levmar.maxiter)
+            min_kwargs = {'args': args, "method": method, "jac": target.jac,
+                          'hess': self.params.hess}
+        else:
+            args = (self.SIM, self.pan_fast_slow, self.all_data,
+                    self.all_sigmas, self.all_trusted, self.all_background, not self.params.quiet, self.params, False)
+            min_kwargs = {'args': args, "method": method, 'options':{'maxfev': maxfev}}
+
+        if self.params.global_method=="basinhopping":
             out = basinhopping(target, x0,
-                               niter=niter,
-                               minimizer_kwargs={'args': args, "method": method, "jac": True,
-                                                 'hess': self.params.hess },
+                               niter=self.params.niter,
+                               minimizer_kwargs=min_kwargs,
                                T=self.params.temp,
-                               callback=at_min, #H,
+                               callback=at_min,
                                disp=not self.params.quiet,
                                stepsize=self.params.stepsize)
         else:
-            #args = (self.SIM, self.pan_fast_slow, self.all_data,
-            #        self.all_sigmas, self.all_trusted, self.all_background, pos_data, not self.params.quiet)
-            args = (self.SIM, self.pan_fast_slow, self.all_data,
-                    self.all_sigmas, self.all_trusted, self.all_background, not self.params.quiet, self.params, False)
-            out = basinhopping(target, x0,
-                               niter=self.params.niter,
-                               minimizer_kwargs={'args': args, "method": method, 'options':{'maxfev': maxfev}},
-                               T=self.params.temp,
-                               callback=at_min, #$H,
-                               disp=not self.params.quiet,
-                               stepsize=self.params.stepsize)
+            bounds = [(-100,100)] * len(x0)  # TODO decide about bounds, usually x remains close to 1 during refinement
+            print("Beginning the annealing process")
+            args = min_kwargs.pop("args")
+            if self.params.dual.no_local_search:
+                compute_grads = args[-1]
+                if compute_grads:
+                    print("Warning, parameters setup to compute gradients, swicthing off because no_local_search=True")
+                args = list(args)
+                args[-1] = False  # switch off grad
+                args = tuple(args)
+            out = dual_annealing(target, bounds=bounds, args=args,
+                                 no_local_search=self.params.dual.no_local_search,
+                                 x0=x0,
+                                 accept=self.params.dual.accept,
+                                 visit=self.params.dual.visit,
+                                 maxiter=self.params.niter,
+                                 local_search_options=min_kwargs,
+                                 callback=at_min)
+
 
         if not self.params.rescale_params:
             X = np.array(target.all_x)
@@ -868,6 +840,8 @@ class DataModeler:
             print("Nc", sig[6], sig2[6])
             for i_uc, name in enumerate(self.SIM.ucell_man.variable_names):
                 print(name, sig[7+i_uc], sig2[7+i_uc])
+            n = 7+len(self.SIM.ucell_man.variables)
+            print("DetZ", sig[n], sig2[n])
 
         P = out.x
         return P
@@ -875,32 +849,68 @@ class DataModeler:
     def save_up(self, x, exp, i_exp):
         # NOTE fixme
         best_model,_ = model(x, self.SIM, self.pan_fast_slow, compute_grad=False)
-        #best_model += self.all_background
         print("Optimized:")
         look_at_x(x,self.SIM)
 
         if self.SIM.num_xtals == 1:
             save_to_pandas(x, self.SIM, exp, self.params, self.E, i_exp)
 
+
         rank_imgs_outdir = os.path.join(self.params.outdir, "imgs", "rank%d" % COMM.rank)
         if not os.path.exists(rank_imgs_outdir):
             os.makedirs(rank_imgs_outdir)
+
+        rank_refls_outdir = os.path.join(self.params.outdir, "refls", "rank%d" % COMM.rank)
+        if not os.path.exists(rank_refls_outdir):
+            os.makedirs(rank_refls_outdir)
+
         basename = os.path.splitext(os.path.basename(exp))[0]
-        img_path = os.path.join(rank_imgs_outdir, "%s_%s_%d.h5" % ("simplex", basename, i_exp))
+
+        img_path = os.path.join(rank_imgs_outdir, "%s_%s_%d.h5" % (self.params.tag, basename, i_exp))
+
+        new_refls_file = os.path.join(rank_refls_outdir, "%s_%s_%d.refl" % (self.params.tag, basename, i_exp))
         # save_model_Z(img_path, all_data, best_model, pan_fast_slow, sigma_rdout)
 
         data_subimg, model_subimg, strong_subimg, bragg_subimg = get_data_model_pairs(self.rois, self.pids, self.roi_id, best_model, self.all_data, background=self.all_background)
 
         comp = {"compression": "lzf"}
+        new_refls = deepcopy(self.refls)
+        new_refls['dials.xyzcal.px'] = deepcopy(new_refls['xyzcal.px'])
+        new_xycalcs = flex.vec3_double(len(self.refls), (0,0,0))
+        h5_roi_id = flex.int(len(self.refls), -1)
         with h5py.File(img_path, "w") as h5:
             for i_roi in range(len(data_subimg)):
                 h5.create_dataset("data/roi%d" % i_roi, data=data_subimg[i_roi], **comp)
                 h5.create_dataset("model/roi%d" % i_roi, data=model_subimg[i_roi], **comp)
                 if bragg_subimg[0] is not None:
                     h5.create_dataset("bragg/roi%d" % i_roi, data=bragg_subimg[i_roi], **comp)
+                    com = np.nan, np.nan, np.nan
+                    if np.any(bragg_subimg[i_roi]>0):
+                        I = bragg_subimg[i_roi]
+                        Y,X = np.indices(bragg_subimg[i_roi].shape)
+                        x1,_,y1,_ = self.rois[i_roi]
+                        X += x1
+                        Y += y1
+                        Isum = I.sum()
+                        xcom = (X*I).sum() / Isum
+                        ycom = (Y*I).sum() / Isum
+                        com = xcom+.5, ycom+.5, 0
+
+                    ref_idx = self.refls_idx[i_roi]
+                    h5_roi_id[ref_idx] = i_roi
+                    new_xycalcs[ref_idx] = com
+
+
             h5.create_dataset("rois", data=self.rois)
             h5.create_dataset("pids", data=self.pids)
             h5.create_dataset("sigma_rdout", data=self.sigma_rdout)
+
+        new_refls["xyzcal.px"] = new_xycalcs
+        new_refls["h5_roi_idx"] = h5_roi_id
+        if self.params.filter_unpredicted_refls_in_output:
+            sel = [not np.isnan(x) for x,y,z in new_xycalcs]
+            new_refls = new_refls.select(flex.bool(sel))
+        new_refls.as_file(new_refls_file)
 
         if self.params.plot_at_end:
             import pylab as plt
@@ -946,7 +956,6 @@ def get_data_model_pairs(rois, pids, roi_id, best_model, all_data, strong_flags=
     all_bragg = []
     for i_roi in range(len(rois)):
         x1, x2, y1, y2 = rois[i_roi]
-        pid = pids[i_roi]
         mod = best_model[roi_id == i_roi].reshape((y2 - y1, x2 - x1))
         if strong_flags is not None:
             strong = strong_flags[roi_id == i_roi].reshape((y2 - y1, x2 - x1))
@@ -972,11 +981,7 @@ def get_data_model_pairs(rois, pids, roi_id, best_model, all_data, strong_flags=
 def look_at_x(x, SIM):
     num_per_xtal_params = SIM.num_xtals * (7)
     n_ucell_param = len(SIM.ucell_man.variables)
-    #if n_ucell_param + num_per_xtal_params != len(x):
-    #    raise ValueError("weird x")
     params_per_xtal = np.array_split(x[:num_per_xtal_params], SIM.num_xtals)
-    unitcell_variables = [SIM.ucell_params[i].get_val(xval) for i, xval in
-                          enumerate(x[num_per_xtal_params:num_per_xtal_params+n_ucell_param])]
 
     for i_xtal in range(SIM.num_xtals):
         scale_reparam, rotX_reparam, rotY_reparam, rotZ_reparam, \
@@ -998,54 +1003,55 @@ def look_at_x(x, SIM):
         angles = tuple([x * 180 / np.pi for x in [rotX, rotY, rotZ]])
         print("\trotXYZ= %f %f %f (degrees)" % angles)
     print("\tunitcell= %3.5f %3.5f %3.5f %3.5f %3.5f %3.5f" % SIM.ucell_man.unit_cell_parameters)
+
+    shiftZ = SIM.DetZ_param.get_val(x[num_per_xtal_params + n_ucell_param])
+    print("\tshiftZ = %3.5f" % shiftZ)
     if SIM.shift_param is not None:
         shift = SIM.shift_param.get_val(x[-1])
         print("\tfp_fdp shift= %3.1f" % shift)
 
 
-@profile
 def model(x, SIM, pfs, verbose=True, compute_grad=True):
+
     verbose = False
-    #if compute_grad and SIM.num_xtals > 1:
-    #    raise NotImplemented("Grads not implemented for multiple xtals")
-    num_per_xtal_params = SIM.num_xtals * (7)
+    num_per_xtal_params = SIM.num_xtals * 7
     n_ucell_param = len(SIM.ucell_man.variables)
+    n_detector_param = 1 # Z-shift
+
     if SIM.shift_param is not None:
-        assert n_ucell_param+num_per_xtal_params+1 == len(x)
+        assert n_ucell_param+num_per_xtal_params+n_detector_param+1 == len(x)
         shift_val = SIM.shift_param.get_val(x[-1])
         fp_shift, fdp_shift = shift_fp_fdp(SIM.fp_reference, SIM.fdp_reference, int(np.round(shift_val)))
         SIM.D.fprime_fdblprime = list(fp_shift), list(fdp_shift)
     else:
-        assert n_ucell_param+num_per_xtal_params == len(x)
+        assert n_ucell_param+num_per_xtal_params+n_detector_param == len(x)
     params_per_xtal = np.array_split(x[:num_per_xtal_params], SIM.num_xtals)
+
+    # get the unit cell variables
     unitcell_var_reparam = x[num_per_xtal_params:num_per_xtal_params+n_ucell_param]
     unitcell_variables = [SIM.ucell_params[i].get_val(xval) for i, xval in enumerate(unitcell_var_reparam)]
     SIM.ucell_man.variables = unitcell_variables
     Bmatrix = SIM.ucell_man.B_recipspace
     SIM.D.Bmatrix = Bmatrix
     if compute_grad:
-        #SIM.D.refine(ROTX_ID)
-        #SIM.D.refine(ROTY_ID)
-        #SIM.D.refine(ROTZ_ID)
-        #SIM.D.refine(NCELLS_ID)
         for i_ucell in range(len(unitcell_variables)):
-        #    SIM.D.refine(UCELL_ID_OFFSET+i_ucell)
             SIM.D.set_ucell_derivative_matrix(
                 i_ucell + UCELL_ID_OFFSET,
                 SIM.ucell_man.derivative_matrices[i_ucell])
         # NOTE scale factor gradient is computed directly from the forward model below
-    #else:
-    #    SIM.D.fix(ROTX_ID)
-    #    SIM.D.fix(ROTY_ID)
-    #    SIM.D.fix(ROTZ_ID)
-    #    SIM.D.fix(NCELLS_ID)
-    #    for i_ucell in range(len(unitcell_variables)):
-    #        SIM.D.fix(UCELL_ID_OFFSET+i_ucell)
 
-
-    xax = col((-1, 0, 0))
-    yax = col((0, -1, 0))
-    zax = col((0, 0, -1))
+#   detector parameters
+    x_shiftZ = x[num_per_xtal_params + n_ucell_param]
+    shiftZ = SIM.DetZ_param.get_val(x_shiftZ)
+    SIM.D.shift_origin_z(SIM.detector, shiftZ)
+    #npanels = len(SIM.detector)
+    #for pid in range(npanels):
+    #    rotO=rotF=rotS=0
+    #    shiftX=shiftY=0
+    #    SIM.D.update_dxtbx_geoms(SIM.detector,
+    #                             SIM.beam.nanoBragg_constructor_beam, pid,
+    #                             rotO,rotF,rotS,
+    #                             shiftX,shiftY,shiftZ,force=False)
 
     npix = int(len(pfs) / 3)
     nparam = len(x)
@@ -1124,32 +1130,17 @@ def model(x, SIM, pfs, verbose=True, compute_grad=True):
             J[7*i_xtal + 5] += Nb_grad
             J[7*i_xtal + 6] += Nc_grad
 
-            # note important to keep gradients in same order as the parameters x
-            #ucell_grad = []
             for i_ucell in range(n_ucell_param):
                 d = scale*SIM.D.get_derivative_pixels(UCELL_ID_OFFSET+i_ucell).as_numpy_array()[:npix]
                 d = SIM.ucell_params[i_ucell].get_deriv(unitcell_var_reparam[i_ucell], d)
-                #ucell_grad.append(d)
                 J[7*SIM.num_xtals + i_ucell] += d
-            #J = np.vstack([scale_grad, rotX_grad, rotY_grad, rotZ_grad, Na_grad, Nb_grad, Nc_grad])
-            #J = np.vstack((J, ucell_grad))
 
-    if verbose: print("\tunitcell= %3.5f %3.5f %3.5f %3.5f %3.5f %3.5f" % SIM.ucell_man.unit_cell_parameters)
+            d = SIM.D.get_derivative_pixels(DETZ_ID).as_numpy_array()[:npix]
+            d = SIM.DetZ_param.get_deriv(x_shiftZ, d)
+            J[7*SIM.num_xtals + n_ucell_param] += d
+
+    #if verbose: print("\tunitcell= %3.5f %3.5f %3.5f %3.5f %3.5f %3.5f" % SIM.ucell_man.unit_cell_parameters)
     return model_pix, J
-
-
-def nelmead_func(x, SIM, pfs, data, sigmas, trusted, background, pos_data, verbose=True):
-    model_pix, _ = model(x, SIM, pfs, verbose=verbose, compute_grad=False)
-    model_pix += background
-    #f = 0.33333
-    #P = f * pos_data + (1-f)*model_pix
-    #W = 1/((sigmas**2)*data + (0.1*P)**2)
-    W = 1/sigmas**2
-    resid = (model_pix - data)
-    s = resid**2 * W
-    sumsq = (s[trusted]).sum()
-    if verbose: print("Resid=%10.7g" % sumsq)
-    return sumsq
 
 
 class Minimizer:
@@ -1184,8 +1175,11 @@ class Minimizer:
 
 def target_func(x, udpate_terms, SIM, pfs, data, sigmas, trusted, background, verbose=True, params=None, compute_grad=True):
 
+    #for i_x, xval in enumerate(x):
+    #    all_x[xidx[i_x]] = xval
+
     if udpate_terms is not None:
-        # if approximating the gradients, then fix the refiners
+        # if approximating the gradients, then fix the parameter refinment managers in diffBragg
         # so we dont waste time computing them
         _compute_grad = False
         SIM.D.fix(NCELLS_ID)
@@ -1194,6 +1188,7 @@ def target_func(x, udpate_terms, SIM, pfs, data, sigmas, trusted, background, ve
         SIM.D.fix(ROTZ_ID)
         for i_ucell in range(len(SIM.ucell_man.variables)):
             SIM.D.fix(UCELL_ID_OFFSET + i_ucell)
+        SIM.D.fix(DETZ_ID)
     elif compute_grad:
         # actually compute the gradients
         _compute_grad = True
@@ -1203,6 +1198,7 @@ def target_func(x, udpate_terms, SIM, pfs, data, sigmas, trusted, background, ve
         SIM.D.let_loose(ROTZ_ID)
         for i_ucell in range(len(SIM.ucell_man.variables)):
             SIM.D.let_loose(UCELL_ID_OFFSET + i_ucell)
+        SIM.D.let_loose(DETZ_ID)
     else:
         _compute_grad = False
     model_bragg, Jac = model(x, SIM, pfs, verbose=verbose, compute_grad=_compute_grad)
@@ -1211,12 +1207,12 @@ def target_func(x, udpate_terms, SIM, pfs, data, sigmas, trusted, background, ve
         # try a Broyden update ?
         # https://people.duke.edu/~hpgavin/ce281/lm.pdf  equation 19
         delta_x, prev_J, prev_model_bragg = udpate_terms
-        delta_y = model_bragg - prev_model_bragg
+        if prev_J is not None:
+            delta_y = model_bragg - prev_model_bragg
 
-        delta_J = (delta_y - np.dot(prev_J.T, delta_x))
-        delta_J /= np.dot(delta_x,delta_x)
-        Jac = prev_J + delta_J
-
+            delta_J = (delta_y - np.dot(prev_J.T, delta_x))
+            delta_J /= np.dot(delta_x,delta_x)
+            Jac = prev_J + delta_J
     # Jac has shape of num_param x num_pix
 
     model_pix = model_bragg + background
@@ -1230,9 +1226,14 @@ def target_func(x, udpate_terms, SIM, pfs, data, sigmas, trusted, background, ve
     else:
         resid = (model_pix - data)
 
-    G, rotX,rotY, rotZ, Na,Nb,Nc,a,b,c,al,be,ga = get_param_from_x(x, SIM)
+    G, rotX,rotY, rotZ, Na,Nb,Nc,a,b,c,al,be,ga,detz_shift = get_param_from_x(x, SIM)
 
     #TODO vectorize  / generalized framework for restraints
+    ucvar = SIM.ucell_man.variables
+    n_uc_param = len(ucvar)
+
+    del_detz = detz_shift - params.centers.detz_shift
+
     G0 = params.centers.G
     delG = (G0-G)
 
@@ -1242,8 +1243,6 @@ def target_func(x, udpate_terms, SIM, pfs, data, sigmas, trusted, background, ve
     rotZ = deg*rotZ
     rotX0,rotY0,rotZ0 = params.centers.RotXYZ
     Na0,Nb0,Nc0 = params.centers.Nabc
-    sig_rX, sig_rY, sig_rZ = params.widths.RotXYZ
-    sig_Na, sig_Nb, sig_Nc = params.widths.Nabc
     del_rX = rotX0-rotX
     del_rY = rotY0-rotY
     del_rZ = rotZ0-rotZ
@@ -1257,14 +1256,13 @@ def target_func(x, udpate_terms, SIM, pfs, data, sigmas, trusted, background, ve
         V = model_pix + sigma_rdout**2
         resid_square = resid**2
         fchi = (.5*(np.log(2*np.pi*V) + resid_square / V))[trusted].sum()   # negative log Likelihood target
-        # TODO make betas.Nabc a 3-vector and remove sig_* terms
         # TODo make this a method the __call__ method of a class, and cache these terms
-        Na_V = params.betas.Nabc / sig_Na**2
-        Nb_V = params.betas.Nabc / sig_Nb**2
-        Nc_V = params.betas.Nabc / sig_Nc**2
-        rx_V = params.betas.RotXYZ / sig_rX**2
-        ry_V = params.betas.RotXYZ / sig_rY**2
-        rz_V = params.betas.RotXYZ / sig_rZ**2
+        Na_V = params.betas.Nabc[0]
+        Nb_V = params.betas.Nabc[1]
+        Nc_V = params.betas.Nabc[2]
+        rx_V = params.betas.RotXYZ
+        ry_V = params.betas.RotXYZ
+        rz_V = params.betas.RotXYZ
         fN = .5*(np.log(2*np.pi*Na_V) + del_Na**2  / Na_V)
         fN += .5*(np.log(2*np.pi*Nb_V) + del_Nb**2  / Nb_V)
         fN += .5*(np.log(2*np.pi*Nc_V) + del_Nc**2  / Nc_V)
@@ -1274,19 +1272,45 @@ def target_func(x, udpate_terms, SIM, pfs, data, sigmas, trusted, background, ve
         frot += .5*(np.log(2*np.pi*rz_V) + del_rZ**2  / rz_V)
 
         G_V = params.betas.G
-        fG = .5*(np.log(2*np.pi*G_V) + delG**2  /G_V)
+        fG = .5*(np.log(2*np.pi*G_V) + delG**2/G_V)
+
+        detz_V = params.betas.detz_shift
+        fz = .5*(np.log(2*np.pi*detz_V) + del_detz**2/detz_V)
+
+        fucell = [0]*n_uc_param
+        for i_ucell in range(n_uc_param):
+            beta = params.betas.ucell[i_ucell]
+            cent = params.centers.ucell[i_ucell]
+            fucell[i_ucell] = .5*(np.log(2*np.pi*beta) + (cent-ucvar[i_ucell])**2/beta)
+
 
     else:
+        #TODO implement detz terms
         fchi = (resid[trusted] ** 2 * W[trusted]).sum()   # weighted least squares target
-        fN = params.betas.Nabc*((del_Na / sig_Na)**2 +(del_Nb / sig_Nb)**2 + (del_Nc / sig_Nc)**2)
-        frot = params.betas.RotXYZ*((del_rX/sig_rX)**2+ (del_rY/sig_rY)**2 + (del_rZ / sig_rZ)**2)
+        fN = params.betas.Nabc[0]*(del_Na )**2 +\
+             params.betas.Nabc[1]*(del_Nb )**2 + \
+             params.betas.Nabc[2]*(del_Nc )**2
+        frot = params.betas.RotXYZ*((del_rX)**2+ (del_rY)**2 + (del_rZ )**2)
         fG = params.betas.G*delG**2
+        fucell = [0]*n_uc_param
+        fz = 0
+        for i_ucell in range(n_uc_param):
+            beta = params.betas.ucell[i_ucell]
+            if beta == 0:
+                continue
+            cent = params.centers.ucell[i_ucell]
+            fucell[i_ucell] += beta * (cent - ucvar[i_ucell]) ** 2
 
-    f = fchi + frot + fN + fG
+    fucell = sum(fucell)  # TODO distinguish betweem edge terms and angle terms
+    f = fchi + frot + fN + fG + fucell + fz
     chi = fchi / f *100
     rot = frot / f*100
+    uc = fucell / f*100
     n = fN / f*100
     gg = fG / f *100
+    zz = fz / f * 100.
+    g = None
+    gnorm = -1
     if compute_grad:
         if LL:
             grad_term = (0.5 /V * (1-2*resid - resid_square / V))[trusted]
@@ -1295,42 +1319,57 @@ def target_func(x, udpate_terms, SIM, pfs, data, sigmas, trusted, background, ve
         Jac_t = Jac[:,trusted]
         g = np.array([np.sum(grad_term*Jac_t[param_idx]) for param_idx in range(Jac_t.shape[0])])
         if LL:
-            g[0] += -delG /G_V
-            # TODO , do we need the deg conversion factor?
-            g[1] += -deg * del_rX / rx_V
-            g[2] += -deg * del_rY / ry_V
-            g[3] += -deg * del_rZ / rz_V
-            g[4] += -del_Na / Na_V
-            g[5] += -del_Nb / Nb_V
-            g[6] += -del_Nc / Nc_V
+            g[0] += SIM.Scale_params[0].get_deriv(x[0], -delG / G_V)
+            g[1] += SIM.RotXYZ_params[0].get_deriv(x[1], -del_rX / rx_V)
+            g[2] += SIM.RotXYZ_params[1].get_deriv(x[2], -del_rY / ry_V)
+            g[3] += SIM.RotXYZ_params[2].get_deriv(x[3], -del_rZ / rz_V)
+            g[4] += SIM.Nabc_params[0].get_deriv(x[4], -del_Na / Na_V)
+            g[5] += SIM.Nabc_params[1].get_deriv(x[5], del_Nb / Nb_V)
+            g[6] += SIM.Nabc_params[2].get_deriv(x[6], -del_Nc / Nc_V)
+            for i_uc in range(n_uc_param):
+                beta = params.betas.ucell[i_uc]
+                del_uc = params.centers.ucell[i_uc] - ucvar[i_uc]
+                g[7+i_uc] += SIM.ucell_params[i_uc].get_deriv(x[7+i_uc], -del_uc / beta)
+            g[7+n_uc_param] += SIM.DetZ_param.get_deriv(x[7+n_uc_param], -del_detz/detz_V)
+
+            #g[0] += -delG /G_V
+            ## TODO , do we need the deg conversion factor?
+            #g[1] += -deg * del_rX / rx_V
+            #g[2] += -deg * del_rY / ry_V
+            #g[3] += -deg * del_rZ / rz_V
+            #g[4] += -del_Na / Na_V
+            #g[5] += -del_Nb / Nb_V
+            #g[6] += -del_Nc / Nc_V
+            #for i_uc in range(n_uc_param):
+            #    beta = params.betas.ucell[i_uc]
+            #    del_uc = params.centers.ucell[i_uc] - ucvar[i_uc]
+            #    g[7+i_uc] += -del_uc / beta
         else:
+            # TODO apply change of variable correction, as done for Likelihood restraint gradients above
             ber = params.betas.RotXYZ
-            beN = params.betas.Nabc
             g[0] += -2*params.betas.G*delG
-            g[1] += -ber*2*deg*del_rX/sig_rX**2
-            g[2] += -ber*2*deg*del_rY/sig_rY**2
-            g[3] += -ber*2*deg*del_rZ/sig_rZ**2
-            g[4] += -beN*2*del_Na/sig_Na**2
-            g[5] += -beN*2*del_Nb/sig_Nb**2
-            g[6] += -beN*2*del_Nc/sig_Nc**2
+            g[1] += -ber*2*deg*del_rX
+            g[2] += -ber*2*deg*del_rY
+            g[3] += -ber*2*deg*del_rZ
+            g[4] += -params.betas.Nabc[0]*2*del_Na
+            g[5] += -params.betas.Nabc[1]*2*del_Nb
+            g[6] += -params.betas.Nabc[2]*2*del_Nc
+            for i_uc in range(n_uc_param):
+                beta = params.betas.ucell[i_uc]
+                if beta == 0:
+                    continue
+                del_uc = params.centers.ucell[i_uc] - ucvar[i_uc]
+                g[7+i_uc] += -2*beta*del_uc
+            #TODO detz gradient update for detz restraint
         gnorm = np.linalg.norm(g)
 
-    if compute_grad:
-        if verbose: print("F=%10.7g (chi: %.1f%%, rot: %.1f%% N: %.1f%%, G: %.1f%%), |g|=%10.7g" % (f, chi, rot, n, gg,gnorm))
-    else:
-        if verbose: print("F=%10.7g (chi: %.1f%%, rot: %.1f%% N: %.1f%%, G: %.1f%%), |g|=NA" % (f, chi, rot, n, gg))
+    if verbose:
+        print("F=%10.7g (chi: %.1f%%, rot: %.1f%% N: %.1f%%, G: %.1f%%, uc: %.1f%%, detz: %.1f%%), |g|=%10.7g" \
+              % (f, chi, rot, n, gg,uc,zz,gnorm))
 
     return f, g, model_bragg, Jac
 
 
-class hopper_minima:
-    def __init__(self, SIM):
-        self.minima = []
-        self.SIM = SIM
-
-    def __call__(self, x, f, accept):
-        look_at_x(x,self.SIM)
-        self.minima.append((f,x,accept))
 
 
 def get_param_from_x(x, SIM):
@@ -1341,6 +1380,11 @@ def get_param_from_x(x, SIM):
     unitcell_variables = [SIM.ucell_params[i].get_val(xval) for i, xval in enumerate(unitcell_var_reparam)]
     SIM.ucell_man.variables = unitcell_variables
     a,b,c,al,be,ga = SIM.ucell_man.unit_cell_parameters
+
+    detz_reparam = x[num_per_xtal_params + n_ucell_param]
+    detz = SIM.DetZ_param.get_val(detz_reparam)
+
+    #TODO generalize for n xtals
     i_xtal = 0
 
     scale_reparam, rotX_reparam, rotY_reparam, rotZ_reparam, \
@@ -1356,7 +1400,8 @@ def get_param_from_x(x, SIM):
     Nb = SIM.Nabc_params[i_xtal * 3 + 1].get_val(Nb_reparam)
     Nc = SIM.Nabc_params[i_xtal * 3 + 2].get_val(Nc_reparam)
 
-    return scale, rotX, rotY, rotZ, Na, Nb, Nc,a,b,c,al,be,ga
+
+    return scale, rotX, rotY, rotZ, Na, Nb, Nc,a,b,c,al,be,ga, detz
 
 
 def save_to_pandas(x, SIM, orig_exp_name, params, expt, rank_exp_idx):
@@ -1368,7 +1413,7 @@ def save_to_pandas(x, SIM, orig_exp_name, params, expt, rank_exp_idx):
 
     if SIM.num_xtals > 1:
         raise NotImplemented("cant save pandas for multiple crystals yet")
-    scale, rotX, rotY, rotZ, Na, Nb, Nc,a,b,c,al,be,ga = get_param_from_x(x, SIM)
+    scale, rotX, rotY, rotZ, Na, Nb, Nc,a,b,c,al,be,ga,detz_shift = get_param_from_x(x, SIM)
     shift = np.nan
     if SIM.shift_param is not None:
         shift = SIM.shift_param.get_val(x[-1])
@@ -1397,6 +1442,7 @@ def save_to_pandas(x, SIM, orig_exp_name, params, expt, rank_exp_idx):
         # "panO": list(panO), "panF": list(panF), "panS": list(panS),
         "spot_scales": xtal_scales, "Amats": Amats, "ncells": ncells_vals,
         "eta_abc": [(eta_a, eta_b, eta_c)],
+        "detz_shift_mm": [detz_shift*1e3],
         "ncells_def": ncells_def_vals,
         "fp_fdp_shift": [shift],
         # "bgplanes": bgplanes, "image_corr": image_corr,
@@ -1418,8 +1464,8 @@ def save_to_pandas(x, SIM, orig_exp_name, params, expt, rank_exp_idx):
     # "bgplanes_xpos": bgplane_xpos})
 
     basename = os.path.splitext(os.path.basename(orig_exp_name))[0]
-    opt_exp_path = os.path.join(rank_exper_outdir, "%s_%s_%d.expt" % ("simplex", basename, rank_exp_idx))
-    pandas_path = os.path.join(rank_pandas_outdir, "%s_%s_%d.pkl" % ("simplex", basename, rank_exp_idx))
+    opt_exp_path = os.path.join(rank_exper_outdir, "%s_%s_%d.expt" % (params.tag, basename, rank_exp_idx))
+    pandas_path = os.path.join(rank_pandas_outdir, "%s_%s_%d.pkl" % (params.tag, basename, rank_exp_idx))
     expt.crystal = SIM.crystal.dxtbx_crystal
     # expt.detector = refiner.get_optimized_detector()
     new_exp_list = ExperimentList()

@@ -401,6 +401,7 @@ diffBragg::diffBragg(const dxtbx::model::Detector& detector, const dxtbx::model:
         update_dxtbx_geoms(detector, beam, pid, 0,0,0,0,0,0,false);
     }
     linearize_Fhkl();
+    //sanity_check_linear_Fhkl();
 }
 
 af::flex_double diffBragg::get_panel_increment( double Iincrement, double omega_pixel,
@@ -721,6 +722,11 @@ void diffBragg::update_dxtbx_geoms(
     verbose = old_verbose;
     }
 
+void diffBragg::shift_originZ(const dxtbx::model::Detector& detector, double shiftZ){
+    for (int pid=0; pid< detector.size(); pid++)
+        pix0_vectors[pid*3 + 2] = detector[pid].get_origin()[2]/1000.0 + shiftZ;
+}
+
 void diffBragg::init_raw_pixels_roi(){
     //int fdim = roi_xmax-roi_xmin+1;
     //int sdim = roi_ymax-roi_ymin+1;
@@ -896,6 +902,10 @@ void diffBragg::let_loose(int refine_id){
         for (int i_nc=0; i_nc < 3; i_nc ++){
             Ncells_managers[i_nc]->refine_me=true;
         }
+    }
+    else if (refine_id==10){
+        boost::shared_ptr<panel_manager> pan_orig = boost::dynamic_pointer_cast<panel_manager>(panels[1]);
+        pan_orig->refine_me=true;
     }
 }
 
@@ -1142,6 +1152,65 @@ void diffBragg::print_if_refining(){
         if (sausage_scale_managers[i]->refine_me)
             printf("Refining sausage %d\n" , i);
     }
+}
+
+
+void diffBragg::update_xray_beams(scitbx::af::versa<dxtbx::model::Beam, scitbx::af::flex_grid<> > const& value) {
+    pythony_beams = value;
+    //SCITBX_ASSERT(sources==pythony_beams.size());
+
+    if(verbose) printf("udpating pythony sources\n");
+    vec3 xyz,beamdir=vec3(0,0,0),polarvec = vec3(0,0,0);
+    double flux_sum = 0.0, lambda_sum = 0.0, polar_sum = 0.0, div_sum = 0.0;
+    for (i=0; i < sources; ++i)
+    {
+        source_I[i] = pythony_beams[i].get_flux();
+        flux_sum += source_I[i];
+        source_lambda[i] = pythony_beams[i].get_wavelength();
+        lambda_sum += source_lambda[i];
+
+    }
+    /* update averaged parameters */
+    if(lambda_sum>0.0) lambda0 = lambda_sum/sources;
+
+    /* take in total flux */
+    if(flux_sum > 0)
+    {
+        flux = flux_sum;
+        init_beam();
+    }
+    /* make sure stored source intensities are fractional */
+    double norm = flux_sum ; //sources;
+    for (i=0; i < sources && norm>0.0; ++i)
+    {
+        source_I[i] /= norm;
+    }
+    if(verbose) printf("done initializing sources:\n");
+}
+
+
+
+void diffBragg::quick_Fcell_update(boost::python::tuple const& value){
+    pythony_indices = boost::python::extract<indices>(value[0]);
+    pythony_amplitudes = boost::python::extract<af::shared<double> >(value[1]);
+    if(verbose) printf("updating Fhkl with pythony indices and amplitudes\n");
+    miller_t hkl;
+    for (int i_h=0; i_h < pythony_indices.size(); ++i_h)
+    {
+        hkl = pythony_indices[i_h];
+        F_cell = pythony_amplitudes[i_h];
+        h0 = hkl[0];
+        k0 = hkl[1];
+        l0 = hkl[2];
+        int h = h0-h_min;
+        int k = k0-k_min;
+        int l = l0-l_min;
+        //Fhkl[h0-h_min][k0-k_min][l0-l_min]=F_cell;
+        FhklLinear[h*k_range*l_range+ k*l_range + l] = F_cell;
+        if(verbose>9) printf("F %d : %d %d %d = %g\n",i_h,h,k,l,F_cell);
+    }
+    //update_linear_Fhkl();
+    if(verbose) printf("done with quick update of Fhkl:\n");
 }
 
 
@@ -2062,6 +2131,27 @@ void diffBragg::diffBragg_list_steps(
             }
         }
     }
+}
+
+void diffBragg::sanity_check_linear_Fhkl(){
+	for (int h = 0; h < h_range; h++) {
+		for (int k = 0; k < k_range; k++) {
+			for (int l = 0; l < l_range; l++) {
+				SCITBX_ASSERT(FhklLinear[h*k_range*l_range + k*l_range  + l] == Fhkl[h][k][l]);
+			}
+		}
+	}
+}
+
+
+void diffBragg::update_linear_Fhkl(){
+	for (int h = 0; h < h_range; h++) {
+		for (int k = 0; k < k_range; k++) {
+			for (int l = 0; l < l_range; l++) {
+				FhklLinear[h*k_range*l_range + k*l_range  + l] = Fhkl[h][k][l];
+			}
+		}
+	}
 }
 
 void diffBragg::linearize_Fhkl(){

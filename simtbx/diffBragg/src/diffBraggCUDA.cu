@@ -86,7 +86,6 @@ void diffBragg_loopy(
         std::vector<CUDAREAL>& fpfdp_derivs,
         std::vector<CUDAREAL>&atom_data){ // diffBragg cuda loopy
 
-    bool ALLOC = !cp.device_is_allocated;
 
     if (phi0 != 0 || phisteps > 1){
         printf("PHI (goniometer position) not supported in GPU code: phi0=%f phisteps=%d phistep=%f\n", phi0, phisteps, phistep);
@@ -126,7 +125,18 @@ void diffBragg_loopy(
     struct timeval t1, t2, t3 ,t4;
     gettimeofday(&t1, 0);
 
-    if (Npix_to_allocate==-1){
+//  determine if we need to allocate pixels, and how many.
+//  For best usage, one should use the diffBragg property (visible from Python) Npix_to_allocate
+//  in order to just allocate to the GPU - this is useful for ensemble refinement, where each shot
+//  can have a variable number of pixels being modeled, and ony only needs to allocate the device once
+//  (with the largest expected number of pixels for a given shot)
+   // TODO clean up this logic a bit
+    if (cp.device_is_allocated && (cp.npix_allocated < Npix_to_model)){
+        printf("Need to re-allocate pixels, currently have %d allocated, but trying to model %d\n",
+            cp.npix_allocated, Npix_to_model);
+        exit(-1);
+    }
+    else if (Npix_to_allocate==-1){
         Npix_to_allocate = Npix_to_model;
     }
     else if (Npix_to_model > Npix_to_allocate){
@@ -135,10 +145,14 @@ void diffBragg_loopy(
         exit(-1);
     }
 
-
-    if (ALLOC){
+    if(cp.device_is_allocated){
         if (verbose){
-            printf("Will model %d pixels and allocate %d pix\n", Npix_to_model, Npix_to_allocate);
+           printf("Will model %d pixels (GPU has %d pre-allocated pix)\n", Npix_to_model, cp.npix_allocated);
+        }
+    }
+    else{
+        if (verbose){
+           printf("Will model %d pixels and allocate %d pix\n", Npix_to_model, Npix_to_allocate);
         }
         gpuErr(cudaMallocManaged(&cp.cu_source_X, number_of_sources*sizeof(CUDAREAL)));
         gpuErr(cudaMallocManaged(&cp.cu_source_Y, number_of_sources*sizeof(CUDAREAL)));
@@ -220,7 +234,10 @@ void diffBragg_loopy(
         //time = (1000000.0*(t4.tv_sec-t3.tv_sec) + t4.tv_usec-t3.tv_usec)/1000.0;
         //printf("TIME SPENT ALLOCATING (IMAGES ONLY):  %3.10f ms \n", time);
         gpuErr(cudaMallocManaged(&cp.cu_panels_fasts_slows, Npix_to_allocate*3*sizeof(panels_fasts_slows[0])));
-    } // END ALLOC
+        cp.npix_allocated = Npix_to_allocate;
+    } // END of allocation
+
+    bool ALLOC = !cp.device_is_allocated; // shortcut variable
 
     gettimeofday(&t2, 0);
     time = (1000000.0*(t2.tv_sec-t1.tv_sec) + t2.tv_usec-t1.tv_usec)/1000.0;
@@ -601,6 +618,7 @@ void freedom(diffBragg_cudaPointers& cp){
         gpuErr(cudaFree(cp.cu_panels_fasts_slows));
 
         cp.device_is_allocated = false;
+        cp.npix_allocated = 0;
     }
 }
 

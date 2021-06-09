@@ -20,11 +20,79 @@ from scipy.spatial import distance, cKDTree
 import os
 from simtbx.diffBragg import utils
 from dials.array_family import flex
-from scipy.ndimage import label, maximum_filter,center_of_mass
+from scipy.ndimage import label, maximum_filter,center_of_mass, generate_binary_structure
+
+def plot_overall_delta(df, savename=None):
+    import pylab as plt
+    all_ds = []
+    all_ds_dials = []
+    for name, X, Y, Xd, Yd in zip(df.exp_name, df.vec_x, df.vec_y, df.dials_vec_x, df.dials_vec_y):
+        X = np.array(X)
+        Y = np.array(Y)
+        dist = np.sqrt(X ** 2 + Y ** 2)
+
+        Xd = np.array(Xd)
+        Yd = np.array(Yd)
+        dist_d = np.sqrt(Xd ** 2 + Yd ** 2)
+        dd = np.median(dist)
+        all_ds.append(dd)
+        dd2 = np.median(dist_d)
+        all_ds_dials.append(dd2)
+        print(name, "%d spots" % len(X),dd2-dd )
+        if dd2 > dd:
+            print("EXP %s shows improvement! (diff=%f)" % (name,dd2-dd) )
+    ds = all_ds # [np.median(d) for d in all_ds]
+    ds_dials = all_ds_dials #$[np.median(d) for d in all_ds_dials]
+    diffs = np.sort(np.array(ds_dials) - np.array(ds))[::-1]
+    pos = diffs >= 0
+    x = np.arange(len(diffs))
+    npos = sum(pos)
+    frac_pos = 0 if npos==0 else npos / len(diffs) * 100.
+    frac_neg = 100 - frac_pos
+    plt.figure()
+    plt.plot(x, diffs, 'kd', ms=2)
+    plt.fill_between(x[pos], diffs[pos], color='C0', label="%.2f %%" % frac_pos)
+    plt.fill_between(x[~pos], diffs[~pos], color='tomato', label="%.2f %%" % frac_neg)
+    ax = plt.gca()
+    plt.legend(prop={"size":11})
+    ax.tick_params(labelsize=12)
+    plt.xlabel("shot index (sorted by $\Delta_d$)", fontsize=14)
+    plt.ylabel("$\Delta_d = d_{dials} - d_{diffBragg}$ (pixels)", fontsize=13)
+    plt.grid(1, alpha=0.5)
+    if savename is not None:
+        plt.savefig(savename)
+    else:
+        plt.show()
+
+    res_bins = [30.0051,
+                4.0169,
+                3.1895,
+                2.7867,
+                2.5320,
+                2.3506,
+                2.2121,
+                2.1013,
+                2.0099,
+                1.9325,
+                1.8658,
+                1.8075,
+                1.7558,
+                1.7096,
+                1.6679,
+                1.6300]
 
 def get_centroid(img):
-    lab, nlab = label(img > np.percentile(img,90))
-    com = center_of_mass(img, lab)
+    bs = generate_binary_structure(2,3)
+    lab, nlab = label(img > np.percentile(img,90), bs)
+    # take the central label if 2 exist
+    if nlab > 1:
+        y, x = img.shape
+        coms = [center_of_mass(img, lab, i+1) for i in range(1, nlab)]
+        cent = y*.5, x*.5
+        com = coms[np.argmin([distance.euclidean(xy, cent) for xy in coms])]
+        nlab = 1
+    else:
+        com = center_of_mass(img, lab, 1)
     return com, nlab
 
 def get_centroid2(img):
@@ -32,19 +100,32 @@ def get_centroid2(img):
 
 print("pandas input")
 if args.glob is not None:
-    fnames = glob.glob(args.glob)
+    fnames = glob.glob(args.glob+"/pandas/rank*/*pkl")
     print("found %d files in glob" % len(fnames))
     df = pandas.concat([pandas.read_pickle(f) for f in fnames])
 else:
     df = pandas.read_pickle(args.input)
 
+
+import re
+
+def get_strong_refl(name):
+    s = re.search("run[0-9]+_shot[0-9]+",name)
+    rs = name[s.start():s.end()]
+    strong_name = "/global/cfs/cdirs/m3562/der/indexed/%s_indexed.refl" % rs
+    return strong_name
+
+
+
 if "imgs" not in list(df):
     #df["imgs"] = [df.opt_exp_name.values[0].replace("expers", "imgs").replace(".expt", ".h5")][f.replace("expers", "imgs").replace(".expt", ".h5") for f in df.opt_exp_name]
     df['imgs'] = [f.replace("expers", "imgs").replace(".expt", ".h5") for f in df.opt_exp_name]
 if "refl_names" not in list(df):
-    df['refl_names'] = [f.replace(".expt", ".refl") for f in df.exp_name]
+    #df['refl_names'] = [f.replace(".expt", ".refl") for f in df.exp_name]
+    #df['refl_names'] = [get_strong_refl(f) for f in df.exp_name]
     #refls = [f.replace("_pathmod.expt", "_idx.refl") for f in df.exp_name]
-    #df['refl_names'] = refls
+    #df['refl_names'] = [f.replace(".expt", "_indexed2.refl") for f in df.exp_name]
+    df['refl_names'] = [f.replace(".expt", "_indexed3.refl") for f in df.exp_name]
 
 def main(jid):
     dev_res =[]
@@ -58,6 +139,9 @@ def main(jid):
     per_img_dials_vec_dists =[]
     img_names =[]
     per_img_shot_roi = []
+    Nno_sig = 0
+    Nposs =0
+    Nroi = 0
     for ii, (imgf,reff) in  enumerate(df[["imgs","refl_names"]].values):
         if ii % args.j != jid:
             continue
@@ -85,39 +169,76 @@ def main(jid):
         all_Z2 =[]
         all_shot_roi = []
         sigma_rdout = h["sigma_rdout"][()]
+        Nroi+= nroi
+        Nposs += len(R)
         for img_i_roi in range(nroi):
+            pid = pids[img_i_roi]
+            if pid not in Rpp:
+                continue
+
             ddd = dat["roi%d" % img_i_roi][()]
             mmm = mod["roi%d" % img_i_roi][()]
-            signal = mmm.max() / np.median(mmm)
-            if args.signalcut is not None and signal < args.signalcut:
+            if np.all(mmm==0):
+                #print("Empty spot! continue")
+                Nno_sig += 1
                 continue
-            noise = np.sqrt(ddd + sigma_rdout**2)
-            noise2 = np.sqrt(mmm + sigma_rdout**2)
+            #signal = mmm.max() / np.median(mmm)
+            signal = mmm.max() #/ np.mean(mmm)
+            if args.signalcut is not None and signal < args.signalcut:
+                print("signal cut!")
+                continue
+            #noise = np.sqrt(ddd + sigma_rdout**2)
+            noise = np.sqrt(mmm + sigma_rdout**2)
             Z = (ddd-mmm) / noise
-            Z2 = (ddd-mmm) / noise2
+            #Z2 = (ddd-mmm) / noise2
             roi_d = GF(ddd, 1) 
-            roi_m = GF(mmm,0 )
-            com_d, nlab_d = get_centroid(roi_d)
-            com_m, nlab_m = get_centroid(roi_m)
-            pid = pids[img_i_roi]
+            roi_m = GF(mmm, 0 )
+            #com_d, nlab_d = get_centroid(roi_d)
+            #com_m, nlab_m = get_centroid(roi_m)
+
+
             ref_p = Rpp[pid]
             x1,x2,y1,y2 = rois[img_i_roi]
-            if np.any(np.isnan(com_m)) or np.any(np.isnan(com_d)):
+
+            Ycoor, Xcoor = np.indices(roi_m.shape)
+            I = roi_m.ravel()
+            Isum = I.sum()
+            Ix = (I*Xcoor.ravel()).sum() / Isum
+            Iy = (I*Ycoor.ravel()).sum() / Isum
+            com_m = Iy, Ix
+            nlab_m = 1
+
+
+
+
+            com_d = .5*(y1+y2),.5*(x1+x2)
+            if np.any(np.isnan(com_m)):#or np.any(np.isnan(com_d)):
+                print("nan in com")
                 continue
-            if nlab_m != 1 or nlab_d != 1:
+            if nlab_m != 1:
+                print("multiple lab model!")
+                #from IPython import embed
+                #embed();exit()
                 continue
+            #if nlab_d != 1:
+            #    print("multiple lab in data!")
+            #    #from IPython import embed
+            #    #embed();exit()
+            #    continue
             xyz = np.array(ref_p["xyzobs.px.value"])
             xy = xyz[:,:2]
             tree = cKDTree(xy)
             y_com,x_com = com_d
-            y_com += y1+0.5
-            x_com += x1+0.5
+            #y_com += y1+0.5
+            #x_com += x1+0.5
+            y_com +=0.5
+            x_com+= 0.5
             y_nelder, x_nelder = com_m
             y_nelder += y1+0.5
             x_nelder += x1+0.5
             res = tree.query_ball_point((x_com, y_com), r=7)
             if len(res) == 0:
-                print("weird tree query multiple or no res")
+                #print("weird tree query multiple or no res")
                 continue
             dists = [distance.euclidean(np.array(ref_p[i_r]['xyzobs.px.value'])[:2], (x_com,y_com)) for i_r in res]
             close = np.argmin(dists)
@@ -125,7 +246,10 @@ def main(jid):
             r = ref_p[i_roi]
             xcal,ycal,_ = r['xyzcal.px']
             xobs,yobs,_ = r['xyzobs.px.value']
-            d_dials = distance.euclidean((x_com, y_com), (xcal, ycal))
+            rlp = r['rlp']
+            reso = 1 / np.linalg.norm(rlp)
+            #d_dials = distance.euclidean((x_com, y_com), (xcal, ycal))
+            d_dials = distance.euclidean((xobs, yobs), (xcal, ycal))
             d = distance.euclidean((xobs, yobs), (x_nelder, y_nelder))
             
             # output
@@ -144,8 +268,10 @@ def main(jid):
             all_vec_dists.append(vec_d)
             all_dials_vec_dists.append(vec_dials_d)
             all_shot_roi.append(img_i_roi)
-            all_ref_index.append(r["refl_index"])
-            all_signal.append(signal)
+            assert r['panel'] == pid
+            all_ref_index.append(pid)  # NOTE hijacking refl index to be pid
+            #all_signal.append(signal)
+            all_signal.append(reso) # NOTE hijacking this container, rename to reso later
 
         img_names.append(imgf)
         per_img_ref_index.append(tuple(all_ref_index))
@@ -159,7 +285,8 @@ def main(jid):
         per_img_shot_roi.append( all_shot_roi)
 
     return dev_res, per_img_dists, per_img_dials_dists, per_img_Z, per_img_Z2, per_img_vec_dists\
-                ,per_img_dials_vec_dists, per_img_shot_roi, per_img_signal, img_names, per_img_ref_index
+                ,per_img_dials_vec_dists, per_img_shot_roi, per_img_signal, img_names, per_img_ref_index,\
+           (Nno_sig, Nposs, Nroi)
 
 results = Parallel(n_jobs=args.j)(delayed(main)(j) for j in range(args.j))
 
@@ -174,6 +301,7 @@ per_img_ref_index =[]
 per_img_dials_vec_dists =[]
 per_img_shot_roi = []
 img_names =[]
+n1=n2=n3 = 0
 for r in results:
     dev_res +=r[0]
     per_img_dists += r[1]
@@ -186,13 +314,19 @@ for r in results:
     per_img_signal += r[8]
     img_names += r[9]
     per_img_ref_index += r[10]
+    nno_sig, nposs, nroi = r[11]
+    n1 += nno_sig
+    n2 += nposs
+    n3 += nroi
 
 df_process = pandas.DataFrame(
     {"sigmaZ_PoissonDat" : per_img_Z,
     "Z_PoissonMod" : per_img_Z2,
-    "signal_to_background" : per_img_signal,
+   # "signal_to_background" : per_img_signal,
+    "resolution" : per_img_signal,  # NOTE hijacked the signal container to store reso, rename later
     "pred_offsets" : per_img_dists,
-    "refl_index": per_img_ref_index,
+    #"refl_index": per_img_ref_index,
+     "panel": per_img_ref_index,
     "pred_offsets_dials" : per_img_dials_dists,
     "img_i_roi" : per_img_shot_roi,"imgs": img_names})
 
@@ -213,7 +347,7 @@ df["dials_vec_y"] = dials_vecy
 d,d2,imgf,_,_ = zip(*dev_res)
 from pylab import *
 bins = linspace(min(d+d2), max(d+d2), 100)
-hist(d, bins=bins, histtype='step', lw=2, label="after nelder-mead", color="C0")
+hist(d, bins=bins, histtype='step', lw=2, label="after stage1", color="C0")
 hist(d2, bins=bins, histtype='step', lw=2, label="from dials", color="tomato")
 d = np.array(d)
 d2 = np.array(d2)
@@ -247,16 +381,19 @@ df_better["predictions"] = df_better.refl_names
 #df_better.to_pickle(args.input.replace(".pkl", "_stg2.pkl"))
 
 nwithin = len(good_d)
+npx = np.median(good_d)
+npx_before = np.median(before_good_d)
 print("good", np.median(good_d))
 print("Before good", np.median(before_good_d))
 hist(good_d, bins=bins, histtype='stepfilled', lw=2, label="%d spots within %d pix" % (nwithin,args.n), alpha=0.5, color="C0")
 hist(before_good_d, bins=bins, histtype='stepfilled', lw=2, label="%d spots prior to refinement" % nwithin, alpha=0.5, color="tomato")
-hist(better_d, bins=bins, histtype='stepfilled', lw=2, label="%d spots on images containing 2 or more \npredictions within %.1f pix of observations (%d images)" % (len(better_d),args.n, len(set(better_imgf))), alpha=0.5, color="k")
+#hist(better_d, bins=bins, histtype='stepfilled', lw=2, label="%d spots on images containing 2 or more \npredictions within %.1f pix of observations (%d images)" % (len(better_d),args.n, len(set(better_imgf))), alpha=0.5, color="k")
 legend()
 xlabel("pixels")
 xlabel("|xobs - xcal| pixels")
 xlabel("|xobs - xcal| pixels", fontsize=12)
-title("xcal and xobs for %d refls\n (%s)" % (len(d), args.input), fontsize=12)
+title("xcal and xobs for %d refls (med %.2f px from %.2f px)\n (%s)\n%d NoSig,%d GroupA,%d Stage1Input" % (len(d), npx, npx_before, args.input if args.input is not None else args.glob,
+                                                                      n1,n2,n3), fontsize=12)
 ax = gca()
 ax.tick_params(labelsize=12)
 print("Number of modeled refls within %d pix of obs: %d " % (args.n,nwithin))
@@ -264,13 +401,17 @@ if args.save is not None:
     plt.savefig(args.save)
     pkl_name = os.path.splitext(args.save)[0] + "_pandas.pkl"
     df.to_pickle(pkl_name)
+    save_name = os.path.splitext(args.save)[0] + "_overallDelta.png"
+    plot_overall_delta(df,save_name)
 else:
-    show()
+    plot_overall_delta(df)
+    #show()
+
 
 
 def make_plot(d, d2, imgf, n=2):
     bins = linspace(min(d + d2), max(d + d2), 100)
-    hist(d, bins=bins, histtype='step', lw=2, label="after nelder-mead", color="C0")
+    hist(d, bins=bins, histtype='step', lw=2, label="after basin-hopping", color="C0")
     hist(d2, bins=bins, histtype='step', lw=2, label="from dials", color="tomato")
     d = np.array(d)
     d2 = np.array(d2)
@@ -302,9 +443,9 @@ def make_plot(d, d2, imgf, n=2):
          color="C0")
     hist(before_good_d, bins=bins, histtype='stepfilled', lw=2, label="%d spots prior to refinement" % nwithin,
          alpha=0.5, color="tomato")
-    hist(better_d, bins=bins, histtype='stepfilled', lw=2,
-         label="%d spots on images containing 2 or more \npredictions within %.1f pix of observations (%d images)" % (
-         len(better_d), n, len(set(better_imgf))), alpha=0.5, color="k")
+    #hist(better_d, bins=bins, histtype='stepfilled', lw=2,
+    #     label="%d spots on images containing 2 or more \npredictions within %.1f pix of observations (%d images)" % (
+    #     len(better_d), n, len(set(better_imgf))), alpha=0.5, color="k")
     legend()
     xlabel("pixels")
     xlabel("|xobs - xcal| pixels")
@@ -313,3 +454,4 @@ def make_plot(d, d2, imgf, n=2):
     ax = gca()
     ax.tick_params(labelsize=12)
     show()
+

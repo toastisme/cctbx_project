@@ -1,4 +1,5 @@
 from __future__ import absolute_import, division, print_function
+import os
 
 from scipy import fft
 from scipy.ndimage import binary_dilation
@@ -679,6 +680,8 @@ def get_roi_background_and_selection_flags(refls, imgs, shoebox_sz=10, reject_ed
         rois, is_on_edge = get_roi_from_spot(refls, fdim, sdim, shoebox_sz=shoebox_sz)
     else:
         assert experiment is not None
+        if len(refls) == 0:
+            return
         rois, is_on_edge = get_roi_deltaQ(refls, deltaQ, experiment)
 
     tilt_abc = []
@@ -1428,6 +1431,93 @@ def spots_from_pandas(pandas_frame, mtz_file=None, mtz_col=None,
     return results
 
 
+def roi_spots_from_pandas(pandas_frame,  rois_per_panel, mtz_file=None, mtz_col=None,
+                      oversample_override=None,
+                      Ncells_abc_override=None,
+                      pink_stride_override=None,
+                      cuda=False, device_Id=0, time_panels=False,
+                      d_max=999, d_min=1.5, defaultF=1e3,
+                      njobs=1, omp=False,
+                      norm_by_spectrum=False,
+                      symbol_override=None, quiet=False):
+    if time_panels and quiet:
+        print("NOTE: quiet=True will suppress panel simulation timing print output")
+    from joblib import Parallel, delayed
+    from simtbx.nanoBragg.utils import flexBeam_sim_colors
+
+    pids_with_rois = list(rois_per_panel.keys())
+
+    df = pandas_frame
+
+    if not quiet:print("Loading experiment models")
+    expt_name = df.opt_exp_name.values[0]
+    El = ExperimentListFactory.from_json_file(expt_name, check_format=False)
+    expt = El[0]
+    if "detz_shift_mm" in list(df):  # NOTE, this could also be inside expt_name directly
+        expt.detector = shift_panelZ(expt.detector, df.detz_shift_mm.values[0])
+    if not quiet:print("Done loading models!")
+    if not quiet:print("Crystal model:")
+    if not quiet:expt.crystal.show()
+    assert len(df) == 1
+    Ncells_abc = tuple(map(lambda x: int(round(x)), df.ncells.values[0]))
+    if Ncells_abc_override is not None:
+        Ncells_abc = Ncells_abc_override
+    spot_scale = df.spot_scales.values[0]
+    beamsize_mm = df.beamsize_mm.values[0]
+    total_flux = df.total_flux.values[0]
+    oversample = df.oversample.values[0]
+    if oversample_override is not None:
+        oversample = oversample_override
+
+    # get the optimized spectra
+    if "spectrum_filename" in list(df):
+        spectrum_file = df.spectrum_filename.values[0]
+        pink_stride = df.spectrum_stride.values[0]
+        if norm_by_spectrum:
+            nspec = load_spectra_file(spectrum_file)[0].shape[0]
+            spot_scale = spot_scale / nspec
+        if pink_stride_override is not None:
+            pink_stride = pink_stride_override
+        fluxes, energies = load_spectra_file(spectrum_file, total_flux=total_flux,
+                                             pinkstride=pink_stride)
+    else:
+        fluxes = np.array([total_flux])
+        energies = np.array([ENERGY_CONV/expt.beam.get_wavelength()])
+        if not quiet: print("Running MONO sim")
+        nspec = 1
+    lam0 = df.lam0.values[0]
+    lam1 = df.lam1.values[0]
+    if lam0 == -1:
+        lam0 = 0
+    if lam1 == -1:
+        lam1 = 1
+    wavelens = ENERGY_CONV / energies
+    wavelens = lam0 + lam1*wavelens
+    energies = ENERGY_CONV / wavelens
+
+    if mtz_file is not None:
+        assert mtz_col is not None
+        Famp = open_mtz(mtz_file, mtz_col)
+    else:
+        Famp = make_miller_array_from_crystal(expt.crystal, dmin=d_min, dmax=d_max, defaultF=defaultF, symbol=symbol_override)
+
+    crystal = expt.crystal
+    # TODO opt exp should already include the optimized Amatrix, so no need to set it twice
+    crystal.set_A(df.Amats.values[0])
+
+    panel_list = list(range(len(expt.detector)))
+
+    results = flexBeam_sim_colors(CRYSTAL=expt.crystal, DETECTOR=expt.detector, BEAM=expt.beam, Famp=Famp,
+                                  fluxes=fluxes, energies=energies, beamsize_mm=beamsize_mm,
+                                  Ncells_abc=Ncells_abc, spot_scale_override=spot_scale,
+                                  cuda=cuda, device_Id=device_Id, oversample=oversample, time_panels=time_panels and not quiet,
+                                  pids=list(rois_per_panel.keys()),
+                                  rois_perpanel=rois_per_panel,
+                                  omp=omp, show_params=not quiet)
+
+    return {pid:image for pid,image in results}
+
+
 def spots_from_pandas_and_experiment(expt, pandas_pickle, mtz_file=None, mtz_col=None,
                                      spectrum_file=None, total_flux=1e12, pink_stride=1,
                                      beamsize_mm=0.001, oversample=0, d_max=999, d_min=1.5, defaultF=1e3,
@@ -1933,16 +2023,19 @@ def refls_to_hkl(refls, detector, beam, crystal,
     if 'rlp' not in list(refls.keys()):
         q_vecs = refls_to_q(refls, detector, beam, update_table=update_table)
     else:
-        q_vecs = np.vstack([r['rlp'] for r in refls])
+        q_vecs = np.vstack([refls[i_r]['rlp'] for i_r in range(len(refls))])
     Ai = sqr(crystal.get_A()).inverse()
     Ai = Ai.as_numpy_array()
     HKL = np.dot( Ai, q_vecs.T)
-    HKLi = map( lambda h: np.ceil(h-0.5).astype(int), HKL)
+    HKLi = np.ceil(HKL-0.5) #map( lambda h: np.ceil(h-0.5).astype(int), HKL)
     if update_table:
-        refls['miller_index'] = flex.miller_index(len(refls),(0,0,0))
-        mil_idx = flex.vec3_int(tuple(map(tuple, np.vstack(HKLi).T)))
-        for i in range(len(refls)):
-            refls['miller_index'][i] = mil_idx[i]
+        #refls['miller_index'] = flex.miller_index(len(refls),(0,0,0))
+        refls['miller_index'] = flex.miller_index(list(map(tuple, HKLi.T.astype(np.int32))))
+        #from IPython import embed
+        #embed();exit()
+        #mil_idx = flex.vec3_int(tuple(map(tuple, np.vstack(HKLi).T)))
+        #for i in range(len(refls)):
+        #    refls['miller_index'][i] = mil_idx[i]
     if returnQ:
         return np.vstack(HKL).T, np.vstack(HKLi).T, q_vecs
     else:
@@ -2074,3 +2167,26 @@ def make_voigt(sig, gam, mu, x):
     r = np.linspace(x[0], x[-1], len(voigt))
     voigt_intrp = interp1d(r, voigt, kind='linear')(x)
     return voigt, voigt_intrp
+
+
+def shift_panelZ(D, shift):
+    """
+    :param D:  dxtbx detector
+    :param shift:  shift in mm for origin Z component
+    :return: new detector with shift applied to each panel origin
+    """
+    newD = Detector()
+    for pid in range(len(D)):
+        panel = D[pid]
+        pan_dict = panel.to_dict()
+        x,y,z = panel.get_origin()
+        pan_dict["origin"] = x,y,z+shift
+        pan_dict["fast_axis"] = panel.get_fast_axis()
+        pan_dict["slow_axis"] = panel.get_slow_axis()
+        newP = Panel.from_dict(pan_dict)
+        newD.add_panel(newP)
+    return newD
+
+def safe_makedirs(name):
+    if  not os.path.exists(name):
+        os.makedirs(name)

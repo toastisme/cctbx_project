@@ -11,6 +11,7 @@ class RangedParameter:
     self.maxval = 1
     self.sigma = None
     self.init = None
+    self.fix = False
 
   #@property
   #def init(self):
@@ -48,9 +49,12 @@ class RangedParameter:
     return self.maxval - self.minval
 
   def get_val(self, x_current):
-    sin_arg = self.sigma * (x_current - 1) + arcsin(2 * (self.init - self.minval) / self.rng - 1)
-    val = (sin(sin_arg) + 1) * self.rng / 2 + self.minval
-    return val
+    if self.fix:
+      return self.init
+    else:
+      sin_arg = self.sigma * (x_current - 1) + arcsin(2 * (self.init - self.minval) / self.rng - 1)
+      val = (sin(sin_arg) + 1) * self.rng / 2 + self.minval
+      return val
 
   def get_deriv(self, x_current, deriv):
     cos_arg = self.sigma * (x_current - 1) + arcsin(2 * (self.init - self.minval) / self.rng - 1)

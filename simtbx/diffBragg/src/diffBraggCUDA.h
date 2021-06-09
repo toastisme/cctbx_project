@@ -17,6 +17,7 @@ typedef std::vector<VEC3,Eigen::aligned_allocator<VEC3> > eigVec3_vec;
 struct diffBragg_cudaPointers {
 
   bool device_is_allocated = false;
+  int npix_allocated=0;
 
   unsigned int* cu_panels_fasts_slows;
 

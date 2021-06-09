@@ -199,8 +199,12 @@ class diffBragg: public nanoBragg{
         std::vector<double>& fpfdp_derivs,
         std::vector<double>& atom_data);
 
+
+  void update_xray_beams(scitbx::af::versa<dxtbx::model::Beam, scitbx::af::flex_grid<> > const& value);
   void diffBragg_rot_mats();
   void linearize_Fhkl();
+  void sanity_check_linear_Fhkl();
+  void update_linear_Fhkl();
   void diffBragg_list_steps(
                 int* subS_pos,  int* subF_pos,  int* thick_pos,
                 int* source_pos,  int* phi_pos,  int* mos_pos , int* sausage_pos);
@@ -248,6 +252,7 @@ class diffBragg: public nanoBragg{
   void fix(int refine_id);
   void let_loose(int refine_id);
   int detector_panel_id;
+  void shift_originZ(const dxtbx::model::Detector& detector, double shift);
   void update_dxtbx_geoms(const dxtbx::model::Detector& detector, const dxtbx::model::Beam& beam,
         int panel_id, double panel_rot_angO=0,
         double panel_rot_angF=0,  double panel_rot_angS=0, double panel_offsetX=0,
@@ -414,6 +419,7 @@ class diffBragg: public nanoBragg{
   double scale_term2;
   double scale_term;
 
+  void quick_Fcell_update(boost::python::tuple const& value);
   double ***Fhkl2;  // = NULL
   af::shared<double> pythony_amplitudes2;
   bool complex_miller;

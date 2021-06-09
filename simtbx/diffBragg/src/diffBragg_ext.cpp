@@ -365,6 +365,9 @@ namespace boost_python { namespace {
 
       .def("print_if_refining", &simtbx::nanoBragg::diffBragg::print_if_refining, "print a statement if the refiner flag is set")
 
+      .def("quick_Fhkl_update", &simtbx::nanoBragg::diffBragg::quick_Fcell_update, "update Fcell amplitudes without reallocating memory")
+      .def("update_xray_beams", &simtbx::nanoBragg::diffBragg::update_xray_beams, "update xray beams without reallocating memory")
+
       .def("set_ucell_derivative_matrix",  &simtbx::nanoBragg::diffBragg::set_ucell_derivative_matrix, "Boo-ya")
 
       .def("set_ucell_second_derivative_matrix",  &simtbx::nanoBragg::diffBragg::set_ucell_second_derivative_matrix,
@@ -385,6 +388,10 @@ namespace boost_python { namespace {
            "reallocate the raw image ROIs (they are usually tiny)")
 
       .def("get_origin", get_origin, "get panel origin")
+
+      .def("shift_origin_z",
+            &simtbx::nanoBragg::diffBragg::shift_originZ,
+            "shift the Z-component of the pixel0 vector in every detector panel")
 
       .def("update_dxtbx_geoms",
             &simtbx::nanoBragg::diffBragg::update_dxtbx_geoms,

@@ -533,6 +533,8 @@ class SimData:
         rois = [self._full_roi]
       _rawpix = None  # cuda_add_spots doesnt add spots, it resets each time.. hence we need this
       for roi in rois:
+        if len(roi)==4:
+          roi = (roi[0], roi[1]), (roi[2],roi[3])
         self.D.region_of_interest = roi
         if self.using_cuda:
           self.D.add_nanoBragg_spots_cuda()
