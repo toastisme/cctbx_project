@@ -18,7 +18,7 @@ SIM = sim_data.SimData()
 B = SIM.beam.nanoBragg_constructor_beam
 # set the detector
 SIM.detector = det
-SIM.instantiate_diffBragg()
+SIM.instantiate_diffBragg(auto_set_spotscale=True)
 D = SIM.D
 D.add_diffBragg_spots()
 # get the simulated image
@@ -47,7 +47,7 @@ D.free_all()  # free c++ objects
 # e.g. use the nanoBragg dxtbx constructor
 SIM = sim_data.SimData()
 SIM.detector = det2
-SIM.instantiate_diffBragg()
+SIM.instantiate_diffBragg(auto_set_spotscale=True)
 # make the new pattern and verify its the same as img3
 SIM.D.add_diffBragg_spots()
 img4 = SIM.D.raw_pixels.as_numpy_array()

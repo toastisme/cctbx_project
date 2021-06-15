@@ -44,7 +44,7 @@ lambda1_GT = 1
 
 S.beam.spectrum = list(zip(waves, fluxes))
 S.detector = sim_data.SimData.simple_detector(180, 0.1, (1024, 1024))
-S.instantiate_diffBragg(verbose=0, oversample=0)
+S.instantiate_diffBragg(verbose=0, oversample=0, auto_set_spotscale=True)
 S.D.lambda_coefficients = lambda0_GT, lambda1_GT
 S.D.spot_scale = 100000
 S.D.Ncells_abc = 12

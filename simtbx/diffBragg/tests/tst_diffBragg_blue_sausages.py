@@ -84,7 +84,7 @@ DET_gt = SimData.simple_detector(150, 0.177, img_sh)
 SIM = SimData()
 SIM.detector = DET_gt
 SIM.crystal = nbcryst
-SIM.instantiate_diffBragg(oversample=1, verbose=0)
+SIM.instantiate_diffBragg(oversample=1, verbose=0, auto_set_spotscale=True)
 #if args.finitediff:
 #  SIM.D.refine(eta_diffBragg_id)
 #  SIM.D.initialize_managers()

@@ -224,7 +224,7 @@ for i_shot in range(N_SHOTS):
         shot_originZ_init[i_shot] = Origin[2]+detz_offset
 
     SIM.crystal = nbcryst
-    SIM.instantiate_diffBragg(oversample=0)
+    SIM.instantiate_diffBragg(oversample=0, auto_set_spotscale=True)
     SIM.D.nopolar = False
     SIM.D.default_F = 0
     SIM.D.progress_meter =  False

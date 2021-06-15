@@ -61,7 +61,7 @@ det2[0] = Panel.from_dict(node_d)
 print("Modified originZ=%f" % (det2[0].get_origin()[2]))
 
 SIM.crystal = nbcryst
-SIM.instantiate_diffBragg(oversample=0)
+SIM.instantiate_diffBragg(oversample=0, auto_set_spotscale=True)
 SIM.D.progress_meter = False
 SIM.D.verbose = 0 #1
 SIM.D.nopolar = args.nopolar

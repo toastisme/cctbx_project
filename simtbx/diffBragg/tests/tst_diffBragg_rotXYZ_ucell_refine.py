@@ -56,7 +56,7 @@ nbcryst.Ncells_abc = 12, 12, 12
 SIM = SimData()
 SIM.detector = SimData.simple_detector(150, 0.1, (513, 512))
 SIM.crystal = nbcryst
-SIM.instantiate_diffBragg(oversample=0)
+SIM.instantiate_diffBragg(oversample=0, auto_set_spotscale=True)
 SIM.D.default_F = 0
 SIM.D.F000 = 0
 SIM.D.progress_meter = False

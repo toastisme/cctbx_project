@@ -52,7 +52,7 @@ print("Ground truth ncells abc=%f %f %f" % (ncells_gt)) #nbcryst.Ncells_abc[0]))
 SIM = SimData()
 SIM.detector = SimData.simple_detector(200, 0.1, (1024, 1024))
 SIM.crystal = nbcryst
-SIM.instantiate_diffBragg(oversample=0)
+SIM.instantiate_diffBragg(oversample=0, auto_set_spotscale=True)
 SIM.D.progress_meter = False
 SIM.water_path_mm = 0.005
 SIM.air_path_mm = 0.1

@@ -40,7 +40,7 @@ SIM = SimData()
 SIM.detector = SimData.simple_detector(220, 0.1, (1000, 1000))
 SIM.crystal = nbcryst
 
-SIM.instantiate_diffBragg(oversample=0, verbose=0, interpolate=0, default_F=1e3)
+SIM.instantiate_diffBragg(oversample=0, verbose=0, interpolate=0, default_F=1e3,auto_set_spotscale=True)
 # D is an instance of diffBragg with reasonable parameters
 # and our dxtbx crystal created above
 D = SIM.D
@@ -52,6 +52,7 @@ D.refine(rot_idx)
 D.initialize_managers()
 D.set_value(rot_idx, 0)
 D.use_cuda = args.cuda
+#D.printout_pixel_fastslow = 786, 567
 D.add_diffBragg_spots()
 img0 = D.raw_pixels_roi.as_numpy_array()
 bragg = img0 > 1  #np.ones_like(img0).astype(bool)

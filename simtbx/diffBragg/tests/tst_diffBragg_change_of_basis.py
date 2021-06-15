@@ -18,7 +18,7 @@ nbr.dxtbx_crystal = C
 
 S = sim_data.SimData()
 S.crystal = nbr
-S.instantiate_diffBragg()
+S.instantiate_diffBragg(auto_set_spotscale=True)
 S.D.add_diffBragg_spots()
 img = S.D.raw_pixels.as_numpy_array()
 
@@ -30,7 +30,7 @@ nbr2.dxtbx_crystal = Cp1
 
 S2 = sim_data.SimData()
 S2.crystal = nbr2
-S2.instantiate_diffBragg()
+S2.instantiate_diffBragg(auto_set_spotscale=True)
 S2.D.add_diffBragg_spots()
 img2 = S2.D.raw_pixels.as_numpy_array()
 

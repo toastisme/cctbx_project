@@ -76,7 +76,7 @@ SIM = SimData()
 img_sh = 700,700
 SIM.detector = SimData.simple_detector(300, 0.1, img_sh)
 SIM.crystal = nbcryst
-SIM.instantiate_diffBragg(oversample=0, verbose=0)
+SIM.instantiate_diffBragg(oversample=0, verbose=0, auto_set_spotscale=True)
 # D is an instance of diffBragg with reasonable parameters
 # and our dxtbx crystal created above
 D = SIM.D
@@ -276,7 +276,7 @@ nbcryst.Ncells_abc = 12, 12, 12
 SIM = SimData()
 SIM.detector = SimData.simple_detector(150, 0.1, (1024, 1024))
 SIM.crystal = nbcryst
-SIM.instantiate_diffBragg(oversample=0)
+SIM.instantiate_diffBragg(oversample=0, auto_set_spotscale=True)
 SIM.D.progress_meter = False
 SIM.water_path_mm = 0.005
 SIM.air_path_mm = 0.1

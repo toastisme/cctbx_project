@@ -87,7 +87,7 @@ print("ENERGY PERTURBED=%.4f" % (ENERGY_CONV / lam0))
 SIM.beam.spectrum = list(zip(waves_gt, fluxes_gt))
 SIM.detector = DET_gt
 SIM.crystal = nbcryst
-SIM.instantiate_diffBragg(oversample=0)
+SIM.instantiate_diffBragg(oversample=0, auto_set_spotscale=True)
 SIM.D.nopolar = False
 SIM.D.default_F = 0
 SIM.D.progress_meter = False

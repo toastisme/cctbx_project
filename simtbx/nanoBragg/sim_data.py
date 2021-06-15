@@ -488,7 +488,8 @@ class SimData:
                                use_diffBragg=False)
 
   def instantiate_diffBragg(self, verbose=0, oversample=0, device_Id=0,
-                            adc_offset=0, default_F=1e3, interpolate=0, use_diffBragg=True):
+                            adc_offset=0, default_F=1e3, interpolate=0, use_diffBragg=True,
+                            auto_set_spotscale=False):
 
     if not use_diffBragg:
       self.D = nanoBragg(self.detector, self.beam.nanoBragg_constructor_beam,
@@ -502,7 +503,8 @@ class SimData:
     self.D.interpolate = interpolate
     self._crystal_properties()
     self._beam_properties()
-    #self.D.spot_scale = self.determine_spot_scale()
+    if auto_set_spotscale:
+      self.D.spot_scale = self.determine_spot_scale()
     self.D.adc_offset_adu = adc_offset
     self.D.default_F = default_F
 

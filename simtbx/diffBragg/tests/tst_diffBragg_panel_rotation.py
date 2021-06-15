@@ -45,7 +45,7 @@ BEAM = S.beam.nanoBragg_constructor_beam
 
 S.detector = DET #Dnew
 
-S.instantiate_diffBragg(verbose=0, oversample=0)
+S.instantiate_diffBragg(verbose=0, oversample=0, auto_set_spotscale=True)
 S.D.spot_scale = 100000
 S.D.compute_curvatures = False
 S.D.nopolar = True

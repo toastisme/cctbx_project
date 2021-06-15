@@ -95,7 +95,7 @@ node_d["origin"] = Origin[0], Origin[1], Origin[2] + detz_offset
 det2[0] = Panel.from_dict(node_d)
 
 SIM.crystal = nbcryst
-SIM.instantiate_diffBragg(oversample=0)
+SIM.instantiate_diffBragg(oversample=0, auto_set_spotscale=True)
 SIM.D.nopolar = False
 SIM.D.default_F = 0
 SIM.D.progress_meter = False

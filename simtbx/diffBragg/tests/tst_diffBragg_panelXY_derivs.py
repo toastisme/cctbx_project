@@ -22,7 +22,7 @@ B = SIM.beam.nanoBragg_constructor_beam
 
 # set the detector
 SIM.detector = det
-SIM.instantiate_diffBragg()
+SIM.instantiate_diffBragg(auto_set_spotscale=True)
 D = SIM.D
 D.oversample_omega = True  #False
 D.nopolar = True

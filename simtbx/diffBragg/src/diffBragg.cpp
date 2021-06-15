@@ -749,6 +749,7 @@ void diffBragg::update_dxtbx_geoms(
     //printf("Done updating!\n");
     SCITBX_ASSERT(close_distance > 0);
     verbose = old_verbose;
+    set_close_distances();
     }
 
 void diffBragg::shift_originZ(const dxtbx::model::Detector& detector, double shiftZ){
