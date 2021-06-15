@@ -1,5 +1,6 @@
 from __future__ import absolute_import, division, print_function
 
+from simtbx.command_line.hopper import get_data_model_pairs
 from cctbx import sgtbx, miller
 import time
 from collections import Counter
@@ -7,6 +8,9 @@ from scipy.optimize import basinhopping
 import h5py
 import pandas
 from scitbx.matrix import sqr, col
+import sys
+from io import StringIO
+from stream_redirect import Redirect
 
 # diffBragg internal parameter indices
 FHKL_ID = 11
@@ -14,7 +18,7 @@ FHKL_ID = 11
 # LIBTBX_SET_DISPATCHER_NAME simtbx.diffBragg.ensemble
 
 import numpy as np
-np.seterr(invalid='ignore')
+#np.seterr(invalid='ignore')
 import os
 from dials.array_family import flex
 from dxtbx.model.experiment_list import ExperimentListFactory
@@ -28,6 +32,19 @@ from simtbx.diffBragg.phil import philz
 from simtbx.diffBragg.refiners.parameters import NormalParameter, RangedParameter
 
 hopper_phil = """
+sanity_test_hkl_variation = False
+  .type = bool
+  .help = measure the variation of each HKL within the shoebox
+sanity_test_models = False
+  .type = bool
+  .help = make sure best models from stage 1 are reproduced at the start
+sanity_test_amplitudes = False
+  .type = bool
+  .help = if True, then quickly run a sanity check ensuring that all h,k,l are predicted
+  .help = and/or in the starting miller array
+x_write_freq = 25
+  .type = int 
+  .help = save x arrays every x_write_freq iterations
 percentile_cut = None
   .type = float
   .help = percentile below which pixels are masked 
@@ -169,17 +186,17 @@ class Script:
         if self.params.first_n is not None:
             input_lines = input_lines[:self.params.first_n]
 
-        shot_roi_dict = count_rois(input_lines)
+        shot_roi_dict = count_rois(input_lines, self.params.quiet)
         # gether statistics, e.g. how many total ROIs
         nshots = len(shot_roi_dict)
         nrois = sum([len(shot_roi_dict[s]) for s in shot_roi_dict])
-        print("Rank %d will load %d rois across %d shots" % (COMM.rank, nrois, nshots))
+        if not self.params.quiet:print("Rank %d will load %d rois across %d shots" % (COMM.rank, nrois, nshots))
 
         # make a data modeler for each shot
         Modelers = {}
         bests = {}
         for i_exp in shot_roi_dict:
-            print("COMM.rank %d on shot  %d" % (COMM.rank, i_exp + 1))
+            if not self.params.quiet: print("COMM.rank %d on shot  %d" % (COMM.rank, i_exp + 1))
 
             # this corresponds to the expfile, reflfile, specfile for this shot
             line = input_lines[i_exp]
@@ -209,11 +226,12 @@ class Script:
                 continue
 
             # store the modeler for later use(each rank has one modeler per shot in shot_roi_dict)
+            Modeler.exp_name = exp
             Modelers[i_exp] = Modeler
 
         # count up the total number of pixels being modeled by this rank
         npix = [len(modeler.all_data) for modeler in Modelers.values()]
-        print("Rank %d wil model %d pixels in total" %(COMM.rank, sum(npix)))
+        if not self.params.quiet: print("Rank %d wil model %d pixels in total" %(COMM.rank, sum(npix)))
         COMM.barrier()
 
         # these are the experient ids corresponding to exper-ref-spectrum input file lines , for this rank
@@ -238,12 +256,26 @@ class Script:
 
             # set parameter objects for this shot
             Modeler.PAR = Modeler.SimulatorParamsForExperiment(self.SIM, bests[i_exp])
-            Modeler.spectrum = spectrum  # store the spectrum as part of the modeler
-            #self.SIM.spectrum = spectrum
-            #Modeler.xray_beams = self.SIM.beam.xray_beams
+            #Modeler.spectrum = spectrum  # store the spectrum as part of the modeler
+            self.SIM.beam.spectrum = spectrum
+            Modeler.spectrum = spectrum
+            Modeler.xray_beams = self.SIM.beam.xray_beams
 
             # define the fcell global index for each modeled pixel
             Modeler.all_fcell_global_idx = np.array([self.SIM.i_fcell_from_asu[h] for h in Modeler.hi_asu_perpix])
+            Modeler.unique_i_fcell = set(Modeler.all_fcell_global_idx)
+            Modeler.is_i_fcell = {}
+            for i_fcell in Modeler.unique_i_fcell:
+                sel = Modeler.all_fcell_global_idx == i_fcell
+                Modeler.is_i_fcell[i_fcell] = sel
+
+            Modeler.sigma_rdout = self.params.refiner.sigma_r / self.params.refiner.adu_per_photon
+
+            Modeler.shiftZ_meters = 0
+            if bests[i_exp] is not None:  # NOTE, bests should almost always be not None
+                if "detz_shift_mm" in list(bests[i_exp]):
+                    Modeler.shiftZ_meters = bests[i_exp].detz_shift_mm.values[0]*1e-3
+
 
         self.SIM.update_Fhkl = Fhkl_updater(self.SIM, Modelers)
 
@@ -278,37 +310,136 @@ class Script:
         total_params = nparam_per_shot*global_Nshots + self.SIM.n_global_fcell
         Fhkl_xidx = list(range(global_Nshots, global_Nshots + self.SIM.n_global_fcell))
 
-
+        # each rank has different modelers, and those will need to each reference different
+        # portions of the global parameter array, and rank_xidx holds the referencing information
         rank_xidx = {}
+        # Also, in this loop we will get the scale parameter info and send it to rank0 for writing
+        scale_param_data = []
         for i_exp in shot_roi_dict:
             xidx_start = shot_mapping[i_exp]*nparam_per_shot
             xidx = list(range(xidx_start, xidx_start+nparam_per_shot))
             xidx += Fhkl_xidx
             rank_xidx[i_exp] = xidx
 
+            Scale_param = Modelers[i_exp].PAR.Scale
+            scale_param_data.append([shot_mapping[i_exp], Scale_param])
+
+        mpi_safe_makedirs(self.params.outdir)
+        mpi_safe_makedirs(os.path.join(self.params.outdir, "x"))
+
+        all_scale_param_data = COMM.reduce(scale_param_data)
+        if COMM.rank==0:
+            tsave = time.time()
+
+            i_shots, Scales = zip(*all_scale_param_data)
+
+            # sometimes a shot is distributed across multiple ranks, hence here are duplicates
+            # in all_scale_param_data, so we will remove the duplicates here
+            output_Scales = {}
+            for i_shot in i_shots:
+                if i_shot not in output_Scales:
+                    output_Scales[i_shot] = Scales[i_shot]
+
+            # at this point there should be a single scale per shot! We verify that here:
+            ordered_shot_inds = np.sort(list(output_Scales.keys()))
+            assert np.all(ordered_shot_inds == np.arange(global_Nshots))
+            scale_params = [output_Scales[i_shot] for i_shot in range(global_Nshots)]
+
+            # save the parameter objects to pickle files using numpy
+            scale_params_file =os.path.join(self.params.outdir, "x", "scale_params.npy")
+            Fhkl_params_file =os.path.join(self.params.outdir, "x", "Fhkl_params.npy")
+            print("Saving scale parameter objects to %s" % scale_params_file)
+            np.save(scale_params_file, scale_params)
+            print("Saving Fhkl parameter objects to %s" % Fhkl_params_file)
+            np.save(Fhkl_params_file, self.SIM.Fhkl_modelers)
+            tsave = time.time()-tsave
+            print("Time to save parameter arrays: %f sec" % tsave)
+            # These files can be used later in conjunction with the x-array output
+        COMM.barrier()
+
         x0 = np.array([1] * total_params)
 
-        sigma_rdout = self.params.refiner.sigma_r / self.params.refiner.adu_per_photon
-        mpi_safe_makedirs(self.params.outdir)
-
+        # save the initial models
         for i_exp in Modelers.keys():
             M = Modelers[i_exp]
+            #self.SIM.D.nopolar=True
 
-            best_model, _ = model(x0[rank_xidx[i_exp]], self.SIM, M, compute_grad=False)
-            best_model += M.all_background
+            if self.params.sanity_test_hkl_variation:
+                model(x0[rank_xidx[i_exp]], self.SIM, M, compute_grad=False, sanity_test=0)
+                continue
+            else:
+                _, _, best_mod = model(x0[rank_xidx[i_exp]], self.SIM, M, compute_grad=False)
+            #self.SIM.D.nopolar=False
+            if self.params.sanity_test_models:
+                data_subimg, model_subimg, strong_subimg, bragg_subimg = get_data_model_pairs(M.rois, M.pids,
+                                                                                              M.roi_id, best_mod-M.all_background,
+                                                                                              M.all_data,
+                                                                                              background=M.all_background)
+                assert bests[i_exp] is not None
+                #assert "best_model_image_file" in list(bests[i_exp])
+                assert "stage1_output_img" in list(bests[i_exp])
+                h = h5py.File(bests[i_exp].stage1_output_img.values[0], 'r')
+                max_diffs = []
+                for i in range(h['rois'].shape[0]):
+                    assert h['pids'][i] == M.pids[i]
+                    assert np.all(h['rois'][i] == M.rois[i])
+                    ref_img = h['bragg/roi%d' %i][()]
+                    current_img = bragg_subimg[i]
+                    #assert np.allclose(ref_img, current_img)
+                    print(i)
+
+                    rois_per_panel = {M.pids[i]: [M.rois[i]]}
+                    model_from_nanoBragg = utils.roi_spots_from_pandas(bests[i_exp], rois_per_panel, quiet=True,
+                                                        mtz_file=self.params.simulator.structure_factors.mtz_name,
+                                                        mtz_col=self.params.simulator.structure_factors.mtz_column,
+                                                        cuda=False, reset_Bmatrix=True, nopolar=True,
+                                                        force_no_detector_thickness=True,
+                                                        norm_by_nsource=True)
+                    x1,x2,y1,y2 = M.rois[i]
+                    nanoBragg_img = model_from_nanoBragg[M.pids[i]][y1:y2, x1:x2]
+                    nanoBragg_img *= self.SIM.D.spot_scale
+                    #nanoBragg_img /= len(self.SIM.D.xray_beams)
+
+                    max_diff = np.abs(nanoBragg_img - current_img)
+                    max_diffs.append(max_diff)
+                    assert np.allclose(nanoBragg_img, current_img)
+                #all_m = []
+                #for m in max_diffs:
+                #    m = m.ravel()
+                #    all_m.append(m)
+                #all_m = np.hstack(all_m)
+                #import pylab as plt
+                #plt.hist(all_m, bins=100)
+                #ax = plt.gca()
+                #ax.set_yscale("log")
+                #ax.tick_params(labelsize=12)
+                #plt.xlabel("photons", fontsize=14)
+                #plt.ylabel("# of pixels", fontsize=14)
+                #ax.grid(1, alpha=0.5, which='both')
+                #plt.show()
+
+                #print(max_diffs, np.max(max_diffs))
+                exit()
             img_path = "rank%d_img%d_before.h5" %(COMM.rank, i_exp)
             img_path = os.path.join(self.params.outdir, img_path)
-            save_model_Z(img_path, M.all_data, best_model, M.pan_fast_slow, sigma_rdout, M.all_trusted)
+            save_model_Z(img_path, M, best_mod)
+        if self.params.sanity_test_hkl_variation:
+            COMM.barrier()
+            if COMM.rank == 0:
+                print("Sanity checked hkl variation")
+            exit()
 
-        x = Minimize(x0, rank_xidx, self.params, self.SIM, Modelers, ntimes, global_Nshots)
+        min_out = Minimize(x0, rank_xidx, self.params, self.SIM, Modelers, ntimes, global_Nshots)
+        x = min_out.x
+        # TODO analyze the convergence data here
 
+        # save the final models
         for i_exp in Modelers:
             M = Modelers[i_exp]
-            best_model, _ = model(x[rank_xidx[i_exp]], self.SIM, M, compute_grad=False)
-            best_model += M.all_background
+            _,_,best_mod = model(x[rank_xidx[i_exp]], self.SIM, M, compute_grad=False)
             img_path = "rank%d_img%d_after.h5" %(COMM.rank, i_exp)
             img_path = os.path.join(self.params.outdir, img_path)
-            save_model_Z(img_path, M.all_data, best_model, M.pan_fast_slow, sigma_rdout, M.all_trusted)
+            save_model_Z(img_path, M, best_mod)
 
 
 def get_diffBragg_simulator(expt, params):
@@ -322,7 +453,7 @@ def get_diffBragg_simulator(expt, params):
     return SIM
 
 
-def count_rois(lines):
+def count_rois(lines, quiet):
     info = []
     for i_line, line in enumerate(lines):
         if i_line % COMM.size != COMM.rank:
@@ -352,7 +483,7 @@ def count_rois(lines):
     for shot in shot_rois:
         roi_s = ",".join(map(str, shot_rois[shot]))
         out += "\tShot %d; rois=%s\n" % (shot, roi_s)
-    print(out+"\n")
+    if not quiet: print(out+"\n")
     return shot_rois
 
 
@@ -386,6 +517,7 @@ class DataModeler:
 
         self.Hi_asu = None
         self.hi_asu_perpix = None
+        self.all_nominal_l = []
 
     def GatherFromExperiment(self, exp, ref, sg_symbol, ref_indices=None):
         """
@@ -454,13 +586,13 @@ class DataModeler:
         all_sigmas = []
         all_background = []
         roi_id = []
+        self.all_nominal_l = []
         #refl_id = []
         for i_roi in range(len(self.rois)):
             pid = self.pids[i_roi]
             x1, x2, y1, y2 = self.rois[i_roi]
             Y, X = np.indices((y2 - y1, x2 - x1))
             data = img_data[pid, y1:y2, x1:x2].copy()
-
 
             all_fast += list(X.ravel() + x1)
             all_slow += list(Y.ravel() + y1)
@@ -480,6 +612,7 @@ class DataModeler:
             all_pid += [pid] * npix
             hi_asu_perpix += [self.Hi_asu[i_roi]] * npix
             roi_id += [i_roi] * npix
+            self.all_nominal_l += [Hi[i_roi][2]]*npix  # this is the nominal l component of the miller index in the P1 setting
             #refl_id += [self.refl_index[i_roi]] * npix
         pan_fast_slow = np.ascontiguousarray((np.vstack([all_pid, all_fast, all_slow]).T).ravel())
         self.pan_fast_slow = flex.size_t(pan_fast_slow)
@@ -496,7 +629,7 @@ class DataModeler:
         self.u_id = set(self.roi_id)
         return True
 
-    def SimulatorParamsForExperiment(self,SIM, best=None):
+    def SimulatorParamsForExperiment(self, SIM, best=None):
         """optional best parameter is a single row of a pandas datafame containing the starting
         models, presumably optimized from a previous minimzation using this program"""
         ParameterType = RangedParameter
@@ -515,7 +648,15 @@ class DataModeler:
 
         #ucell_man = utils.manager_from_crystal(self.E.crystal)
         PAR.Umatrix = sqr(self.E.crystal.get_U())
-        PAR.Bmatrix = sqr(self.E.crystal.get_B())
+
+        # NOTE intermitent fix for Bmatrix
+        # ideally this:
+        #PAR.Bmatrix = sqr(self.E.crystal.get_B())
+        # but for now this:
+        ucell_params =  best[["a", "b", "c", "al", "be", "ga"]].values[0]
+        ucell_man = utils.manager_from_params(ucell_params)
+        PAR.Bmatrix = ucell_man.B_recipspace
+
         PAR.Nabc = tuple(best.ncells.values[0])
 
         return PAR
@@ -528,44 +669,30 @@ def Minimize(x0, rank_xidx, params, SIM, Modelers, ntimes, nshots_total):
         dev = COMM.rank % params.refiner.num_devices
     SIM.D.device_Id = dev
 
-    target = TargetFunc()
+    target = TargetFunc(params, SIM)
     niter = params.niter
     SIM.D.refine(FHKL_ID)
-    args = (rank_xidx, SIM, Modelers, not params.quiet, params, True, ntimes)
 
+    if params.method in ["Nelder-Mead", "Powell"]:
+        compute_grad = False
+        args = (rank_xidx, SIM, Modelers, True, params, False, ntimes)
+    else:
+        args = (rank_xidx, SIM, Modelers, True, params, True, ntimes)
+        compute_grad = True
     out = basinhopping(target, x0,
                        niter=niter,
                        minimizer_kwargs={'args': args, "method": params.method,
-                                         "jac": True,
+                                         "jac": compute_grad,
                                          'hess': params.hess},
                        T=params.temp,
                        callback=None,
                        disp=not params.quiet and COMM.rank==0,
                        stepsize=params.stepsize)
 
-    P = out.x
-    return P
-
-
-def get_data_model_pairs(rois, pids, roi_id, best_model, all_data, strong_flags=None):
-    all_dat_img, all_mod_img = [], []
-    all_strong = []
-    for i_roi in range(len(rois)):
-        x1, x2, y1, y2 = rois[i_roi]
-        pid = pids[i_roi]
-        mod = best_model[roi_id == i_roi].reshape((y2 - y1, x2 - x1))
-        if strong_flags is not None:
-            strong = strong_flags[roi_id == i_roi].reshape((y2 - y1, x2 - x1))
-            all_strong.append(strong)
-        else:
-            all_strong.append(None)
-        # dat = img_data[pid, y1:y2, x1:x2]
-        dat = all_data[roi_id == i_roi].reshape((y2 - y1, x2 - x1))
-        all_dat_img.append(dat)
-        all_mod_img.append(mod)
-        # print("Roi %d, max in data=%f, max in model=%f" %(i_roi, dat.max(), mod.max()))
-    return all_dat_img, all_mod_img, all_strong
-
+    # save the final value for x
+    #target.all_x.append(out.x)
+    #target.save_x(optimized=True)
+    return out
 
 class SimParams:
     def __init__(self):
@@ -577,8 +704,8 @@ class SimParams:
         self.center = None # fdp edge center
         self.slope = None # fdp edge slope
 
-@profile
-def model(x, SIM, Modeler, compute_grad=True):
+#@profile
+def model(x, SIM, Modeler, compute_grad=True, sanity_test=None):
 
     pfs = Modeler.pan_fast_slow
     PAR = Modeler.PAR
@@ -587,62 +714,191 @@ def model(x, SIM, Modeler, compute_grad=True):
     SIM.D.Umatrix = PAR.Umatrix
     SIM.D.Bmatrix = PAR.Bmatrix
     SIM.D.set_ncells_values(PAR.Nabc)
+    SIM.D.shift_origin_z(SIM.detector, Modeler.shiftZ_meters)  # set the originZ as SIM.detector.origin plus the shiftZ which should be in meters
+    # detector shift code looks like
+    # for (int pid=0; pid< detector.size(); pid++)
+    #  pix0_vectors[pid*3 + 2] = detector[pid].get_origin()[2]/1000.0 + shiftZ;
     #print(PAR.Nabc)
     #print(PAR.Umatrix)
     #print(PAR.Bmatrix)
 
     # update the energy spectrum
-    SIM.beam.spectrum = Modeler.spectrum
-    SIM.D.xray_beams = SIM.beam.xray_beams
+    #SIM.beam.spectrum = Modeler.spectrum
+    #SIM.D.xray_beams = SIM.beam.xray_beams
     #print("Simulating %d energy channels" % len(SIM.D.xray_beams))
-    #SIM.D.xray_beams = Modeler.xray_beams #SIM.beam.xray_beams
+    SIM.D.xray_beams = Modeler.xray_beams #SIM.beam.xray_beams
     #SIM.D.update_xray_beams(SIM.beam.xray_beams)
 
     # how many parameters we simulate
     npix = int(len(pfs) / 3)
     #print("Simulating %d pixels" % npix)
     nparam = len(x)
-    J = np.zeros((nparam, npix))  # Jacobian
+    grad = np.zeros(nparam)  # gradient
 
     # get the scale factor for this shots
     scale_reparam = x[0]
     scale = PAR.Scale.get_val(scale_reparam)
 
-    # compute the forward model, and gradients where required
-    SIM.D.add_diffBragg_spots(pfs)
 
-    model_pix = scale*(SIM.D.raw_pixels_roi[:npix].as_numpy_array())
+    if sanity_test==0:  # test hkl variation within each shoebox
+        SIM.D.track_Fhkl = True
+        PFS = np.reshape(pfs, (npix, 3))
+        uroi = set(Modeler.roi_id)
+        all_good_count_stats = []
+        all_bad_count_stats = []
+        for ii,i_roi in enumerate(uroi):
+            output = Redirect(stdout=True)
+            i_roi_sel = Modeler.roi_id==i_roi
+            with output:
+                sel = np.logical_and(i_roi_sel, Modeler.all_trusted)
+                pfs_roi = PFS[sel]
+                pfs_roi = np.ascontiguousarray(pfs_roi.ravel())
+                pfs_roi = flex.size_t(pfs_roi)
+                SIM.D.add_diffBragg_spots(pfs_roi)
+            i_fcell = Modeler.all_fcell_global_idx[i_roi_sel][0]
+            shoebox_hkl = SIM.asu_from_i_fcell[i_fcell]
+            lines = output.stdout.split("\n")
+            count_stats = {}
+            for l in lines:
+                if l.startswith("Pixel"):
+                    hkl = l.split()[5]
+                    hkl = tuple(map(int, hkl.split(",")))
+                    hkl = utils.map_hkl_list([hkl], True, SIM.space_group_symbol)[0]
+                    count = int(l.split()[8])
+                    if hkl in count_stats:
+                        count_stats[hkl] += count
+                    else:
+                        count_stats[hkl] = count
+            ntot = sum(count_stats.values())
+            assert shoebox_hkl in count_stats
+            for hkl in count_stats:
+                frac = count_stats[hkl] / float(ntot)
+                #h,k, l = hkl
+                #print("\tstep hkl %d,%d,%d : frac=%.1f%%" % (h,k,l,frac*100))
+                count_stats[hkl] = frac
+            if len(count_stats)==1:
+                all_good_count_stats.append([shoebox_hkl,count_stats])
+            else:
+                all_bad_count_stats .append([shoebox_hkl, count_stats])
+        if all_bad_count_stats:
+            print("Shot %s had %d /  %d rois with HKL variation" %(Modeler.exp_name, len(all_bad_count_stats), len(uroi)))
+            percs = [stats[sb_hkl]*100 for sb_hkl, stats in all_bad_count_stats]
+            ave_perc = sum(percs) / len(percs)
+            min_perc = min(percs)
+            nmax = max(len(stats) for _,stats in all_bad_count_stats)
+            print("\tMin %.1f%%, Mean=%.1f%%, most variation: %d hkls in a shoebox" %(min_perc, ave_perc, nmax))
+
+            for sb_h,stats in all_bad_count_stats:
+                h,k,l = zip(*stats.keys())
+                if len(set(h))>1 or len(set(k))>1:
+                    print("Weird HK vary: shot %s" % Modeler.exp_name, sb_h)
+                if not np.all(np.sort(l) == np.arange(min(l), min(l)+len(l))):
+                    print("Weird L sort: shot %s" % Modeler.exp_name, sb_h)
+                if len(stats) > 3:
+                    print("Weird Nmax: shot %s" % Modeler.exp_name, sb_h)
+
+        return  # end sanity test on hkl variation
+
+    # compute the forward model, and gradients when instructed
+    SIM.D.add_diffBragg_spots(pfs, Modeler.all_nominal_l)
+    bragg = scale*(SIM.D.raw_pixels_roi[:npix].as_numpy_array())
+
+    model_pix = bragg + Modeler.all_background
+    resid = (Modeler.all_data - model_pix)
+    resid_square = resid ** 2
+    V = model_pix + Modeler.sigma_rdout ** 2
 
     if compute_grad:
-        # compute the scale factor gradient term, which is related directly to the forward model
-        scale_grad = model_pix / scale
-        scale_grad = PAR.Scale.get_deriv(scale_reparam, scale_grad)
-        J[0] += scale_grad
+        common_grad_term = (0.5 / V * (1 - 2 * resid - resid_square / V))
 
-        # TODO add a dimension to get_derivative_pixels(FHKL_ID), such that pixels can hold information on multiple HKL
+        # compute the scale factor gradient term, which is related directly to the forward model
+        scale_grad = bragg / scale
+        scale_grad = PAR.Scale.get_deriv(scale_reparam, scale_grad)
+        grad[0] += (common_grad_term * scale_grad)[Modeler.all_trusted].sum()
+
+        # TODO add a dimension to get_derivative_pixels(FHKL_ID), in case that pixels hold information on multiple HKL
         fcell_grad = SIM.D.get_derivative_pixels(FHKL_ID)
         fcell_grad = scale * (fcell_grad[:npix].as_numpy_array())
-        unique_i_fcell = set(Modeler.all_fcell_global_idx)
-        for i_fcell in unique_i_fcell:
-            sel = Modeler.all_fcell_global_idx==i_fcell
-            # TODO sanity checks here ?
+        for i_fcell in Modeler.unique_i_fcell:
+            sel = Modeler.is_i_fcell[i_fcell]
             this_fcell_grad = fcell_grad[sel]
             rescaled_amplitude = x[1+i_fcell]
+            #TODO try numexpr to speed up the trig operations in get_deriv
             this_fcell_grad = SIM.Fhkl_modelers[i_fcell].get_deriv(rescaled_amplitude, this_fcell_grad)
-            J[1+i_fcell,sel] += this_fcell_grad
 
-    return model_pix, J
+            this_common_g = common_grad_term[sel]
+            this_trusted = Modeler.all_trusted[sel]
+            grad[1+i_fcell] += (this_common_g*this_fcell_grad)[this_trusted].sum()
+    resid_term = (.5*(np.log(2*np.pi*V) + resid_square / V))[Modeler.all_trusted].sum()   # negative log Likelihood target
+
+    ## sanity check on amplitudes:
+    if sanity_test==1:
+        bad_rois = []
+        for i in set(Modeler.roi_id):
+            bragg_i = bragg[Modeler.roi_id == i]
+            if np.all(bragg_i == 0):
+                bad_rois.append(i)
+            else:
+                i_fcell = Modeler.all_fcell_global_idx[Modeler.roi_id == i][0]
+                if np.isnan(grad[-SIM.n_global_fcell+i_fcell]):
+                    bad_rois.append(i)
+
+        if bad_rois:
+            #raise ValueError("Oops")
+            for b in bad_rois:
+                i_fcell = Modeler.all_fcell_global_idx[Modeler.roi_id == b][0]
+                hkl_asu = SIM.asu_from_i_fcell[i_fcell]
+                try:
+                    bad_amp = SIM.crystal.miller_array.value_at_index(hkl_asu)
+                except AssertionError:
+                    bad_amp = np.nan
+                value_of_grad = grad[-SIM.n_global_fcell + i_fcell]
+                h,k,l = hkl_asu
+                print("No signal in Bragg peak at %d %d %d: Famp=%f, grad=%f" %(h,k,l,bad_amp, value_of_grad))
+            print("NANs above indicate an hkl that is not in the starting structure factor array")
+            print("Others indicate that the model has no signal in the shoebox")
+            print("Remove the bad ROIS from the input, exiting.")
+
+    return resid_term, grad, model_pix
 
 
 class TargetFunc:
-    def __init__(self):
+    def __init__(self, params, SIM):
         self.all_x = []
+        self.params = params
+        self.SIM = SIM
+        self.save_count = 0
+        self.num_minimum = 0
 
     def __call__(self, x, *args, **kwargs):
         self.all_x.append(x)
+        if len(self.all_x) == self.params.x_write_freq:
+            self.save_x()
         return target_func(x, *args, **kwargs)
 
-@profile
+    def save_x(self, optimized=False):
+        xdir = os.path.join(self.params.outdir, "x")
+        mpi_safe_makedirs(xdir)
+        if COMM.rank == 0:
+            outpath = os.path.join(xdir, "x_info_hop%d_%d.npz" % (self.num_minimum,self.save_count))
+            if optimized:
+                outpath = os.path.join(xdir, "x_info_hop%d_final.npz" % self.num_minimum)
+            Fidx, Fdata = update_Fhkl(self.SIM, self.all_x[-1])
+            # TODO save scale factors
+            np.savez(outpath, x=self.all_x[-1], Fidx=Fidx, Fdata=Fdata, Nhkl=self.SIM.n_global_fcell)
+        COMM.barrier()
+        self.all_x = []
+        self.save_count += 1
+
+    def at_minimum(self, x, f, accept):
+        self.all_x.append(x)
+        self.save_x(optimized=True)
+        self.save_count = 0
+        self.num_minimum += 1
+        self.all_x = []
+
+
+#@profile
 def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_grad=True, ntimes=None, save=None):
     verbose = verbose and COMM.rank==0
     t_start = time.time()
@@ -653,65 +909,64 @@ def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_
 #   do a global update of the Fhkl parameters in the simulator object
     t_update = time.time()
     SIM.update_Fhkl(SIM, x)
-    #update_Fhkl(SIM, x)
     t_update = time.time()-t_update
 
 
     all_t_model = 0
     for t in timestamps:
-        restraint_n = ntimes[t]
-        trusted_t = Modelers[t].all_trusted
+        # data modeler for this expt
+        Mod_t = Modelers[t]
 
         #  x_t should be [G,Fhkl0, Fhkl1, Fhkl2, ..]
         x_t = x[rank_xidx[t]]
 
         t_model = time.time()
-        model_bragg, Jac = model(x_t, SIM, Modelers[t], compute_grad=compute_grad)
+
+        if params.sanity_test_hkl_variation:
+            sanity_test = 0
+        elif params.sanity_test_amplitudes:
+            sanity_test = 1
+        else:
+            sanity_test=None
+
+        resid_term, grad, _ = model(x_t, SIM, Mod_t, compute_grad=compute_grad, sanity_test=sanity_test)
         t_model  = time.time()-t_model
         all_t_model += t_model
 
-        Mod_t = Modelers[t]
-
-        model_pix = model_bragg + Mod_t.all_background
-
-        resid = (Mod_t.all_data - model_pix)
-
-        sigma_rdout = params.refiner.sigma_r / params.refiner.adu_per_photon
-        V = model_pix + sigma_rdout**2
-        resid_square = resid**2
+        # update global target functional
+        fchi += resid_term  #(.5*(np.log(2*np.pi*V) + resid_square / V))[trusted_t].sum()   # negative log Likelihood target
 
         # if a shot is divided across ranks, then the restraint term
         # for that shot will be computed n times, hence we need to reduce
         # restraint terms by that factor
-        nn = 1. / restraint_n
+        nn = 1. / ntimes[t]
 
-        # update global target functional
-        fchi += (.5*(np.log(2*np.pi*V) + resid_square / V))[trusted_t].sum()   # negative log Likelihood target
 
-        # scale factor restraint
+        # scale factor "G" restraint
         G_rescaled = x_t[0]
         G = Mod_t.PAR.Scale.get_val(G_rescaled)
         delG = params.centers.G - G
         G_V = params.betas.G
         fG += nn*(.5*(np.log(2*np.pi*G_V) + delG**2/G_V))
 
-
         if compute_grad:
-            grad_term = (0.5 / V * (1 - 2 * resid - resid_square / V))[trusted_t]
-            Jac = Jac[:, trusted_t]
-            g_t = np.array([np.sum(grad_term*Jac[param_idx]) for param_idx in range(Jac.shape[0])])
+            # copy the per-shot contributions of the gradients to the global gradient array
 
             # Fhkl term updates
-            g[-SIM.n_global_fcell:] += g_t[-SIM.n_global_fcell:]
+            g[-SIM.n_global_fcell:] += grad[-SIM.n_global_fcell:]
 
             # scale gradient term
-            Gidx = rank_xidx[t][0]
-            g[Gidx] += g_t[0]
+            spot_scale_idx = rank_xidx[t][0]
+            g[spot_scale_idx] += grad[0]
 
             # scale restraint term
-            g[Gidx] += nn*Mod_t.PAR.Scale.get_deriv(G_rescaled, -delG / G_V)
+            g[spot_scale_idx] += nn*Mod_t.PAR.Scale.get_deriv(G_rescaled, -delG / G_V)
 
     # bring in data from all ranks
+    if params.sanity_test_amplitudes:
+        print("Sanity checked amplitudes, exiting")
+        COMM.barrier()
+        exit()
     t_mpi_start = time.time()
     fchi = COMM.bcast(COMM.reduce(fchi))
     fG = COMM.bcast(COMM.reduce(fG))
@@ -727,12 +982,13 @@ def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_
     var_F = np.sum(Fhkl_init**2)
     f_Fhkl = np.sum(delta_F**2 / var_F)
 
-    # update the restraint term for structure factor amplitudes
-    Fhkl_rescaled = x[-SIM.n_global_fcell:]
-    Fhkl_restraint_grad = -2*delta_F / var_F
-    g[-SIM.n_global_fcell:] += np.array([\
-        SIM.Fhkl_modelers[i_fcell].get_deriv(Fhkl_rescaled[i_fcell], Fhkl_restraint_grad[i_fcell])\
-        for i_fcell in range(SIM.n_global_fcell)])
+    if compute_grad:
+        # update the gradient restraint term for structure factor amplitudes
+        Fhkl_rescaled = x[-SIM.n_global_fcell:]
+        Fhkl_restraint_grad = -2*delta_F / var_F
+        g[-SIM.n_global_fcell:] += np.array([\
+            SIM.Fhkl_modelers[i_fcell].get_deriv(Fhkl_rescaled[i_fcell], Fhkl_restraint_grad[i_fcell])\
+            for i_fcell in range(SIM.n_global_fcell)])
 
 
     f = fchi + fG + f_Fhkl
@@ -752,18 +1008,21 @@ def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_
     if verbose:
         print("F=%10.7g (chi: %.1f%%, G: %.1f%%, Fhkl: %.1f%%); |g|=%10.7e; Total iter time=%.1f millisec (mpi: %.1f%% , model: %.1f%%, updateFhkl: %.1f%%)" \
               % (f, chi, gg, ff, gnorm, t_total*1000, frac_mpi, frac_model, frac_update))
-    return f, g
+    if compute_grad:
+        return f, g
+    else:
+        return f
 
 
-
-def save_model_Z(img_path, Zdata, Zmodel, pfs, sigma_r, trusted):
+def save_model_Z(img_path, Modeler, model_pix):
+    pfs = Modeler.pan_fast_slow
     pids = pfs[0::3]
     xs = pfs[1::3]
     ys = pfs[2::3]
 
-    sigma = np.sqrt(Zdata + sigma_r ** 2)
-    sigma2 = np.sqrt(Zmodel + sigma_r ** 2)
-    Zdiff = Zmodel - Zdata
+    sigma = np.sqrt(Modeler.all_data + Modeler.sigma_rdout ** 2)
+    sigma2 = np.sqrt(model_pix + Modeler.sigma_rdout ** 2)
+    Zdiff = model_pix - Modeler.all_data
     Z = Zdiff / sigma
     Z2 = Zdiff / sigma2
     with h5py.File(img_path, "w") as h5:
@@ -773,7 +1032,7 @@ def save_model_Z(img_path, Zdata, Zmodel, pfs, sigma_r, trusted):
         h5.create_dataset("pids", data=pids, **comp)
         h5.create_dataset("ys", data=ys, **comp)
         h5.create_dataset("xs", data=xs, **comp)
-        h5.create_dataset("trusted", data=trusted, **comp)
+        h5.create_dataset("trusted", data=Modeler.all_trusted, **comp)
 
 
 class Fhkl_updater:
@@ -792,7 +1051,7 @@ class Fhkl_updater:
             for hkl_equiv in equivs:
                 self.update_idx.append(hkl_equiv)
 
-    @profile
+    #@profile
     def __call__(self, SIM, x):
         #idx, data = SIM.D.Fhkl_tuple
         update_amps = []
@@ -805,12 +1064,12 @@ class Fhkl_updater:
         update_amps = flex.double(update_amps)
         SIM.D.quick_Fhkl_update((self.update_idx, update_amps))
 
+
 def update_Fhkl(SIM, x):
     # NOTE, this is the slow version use Fhkl_updater for iterations during ensemble refinement
-    #idx, data = SIM.D.Fhkl_tuple
-    update_idx = flex.miller_index()
-    update_amp = flex.double()
+    #Fidx, Fdata = SIM.D.Fhkl_tuple
 
+    Fidx, Fdata = [],[]
     for i_fcell in range(SIM.n_global_fcell):
         # get the asu miller index
         hkl_asu = SIM.asu_from_i_fcell[i_fcell]
@@ -821,21 +1080,13 @@ def update_Fhkl(SIM, x):
 
         # now surgically update the p1 array in nanoBragg with the new amplitudes
         # (need to update each symmetry equivalent)
-        equivs = [i.h() for i in miller.sym_equiv_indices(SIM.space_group, hkl_asu).indices()]
-        for h_equiv in equivs:
-            # get the nanoBragg p1 miller table index corresponding to this hkl equivalent
-            #try:
-            p1_idx = SIM.idx_from_p1[h_equiv]
-            #except KeyError as err:
-            #    if self.debug:
-            #        self.print( h_equiv, err)
-            #    continue
-            SIM.Fdata[p1_idx] = new_amplitude  # set the data with the new value
-            #update_amp.append(new_amplitude)
-            #update_idx.append(h_equiv)
-    ##SIM.D.quick_Fhkl_update((SIM.Fidx, SIM.Fdata))
-    #SIM.D.quick_Fhkl_update((update_idx, update_amp))
-    SIM.D.Fhkl_tuple = SIM.Fidx, SIM.Fdata  # update
+        Fidx.append(hkl_asu)
+        Fdata.append(new_amplitude)
+        #equivs = [i.h() for i in miller.sym_equiv_indices(SIM.space_group, hkl_asu).indices()]
+        #for h_equiv in equivs:
+        #    p1_idx = SIM.idx_from_p1[h_equiv]
+        #    Fdata[p1_idx] = new_amplitude  # set the data with the new value
+    return Fidx,Fdata
 
 def setup_Fhkl_attributes(SIM, params, Modelers):
     SIM.space_group_symbol = params.space_group

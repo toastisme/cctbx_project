@@ -39,7 +39,7 @@ void diffBragg_loopy(
         image_type& d_fp_fdp_images,
         const int Nsteps, int _printout_fpixel, int _printout_spixel, bool _printout, CUDAREAL _default_F,
         int oversample, bool _oversample_omega, CUDAREAL subpixel_size, CUDAREAL pixel_size,
-        CUDAREAL detector_thickstep, CUDAREAL _detector_thick, CUDAREAL close_distance, CUDAREAL detector_attnlen,
+        CUDAREAL detector_thickstep, CUDAREAL _detector_thick, std::vector<CUDAREAL>& close_distances, CUDAREAL detector_attnlen,
         bool use_lambda_coefficients, CUDAREAL lambda0, CUDAREAL lambda1,
         MAT3& eig_U, MAT3& eig_O, MAT3& eig_B, MAT3& RXYZ,
         std::vector<VEC3,Eigen::aligned_allocator<VEC3> >& dF_vecs,
@@ -84,7 +84,8 @@ void diffBragg_loopy(
         int Npix_to_allocate, bool no_Nabc_scale,
         std::vector<CUDAREAL>& fpfdp,
         std::vector<CUDAREAL>& fpfdp_derivs,
-        std::vector<CUDAREAL>&atom_data){ // diffBragg cuda loopy
+        std::vector<CUDAREAL>&atom_data,
+        std::vector<int>&nominal_l){ // diffBragg cuda loopy
 
 
     if (phi0 != 0 || phisteps > 1){
@@ -167,6 +168,8 @@ void diffBragg_loopy(
             gpuErr(cudaMallocManaged((void **)&cp.cu_UMATS_RXYZ_prime, UMATS_RXYZ_prime.size()*sizeof(MAT3)));
         if (UMATS_RXYZ_dbl_prime.size()>0)
             gpuErr(cudaMallocManaged((void **)&cp.cu_UMATS_RXYZ_dbl_prime, UMATS_RXYZ_dbl_prime.size()*sizeof(MAT3)));
+        if(nominal_l.size() >0)
+            gpuErr(cudaMallocManaged(&cp.cu_nominal_l, nominal_l.size()*sizeof(int)));
 
         gpuErr(cudaMallocManaged((void **)&cp.cu_dB_Mats, dB_Mats.size()*sizeof(MAT3)));
         gpuErr(cudaMallocManaged((void **)&cp.cu_dB2_Mats, dB2_Mats.size()*sizeof(MAT3)));
@@ -179,6 +182,7 @@ void diffBragg_loopy(
         gpuErr(cudaMallocManaged(&cp.cu_sdet_vectors, fdet_vectors.size()*sizeof(CUDAREAL)));
         gpuErr(cudaMallocManaged(&cp.cu_odet_vectors, fdet_vectors.size()*sizeof(CUDAREAL)));
         gpuErr(cudaMallocManaged(&cp.cu_pix0_vectors, fdet_vectors.size()*sizeof(CUDAREAL)));
+        gpuErr(cudaMallocManaged(&cp.cu_close_distances, close_distances.size()*sizeof(CUDAREAL)));
 
         if (fpfdp.size() > 0){
             gpuErr(cudaMallocManaged(&cp.cu_fpfdp, fpfdp.size()*sizeof(CUDAREAL)));
@@ -208,7 +212,7 @@ void diffBragg_loopy(
 
         //gettimeofday(&t3, 0));
         gpuErr(cudaMallocManaged(&cp.cu_floatimage, Npix_to_allocate*sizeof(CUDAREAL) ));
-        gpuErr(cudaMallocManaged(&cp.cu_d_fcell_images, Npix_to_allocate*sizeof(CUDAREAL)));
+        gpuErr(cudaMallocManaged(&cp.cu_d_fcell_images, Npix_to_allocate*3*sizeof(CUDAREAL)));
         gpuErr(cudaMallocManaged(&cp.cu_d_eta_images, Npix_to_allocate*3*sizeof(CUDAREAL)));
         gpuErr(cudaMallocManaged(&cp.cu_d2_eta_images, Npix_to_allocate*3*sizeof(CUDAREAL)));
         gpuErr(cudaMallocManaged(&cp.cu_d_Umat_images, Npix_to_allocate*3*sizeof(CUDAREAL) ));
@@ -355,12 +359,18 @@ void diffBragg_loopy(
             cp.cu_odet_vectors[i] = odet_vectors[i];
             cp.cu_pix0_vectors[i] = pix0_vectors[i];
         }
+        for(int i=0; i < close_distances.size();i++){
+            cp.cu_close_distances[i] = close_distances[i];
+        }
         if (verbose>1)
           printf("H2D Done copying detector vectors\n");
     }
 //  END  DETECTOR VECTORS
 
     if ( ALLOC || FORCE_COPY){
+      for(int i=0; i< nominal_l.size(); i++){
+        cp.cu_nominal_l[i] = nominal_l[i];
+      }
       for (int i=0; i< atom_data.size(); i++){
         cp.cu_atom_data[i] = atom_data[i];
       }
@@ -461,7 +471,7 @@ void diffBragg_loopy(
         cp.cu_d_fp_fdp_images,
         Nsteps, _printout_fpixel, _printout_spixel, _printout, _default_F,
         oversample,  _oversample_omega, subpixel_size, pixel_size,
-        detector_thickstep, _detector_thick, close_distance, detector_attnlen,
+        detector_thickstep, _detector_thick, cp.cu_close_distances, detector_attnlen,
         detector_thicksteps, number_of_sources, phisteps, UMATS.size(),
         use_lambda_coefficients, lambda0, lambda1,
         eig_U, eig_O, eig_B, RXYZ,
@@ -496,7 +506,7 @@ void diffBragg_loopy(
         cp.cu_odet_vectors, cp.cu_pix0_vectors,
         _nopolar, _point_pixel, _fluence, _r_e_sqr, _spot_scale, Npanels, aniso_eta, no_Nabc_scale,
         cp.cu_fpfdp,  cp.cu_fpfdp_derivs, cp.cu_atom_data, num_atoms,
-        refine_fp_fdp);
+        refine_fp_fdp, cp.cu_nominal_l);
 
     error_msg(cudaGetLastError(), "after kernel call");
 
@@ -514,9 +524,9 @@ void diffBragg_loopy(
 //  COPY BACK FROM DEVICE
     for (int i=0; i< Npix_to_model; i++){
         floatimage[i] = cp.cu_floatimage[i];
-        d_fcell_images[i] = cp.cu_d_fcell_images[i];
     }
     for (int i=0; i<3*Npix_to_model; i++){
+        d_fcell_images[i] = cp.cu_d_fcell_images[i];
         d_Umat_images[i] = cp.cu_d_Umat_images[i];
         d2_Umat_images[i] = cp.cu_d2_Umat_images[i];
         d_panel_rot_images[i] = cp.cu_d_panel_rot_images[i];
@@ -575,6 +585,9 @@ void freedom(diffBragg_cudaPointers& cp){
         gpuErr(cudaFree(cp.cu_sdet_vectors));
         gpuErr(cudaFree(cp.cu_odet_vectors));
         gpuErr(cudaFree(cp.cu_pix0_vectors));
+        gpuErr(cudaFree(cp.cu_close_distances));
+        if (cp.cu_nominal_l != NULL)
+          gpuErr(cudaFree(cp.cu_nominal_l));
         if (cp.cu_atom_data != NULL)
             gpuErr(cudaFree(cp.cu_atom_data));
         if(cp.cu_fpfdp != NULL)

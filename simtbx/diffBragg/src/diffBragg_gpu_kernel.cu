@@ -18,7 +18,7 @@ void gpu_sum_over_steps(
         CUDAREAL* d_fp_fdp_images,
         const int Nsteps, int _printout_fpixel, int _printout_spixel, bool _printout, CUDAREAL _default_F,
         int oversample, bool _oversample_omega, CUDAREAL subpixel_size, CUDAREAL pixel_size,
-        CUDAREAL detector_thickstep, CUDAREAL _detector_thick, CUDAREAL close_distance, CUDAREAL detector_attnlen,
+        CUDAREAL detector_thickstep, CUDAREAL _detector_thick, const CUDAREAL* __restrict__ close_distances, CUDAREAL detector_attnlen,
         int detector_thicksteps, int sources, int phisteps, int mosaic_domains,
         bool use_lambda_coefficients, CUDAREAL lambda0, CUDAREAL lambda1,
         MAT3 eig_U, MAT3 eig_O, MAT3 eig_B, MAT3 RXYZ,
@@ -58,7 +58,8 @@ void gpu_sum_over_steps(
         bool aniso_eta, bool no_Nabc_scale,
         const CUDAREAL* __restrict__ fpfdp,
         const CUDAREAL* __restrict__ fpfdp_derivs,
-        const CUDAREAL* __restrict__ atom_data, int num_atoms, bool refine_fp_fdp)
+        const CUDAREAL* __restrict__ atom_data, int num_atoms, bool refine_fp_fdp,
+        const int* __restrict__ nominal_l)
 { // BEGIN GPU kernel
 
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -85,7 +86,7 @@ void gpu_sum_over_steps(
     __shared__ int s_oversample, s_detector_thicksteps, s_sources, s_mosaic_domains, s_num_sausages, s_printout_fpixel,
         s_printout_spixel, s_verbose, s_Nsteps;
     __shared__ CUDAREAL s_detector_thickstep, s_detector_attnlen, s_subpixel_size, s_pixel_size, s_lambda0,
-        s_lambda1, sX0, sY0, sZ0, s_close_distance, s_detector_thick, s_default_F,  s_overall_scale, s_kahn_factor;
+        s_lambda1, sX0, sY0, sZ0, s_detector_thick, s_default_F,  s_overall_scale, s_kahn_factor;
     __shared__ bool s_oversample_omega, s_printout, s_nopolar;
     __shared__ VEC3 s_polarization_axis;
 
@@ -156,7 +157,6 @@ void gpu_sum_over_steps(
         s_detector_attnlen = detector_attnlen;
         s_subpixel_size = subpixel_size;
         s_pixel_size = pixel_size;
-        s_close_distance= close_distance;
         s_detector_thick = _detector_thick;
         s_lambda0 = lambda0;
         s_lambda1 = lambda1;
@@ -207,6 +207,10 @@ void gpu_sum_over_steps(
         int _pid = panels_fasts_slows[i_pix*3];
         int _fpixel = panels_fasts_slows[i_pix*3+1];
         int _spixel = panels_fasts_slows[i_pix*3+2];
+        int nom_l = 0;
+        if (s_refine_fcell)
+            nom_l = nominal_l[i_pix];
+        CUDAREAL close_distance = close_distances[_pid];
 
         // reset photon count for this pixel
         double _I=0;
@@ -222,8 +226,8 @@ void gpu_sum_over_steps(
         double pan_orig_manager_dI2[3]= {0,0,0};
         double pan_rot_manager_dI[3]= {0,0,0};
         double pan_rot_manager_dI2[3]= {0,0,0};
-        double fcell_manager_dI=0;
-        double fcell_manager_dI2=0;
+        double fcell_manager_dI[3]={0,0,0};
+        double fcell_manager_dI2[3]={0,0,0};
         double eta_manager_dI[3] = {0,0,0};
         double eta_manager_dI2[3] = {0,0,0};
         double lambda_manager_dI[2] = {0,0};
@@ -276,7 +280,7 @@ void gpu_sum_over_steps(
             VEC3 _diffracted = _pixel_pos/_airpath;
 
             // solid angle subtended by a pixel: (pix/airpath)^2*cos(2theta)
-            CUDAREAL _omega_pixel = s_pixel_size*s_pixel_size/_airpath/_airpath*s_close_distance/_airpath;
+            CUDAREAL _omega_pixel = s_pixel_size*s_pixel_size/_airpath/_airpath*close_distance/_airpath;
 
             // option to turn off obliquity effect, inverse-square-law only
             if(_point_pixel) _omega_pixel = 1.0/_airpath/_airpath;
@@ -627,13 +631,16 @@ void gpu_sum_over_steps(
 
             // checkpoint for Fcell manager
             if (s_refine_fcell){
+                int fcell_idx = _l0 - nom_l + 1;
                 CUDAREAL value = 2*Iincrement/_F_cell ;
                 CUDAREAL value2=0;
                 if (s_compute_curvatures){
                     value2 = value/_F_cell;
                 }
-                fcell_manager_dI += value;
-                fcell_manager_dI2 += value2;
+                if (fcell_idx >=0 && fcell_idx <=2){
+                    fcell_manager_dI[fcell_idx] += value;
+                    fcell_manager_dI2[fcell_idx] += value2;
+                }
             } // end of fcell man deriv
 
             // checkpoint for eta manager
@@ -797,7 +804,7 @@ void gpu_sum_over_steps(
 
         CUDAREAL _airpath_ave = _pixel_pos_ave.norm();
         VEC3 _diffracted_ave = _pixel_pos_ave/_airpath_ave;
-        CUDAREAL _omega_pixel_ave = s_pixel_size*s_pixel_size/_airpath_ave/_airpath_ave*s_close_distance/_airpath_ave;
+        CUDAREAL _omega_pixel_ave = s_pixel_size*s_pixel_size/_airpath_ave/_airpath_ave*close_distance/_airpath_ave;
 
         CUDAREAL _polar = 1;
         if (!s_nopolar){
@@ -887,9 +894,11 @@ void gpu_sum_over_steps(
 
         // update Fcell derivative image
         if(s_refine_fcell){
-            CUDAREAL value = _scale_term*fcell_manager_dI;
-            CUDAREAL value2 = _scale_term*fcell_manager_dI2;
-            d_fcell_images[i_pix] = value;
+            for(int fcell_idx=0; fcell_idx < 3; fcell_idx++){
+                CUDAREAL value = _scale_term*fcell_manager_dI[fcell_idx];
+                CUDAREAL value2 = _scale_term*fcell_manager_dI2[fcell_idx];
+                d_fcell_images[fcell_idx*Npix_to_model+i_pix] = value;
+            }
             //d2_fcell_images[i_pix] = value2;
         }// end Fcell deriv image increment
 

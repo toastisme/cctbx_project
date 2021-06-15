@@ -484,7 +484,7 @@ class Script:
                 if np.isnan(x0[-1]):
                     x0[-1] = Modeler.SIM.shift_param.init
             x = Modeler.Minimize(x0)
-            Modeler.save_up(x, exp, i_exp)
+            Modeler.save_up(x, exp, i_exp, ref)
 
 
 class DataModeler:
@@ -643,6 +643,11 @@ class DataModeler:
                 ucparam = best[["a","b","c","al","be","ga"]].values[0]
                 ucman = utils.manager_from_params(ucparam)
                 self.E.crystal.set_B(ucman.B_recipspace)
+
+            ## TODO , currently need this anyway
+            #ucparam = best[["a","b","c","al","be","ga"]].values[0]
+            #ucman = utils.manager_from_params(ucparam)
+            #self.E.crystal.set_B(ucman.B_recipspace)
 
             # mosaic block
             self.params.init.Nabc = tuple(best.ncells.values[0])
@@ -846,14 +851,12 @@ class DataModeler:
         P = out.x
         return P
 
-    def save_up(self, x, exp, i_exp):
+    def save_up(self, x, exp, i_exp, input_refls):
         # NOTE fixme
         best_model,_ = model(x, self.SIM, self.pan_fast_slow, compute_grad=False)
         print("Optimized:")
         look_at_x(x,self.SIM)
 
-        if self.SIM.num_xtals == 1:
-            save_to_pandas(x, self.SIM, exp, self.params, self.E, i_exp)
 
 
         rank_imgs_outdir = os.path.join(self.params.outdir, "imgs", "rank%d" % COMM.rank)
@@ -867,6 +870,9 @@ class DataModeler:
         basename = os.path.splitext(os.path.basename(exp))[0]
 
         img_path = os.path.join(rank_imgs_outdir, "%s_%s_%d.h5" % (self.params.tag, basename, i_exp))
+
+        if self.SIM.num_xtals == 1:
+            save_to_pandas(x, self.SIM, exp, self.params, self.E, i_exp, input_refls, img_path)
 
         new_refls_file = os.path.join(rank_refls_outdir, "%s_%s_%d.refl" % (self.params.tag, basename, i_exp))
         # save_model_Z(img_path, all_data, best_model, pan_fast_slow, sigma_rdout)
@@ -1404,7 +1410,7 @@ def get_param_from_x(x, SIM):
     return scale, rotX, rotY, rotZ, Na, Nb, Nc,a,b,c,al,be,ga, detz
 
 
-def save_to_pandas(x, SIM, orig_exp_name, params, expt, rank_exp_idx):
+def save_to_pandas(x, SIM, orig_exp_name, params, expt, rank_exp_idx, stg1_refls, stg1_img_path):
     rank_exper_outdir = os.path.join(params.outdir, "expers", "rank%d" % COMM.rank)
     rank_pandas_outdir = os.path.join(params.outdir, "pandas", "rank%d" % COMM.rank)
     for d in [rank_exper_outdir, rank_pandas_outdir]:
@@ -1430,6 +1436,7 @@ def save_to_pandas(x, SIM, orig_exp_name, params, expt, rank_exp_idx):
     RZ = zax.axis_and_angle_as_r3_rotation_matrix(rotZ, deg=False)
     M = RX * RY * RZ
     U = M * sqr(SIM.crystal.dxtbx_crystal.get_U())
+    # TODO set_B matrix as well !!!!!!!!!!!!!!!!
     SIM.crystal.dxtbx_crystal.set_U(U)
     Amats = [SIM.crystal.dxtbx_crystal.get_A()]
     ncells_def_vals = [(0, 0, 0)]
@@ -1481,6 +1488,8 @@ def save_to_pandas(x, SIM, orig_exp_name, params, expt, rank_exp_idx):
     df["oversample"] = params.simulator.oversample
     if params.opt_det is not None:
         df["opt_det"] = params.opt_det
+    df["stage1_refls"] = stg1_refls
+    df["stage1_output_img"] = stg1_img_path
 
     df.to_pickle(pandas_path)
 

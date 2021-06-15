@@ -58,7 +58,9 @@ struct diffBragg_cudaPointers {
   CUDAREAL * cu_sdet_vectors;
   CUDAREAL * cu_odet_vectors;
   CUDAREAL * cu_pix0_vectors;
+  CUDAREAL * cu_close_distances;
 
+  int * cu_nominal_l=NULL;
   CUDAREAL * cu_fpfdp=NULL;
   CUDAREAL * cu_fpfdp_derivs=NULL;
   CUDAREAL * cu_atom_data=NULL;
@@ -114,7 +116,7 @@ void diffBragg_loopy(
         image_type& d_fp_fdp_images,
         const int Nsteps, int _printout_fpixel, int _printout_spixel, bool _printout, CUDAREAL _default_F,
         int oversample, bool _oversample_omega, CUDAREAL subpixel_size, CUDAREAL pixel_size,
-        CUDAREAL detector_thickstep, CUDAREAL _detector_thick, CUDAREAL close_distance, CUDAREAL detector_attnlen,
+        CUDAREAL detector_thickstep, CUDAREAL _detector_thick, std::vector<CUDAREAL>& close_distances, CUDAREAL detector_attnlen,
         bool use_lambda_coefficients, CUDAREAL lambda0, CUDAREAL lambda1,
         MAT3& eig_U, MAT3& eig_O, MAT3& eig_B, MAT3& RXYZ,
         eigVec3_vec& dF_vecs,
@@ -156,7 +158,7 @@ void diffBragg_loopy(
         int detector_thicksteps, int phisteps, int Npix_to_allocate, bool no_Nabc_scale,
         std::vector<double>& fpfdp,
         std::vector<double>& fpfdp_derivs,
-        std::vector<double>& atom_data);
+        std::vector<double>& atom_data, std::vector<int>& nominal_l);
 
 
 void freedom(diffBragg_cudaPointers& cp);

@@ -375,7 +375,8 @@ class SimData:
       self.D.xtal_shape = self.crystal.xtal_shape
       self.update_Fhkl_tuple()
       self.D.Amatrix = Amatrix_dials2nanoBragg(self.crystal.dxtbx_crystal)
-      Nabc = tuple([int(round(x)) for x in self.crystal.Ncells_abc])
+      #Nabc = tuple([int(round(x)) for x in self.crystal.Ncells_abc])
+      Nabc = self.crystal.Ncells_abc
       if len(Nabc) == 1:
         Nabc = Nabc[0], Nabc[0], Nabc[0]
       self.D.Ncells_abc = Nabc
@@ -501,7 +502,7 @@ class SimData:
     self.D.interpolate = interpolate
     self._crystal_properties()
     self._beam_properties()
-    self.D.spot_scale = self.determine_spot_scale()
+    #self.D.spot_scale = self.determine_spot_scale()
     self.D.adc_offset_adu = adc_offset
     self.D.default_F = default_F
 
@@ -550,10 +551,6 @@ class SimData:
           self.D.add_nanoBragg_spots_nks(streambuf(StringIO()))
         else:
           self.D.add_nanoBragg_spots()
-      if  self.using_cuda:
-        self.D.add_nanoBragg_spots_cuda()
-      else:
-        self.D.add_nanoBragg_spots()
 
       if self.using_cuda and _rawpix is not None:
         self.D.raw_pixels = _rawpix

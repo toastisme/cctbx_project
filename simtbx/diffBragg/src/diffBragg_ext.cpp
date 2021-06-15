@@ -11,6 +11,8 @@ namespace boost_python { namespace {
 
   void (simtbx::nanoBragg::diffBragg::*add_diffBragg_spots_A)() = &simtbx::nanoBragg::diffBragg::add_diffBragg_spots;
   void (simtbx::nanoBragg::diffBragg::*add_diffBragg_spots_B)(const nanoBragg::af::shared<size_t>&) = &simtbx::nanoBragg::diffBragg::add_diffBragg_spots;
+  void (simtbx::nanoBragg::diffBragg::*add_diffBragg_spots_C)(const nanoBragg::af::shared<size_t>&, boost::python::list per_pix_nominal_l)
+        = &simtbx::nanoBragg::diffBragg::add_diffBragg_spots;
 
   static void  set_Ndef(simtbx::nanoBragg::diffBragg& diffBragg, boost::python::tuple const& values) {
       diffBragg.set_ncells_def_values(values);
@@ -315,6 +317,9 @@ namespace boost_python { namespace {
       .def("add_diffBragg_spots", add_diffBragg_spots_B,
         "gives derivative of average photon count w.r.t. parameter of choice")
 
+      .def("add_diffBragg_spots", add_diffBragg_spots_C,
+        "gives derivative of average photon count w.r.t. parameter of choice")
+
       /* Run this before running add_diffBragg_spots */
       .def("vectorize_umats",&simtbx::nanoBragg::diffBragg::vectorize_umats,
         "caches the UMATS")
@@ -438,6 +443,11 @@ namespace boost_python { namespace {
                      make_getter(&simtbx::nanoBragg::diffBragg::oversample_omega,rbv()),
                      make_setter(&simtbx::nanoBragg::diffBragg::oversample_omega,dcp()),
                     "whether to use an average solid angle correction per pixel, or one at the sub pixel level")
+
+      .add_property("track_Fhkl",
+                     make_getter(&simtbx::nanoBragg::diffBragg::track_Fhkl,rbv()),
+                     make_setter(&simtbx::nanoBragg::diffBragg::track_Fhkl,dcp()),
+                    "whether to track Fhkl per pixel")
 
       .add_property("fprime_fdblprime",
              make_function(&get_fpfdp,rbv()),

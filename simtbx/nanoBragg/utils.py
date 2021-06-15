@@ -33,7 +33,7 @@ def flexBeam_sim_colors(CRYSTAL, DETECTOR, BEAM, Famp, energies, fluxes,
                         verbose=0, default_F=0, interpolate=0, recenter=True, profile="gauss",
                         spot_scale_override=None, background_raw_pixels=None, include_noise=False,
                         add_water = False, add_air=False, water_path_mm=0.005, air_path_mm=0, rois_perpanel=None,
-                        adc_offset=0, readout_noise=3, psf_fwhm=0, gain=1, mosaicity_random_seeds=None):
+                        adc_offset=0, readout_noise=3, psf_fwhm=0, gain=1, mosaicity_random_seeds=None, nopolar=False):
   """
   :param CRYSTAL: dxtbx Crystal model
   :param DETECTOR: dxtbx detector model
@@ -72,6 +72,7 @@ def flexBeam_sim_colors(CRYSTAL, DETECTOR, BEAM, Famp, energies, fluxes,
   :param psf_fwhm: point spread kernel FWHM
   :param gain: photon gain
   :param mosaicity_random_seeds: random seeds to simulating mosaic texture
+  :param nopolar: switch of polarization
   :return: list of [(panel_id0,simulated pattern0), (panel_id1, simulated_pattern1), ...]
   """
 
@@ -130,6 +131,7 @@ def flexBeam_sim_colors(CRYSTAL, DETECTOR, BEAM, Famp, energies, fluxes,
     S.update_nanoBragg_instance("printout_pixel_fastslow", printout_pix)
   if spot_scale_override is not None:
     S.update_nanoBragg_instance("spot_scale", spot_scale_override)
+  S.update_nanoBragg_instance("nopolar", nopolar)
 
   if show_params:
     S.D.show_params()

@@ -1,4 +1,5 @@
 from __future__ import absolute_import, division, print_function
+import re
 import os
 
 from scipy import fft
@@ -1435,17 +1436,16 @@ def roi_spots_from_pandas(pandas_frame,  rois_per_panel, mtz_file=None, mtz_col=
                       oversample_override=None,
                       Ncells_abc_override=None,
                       pink_stride_override=None,
+                      spectrum_override=None,
                       cuda=False, device_Id=0, time_panels=False,
                       d_max=999, d_min=1.5, defaultF=1e3,
-                      njobs=1, omp=False,
+                      omp=False,
                       norm_by_spectrum=False,
-                      symbol_override=None, quiet=False):
+                      symbol_override=None, quiet=False, reset_Bmatrix=False, nopolar=False,
+                      force_no_detector_thickness=False, printout_pix=None, norm_by_nsource=False):
     if time_panels and quiet:
         print("NOTE: quiet=True will suppress panel simulation timing print output")
-    from joblib import Parallel, delayed
     from simtbx.nanoBragg.utils import flexBeam_sim_colors
-
-    pids_with_rois = list(rois_per_panel.keys())
 
     df = pandas_frame
 
@@ -1455,11 +1455,18 @@ def roi_spots_from_pandas(pandas_frame,  rois_per_panel, mtz_file=None, mtz_col=
     expt = El[0]
     if "detz_shift_mm" in list(df):  # NOTE, this could also be inside expt_name directly
         expt.detector = shift_panelZ(expt.detector, df.detz_shift_mm.values[0])
+
+    if force_no_detector_thickness:
+        expt.detector = strip_thickness_from_detector(expt.detector)
+    if reset_Bmatrix:
+        ucell_params = df[["a", "b", "c", "al", "be", "ga"]].values[0]
+        ucell_man = manager_from_params(ucell_params)
+        expt.crystal.set_B(ucell_man.B_recipspace)
     if not quiet:print("Done loading models!")
     if not quiet:print("Crystal model:")
     if not quiet:expt.crystal.show()
     assert len(df) == 1
-    Ncells_abc = tuple(map(lambda x: int(round(x)), df.ncells.values[0]))
+    Ncells_abc = df.ncells.values[0]  #tuple(map(lambda x: int(round(x)), df.ncells.values[0]))
     if Ncells_abc_override is not None:
         Ncells_abc = Ncells_abc_override
     spot_scale = df.spot_scales.values[0]
@@ -1484,7 +1491,6 @@ def roi_spots_from_pandas(pandas_frame,  rois_per_panel, mtz_file=None, mtz_col=
         fluxes = np.array([total_flux])
         energies = np.array([ENERGY_CONV/expt.beam.get_wavelength()])
         if not quiet: print("Running MONO sim")
-        nspec = 1
     lam0 = df.lam0.values[0]
     lam1 = df.lam1.values[0]
     if lam0 == -1:
@@ -1495,17 +1501,15 @@ def roi_spots_from_pandas(pandas_frame,  rois_per_panel, mtz_file=None, mtz_col=
     wavelens = lam0 + lam1*wavelens
     energies = ENERGY_CONV / wavelens
 
+    if spectrum_override is not None:
+        wavelens, fluxes = map(np.array, zip(*spectrum_override))
+        energies = ENERGY_CONV / wavelens
+
     if mtz_file is not None:
         assert mtz_col is not None
         Famp = open_mtz(mtz_file, mtz_col)
     else:
         Famp = make_miller_array_from_crystal(expt.crystal, dmin=d_min, dmax=d_max, defaultF=defaultF, symbol=symbol_override)
-
-    crystal = expt.crystal
-    # TODO opt exp should already include the optimized Amatrix, so no need to set it twice
-    crystal.set_A(df.Amats.values[0])
-
-    panel_list = list(range(len(expt.detector)))
 
     results = flexBeam_sim_colors(CRYSTAL=expt.crystal, DETECTOR=expt.detector, BEAM=expt.beam, Famp=Famp,
                                   fluxes=fluxes, energies=energies, beamsize_mm=beamsize_mm,
@@ -1513,9 +1517,12 @@ def roi_spots_from_pandas(pandas_frame,  rois_per_panel, mtz_file=None, mtz_col=
                                   cuda=cuda, device_Id=device_Id, oversample=oversample, time_panels=time_panels and not quiet,
                                   pids=list(rois_per_panel.keys()),
                                   rois_perpanel=rois_per_panel,
-                                  omp=omp, show_params=not quiet)
-
-    return {pid:image for pid,image in results}
+                                  omp=omp, show_params=not quiet, nopolar=nopolar,
+                                  printout_pix=printout_pix)
+    if norm_by_nsource:
+        return {pid:image/len(energies) for pid,image in results}
+    else:
+        return {pid:image for pid,image in results}
 
 
 def spots_from_pandas_and_experiment(expt, pandas_pickle, mtz_file=None, mtz_col=None,
@@ -2188,5 +2195,9 @@ def shift_panelZ(D, shift):
     return newD
 
 def safe_makedirs(name):
-    if  not os.path.exists(name):
+    if not os.path.exists(name):
         os.makedirs(name)
+
+def get_rs(name):
+    s = re.search("run[0-9]+_shot[0-9]+", name)
+    return name[s.start():s.end()]

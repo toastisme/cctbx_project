@@ -1,6 +1,8 @@
 #include <simtbx/diffBragg/src/diffBragg.h>
 #include <assert.h>
 #include <stdbool.h>
+#include<unordered_map>
+#include<string>
 
 namespace simtbx { namespace nanoBragg { // BEGIN namespace simtbx::nanoBragg
 
@@ -22,7 +24,7 @@ void diffBragg::diffBragg_sum_over_steps(
         int* source_pos, int* phi_pos, int* mos_pos, int* sausage_pos,
         const int Nsteps, int _printout_fpixel, int _printout_spixel, bool _printout, double _default_F,
         int oversample, bool _oversample_omega, double subpixel_size, double pixel_size,
-        double detector_thickstep, double _detector_thick, double close_distance, double detector_attnlen,
+        double detector_thickstep, double _detector_thick, std::vector<double>& close_distances, double detector_attnlen,
         bool use_lambda_coefficients, double lambda0, double lambda1,
         Eigen::Matrix3d& eig_U, Eigen::Matrix3d& eig_O, Eigen::Matrix3d& eig_B, Eigen::Matrix3d& RXYZ,
         std::vector<Eigen::Vector3d,Eigen::aligned_allocator<Eigen::Vector3d> >& dF_vecs,
@@ -61,14 +63,19 @@ void diffBragg::diffBragg_sum_over_steps(
         bool _nopolar, bool _point_pixel, double _fluence, double _r_e_sqr, double _spot_scale ,
         bool no_Nabc_scale,
         std::vector<double>& fpfdp, std::vector<double>& fpfdp_derivs,
-        std::vector<double>& atom_data) {
+        std::vector<double>& atom_data, bool track_Fhkl, std::vector<int>& nominal_l) {
 
     #pragma omp parallel for
     for (int i_pix=0; i_pix < Npix_to_model; i_pix++){
         int _pid = panels_fasts_slows[i_pix*3];
         int _fpixel = panels_fasts_slows[i_pix*3+1];
         int _spixel = panels_fasts_slows[i_pix*3+2];
-
+        double _close_distance = close_distances[_pid];
+        //std::unordered_map<int, int> Fhkl_tracker;
+        std::unordered_map<std::string, int> Fhkl_tracker;
+        bool use_nominal_l = false;
+        if (!nominal_l.empty())
+            use_nominal_l = true;
         // reset photon count for this pixel
         double _I=0;
         double II_max = -1;
@@ -87,8 +94,8 @@ void diffBragg::diffBragg_sum_over_steps(
         double pan_orig_manager_dI2[3]= {0,0,0};
         double pan_rot_manager_dI[3]= {0,0,0};
         double pan_rot_manager_dI2[3]= {0,0,0};
-        double fcell_manager_dI=0;
-        double fcell_manager_dI2=0;
+        double fcell_manager_dI[3] = {0,0,0};
+        double fcell_manager_dI2[3] = {0,0,0};
         double eta_manager_dI[3] = {0,0,0};
         double eta_manager_dI2[3] = {0,0,0};
         double lambda_manager_dI[2] = {0,0};
@@ -125,7 +132,7 @@ void diffBragg::diffBragg_sum_over_steps(
             double _airpath = _pixel_pos.norm();
             Eigen::Vector3d _diffracted = _pixel_pos/_airpath;
 
-            double _omega_pixel = pixel_size*pixel_size/_airpath/_airpath*close_distance/_airpath;
+            double _omega_pixel = pixel_size*pixel_size/_airpath/_airpath*_close_distance/_airpath;
 
             if(_point_pixel) _omega_pixel = 1.0/_airpath/_airpath;
 
@@ -225,7 +232,8 @@ void diffBragg::diffBragg_sum_over_steps(
                 _omega_pixel = 1;
 
             /* increment to intensity */
-            double I_noFcell = _F_latt*_F_latt*source_I[_source]*_capture_fraction*_omega_pixel*pow(sausages_scale[_sausage_tic],2);
+            double sauce = pow(sausages_scale[_sausage_tic],2);
+            double I_noFcell = _F_latt*_F_latt*source_I[_source]*_capture_fraction*_omega_pixel*sauce;
 
             /* structure factor of the unit cell */
             double _F_cell = _default_F;
@@ -235,6 +243,15 @@ void diffBragg::diffBragg_sum_over_steps(
                 /* just take nearest-neighbor */
                 int Fhkl_linear_index = (_h0-h_min) * k_range * l_range + (_k0-k_min) * l_range + (_l0-l_min);
                 _F_cell = _FhklLinear[Fhkl_linear_index];
+                if (track_Fhkl){
+                    std::string hkl_s ;
+                    hkl_s = std::to_string(_h0) + ","+ std::to_string(_k0) + "," + std::to_string(_l0);
+                    if (Fhkl_tracker.count(hkl_s))
+                        Fhkl_tracker[hkl_s] += 1;
+                    else
+                        Fhkl_tracker[hkl_s] = 0;
+                    continue;
+                }
                 if (complex_miller) _F_cell2 = _Fhkl2Linear[Fhkl_linear_index];
             }
             //else{
@@ -548,13 +565,23 @@ void diffBragg::diffBragg_sum_over_steps(
 
             /* checkpoint for Fcell manager */
             if (refine_fcell){
+                int nom_l=_l0;
+                int f_cell_idx = 1;
+                if (use_nominal_l){
+                    nom_l = nominal_l[i_pix];
+                    f_cell_idx = _l0 - nom_l + 1;
+                }
                 double value = 2*Iincrement/_F_cell ;
                 double value2=0;
                 if (compute_curvatures){
                     value2 = value/_F_cell;
                 }
-                fcell_manager_dI += value;
-                fcell_manager_dI2 += value2;
+                if (f_cell_idx >= 0 && f_cell_idx <= 2){
+                    fcell_manager_dI[f_cell_idx] += value;
+                    fcell_manager_dI2[f_cell_idx] += value2;
+                }
+                else
+                    printf("WARNING: step-computed l in miller index %d %d %d is out of bounds from nominal l %d !\n", _h0, _k0, _l0, nom_l);
             } /* end of fcell man deriv */
 
             /* checkpoint for eta manager */
@@ -637,8 +664,14 @@ void diffBragg::diffBragg_sum_over_steps(
                     printf("hkl= %f %f %f  hkl0= %d %d %d\n", _h,_k,_l,_h0,_k0,_l0);
                     printf(" F_cell=%g  F_cell_2=%g F_latt=%g   I = %g\n", _F_cell,_F_cell2,_F_latt,_I);
                     printf("I/steps %15.10g\n", _I/steps);
+                    printf("cap frac   %f\n", _capture_fraction);
+                    printf("sauce   %f\n", sauce);
                     printf("Fdet= %g; Sdet= %g ; Odet= %g\n", _Fdet, _Sdet, _Odet);
                     printf("omega   %15.10g\n", _omega_pixel);
+                    printf("close_distance    %15.10g\n", _close_distance);
+                    printf("fluence    %15.10g\n", _fluence);
+                    printf("spot scale   %15.10g\n", _spot_scale);
+                    printf("sourceI[0]:   %15.10g\n", source_I[0]);
                     printf("default_F= %f\n", _default_F);
                     printf("PIX0: %f %f %f\n" , pix0_vectors[pid_x], pix0_vectors[pid_y], pix0_vectors[pid_z]);
                     printf("F: %f %f %f\n" , fdet_vectors[pid_x], fdet_vectors[pid_y], fdet_vectors[pid_z]);
@@ -686,59 +719,62 @@ void diffBragg::diffBragg_sum_over_steps(
 
         }
 
+        double _scale_term=1;
+        if (!track_Fhkl){
 
-        double _Fdet_ave = pixel_size*_fpixel + pixel_size/2.0;
-        double _Sdet_ave = pixel_size*_spixel + pixel_size/2.0;
-        double _Odet_ave = 0; //Odet; // TODO maybe make this more general for thick detectors?
+            double _Fdet_ave = pixel_size*_fpixel + pixel_size/2.0;
+            double _Sdet_ave = pixel_size*_spixel + pixel_size/2.0;
+            double _Odet_ave = 0; //Odet; // TODO maybe make this more general for thick detectors?
 
-        Eigen::Vector3d _pixel_pos_ave(0,0,0);
-        int pid_x = _pid*3;
-        int pid_y = _pid*3+1;
-        int pid_z = _pid*3+2;
-        _pixel_pos_ave[0] = _Fdet_ave * fdet_vectors[pid_x]+_Sdet_ave*sdet_vectors[pid_x]+_Odet_ave*odet_vectors[pid_x]+pix0_vectors[pid_x];
-        _pixel_pos_ave[1] = _Fdet_ave * fdet_vectors[pid_y]+_Sdet_ave*sdet_vectors[pid_y]+_Odet_ave*odet_vectors[pid_y]+pix0_vectors[pid_y];
-        _pixel_pos_ave[2] = _Fdet_ave * fdet_vectors[pid_z]+_Sdet_ave*sdet_vectors[pid_z]+_Odet_ave*odet_vectors[pid_z]+pix0_vectors[pid_z];
+            Eigen::Vector3d _pixel_pos_ave(0,0,0);
+            int pid_x = _pid*3;
+            int pid_y = _pid*3+1;
+            int pid_z = _pid*3+2;
+            _pixel_pos_ave[0] = _Fdet_ave * fdet_vectors[pid_x]+_Sdet_ave*sdet_vectors[pid_x]+_Odet_ave*odet_vectors[pid_x]+pix0_vectors[pid_x];
+            _pixel_pos_ave[1] = _Fdet_ave * fdet_vectors[pid_y]+_Sdet_ave*sdet_vectors[pid_y]+_Odet_ave*odet_vectors[pid_y]+pix0_vectors[pid_y];
+            _pixel_pos_ave[2] = _Fdet_ave * fdet_vectors[pid_z]+_Sdet_ave*sdet_vectors[pid_z]+_Odet_ave*odet_vectors[pid_z]+pix0_vectors[pid_z];
 
-        double _airpath_ave = _pixel_pos_ave.norm();
-        Eigen::Vector3d _diffracted_ave = _pixel_pos_ave/_airpath_ave;
-        double _omega_pixel_ave = pixel_size*pixel_size/_airpath_ave/_airpath_ave*close_distance/_airpath_ave;
+            double _airpath_ave = _pixel_pos_ave.norm();
+            Eigen::Vector3d _diffracted_ave = _pixel_pos_ave/_airpath_ave;
+            double _omega_pixel_ave = pixel_size*pixel_size/_airpath_ave/_airpath_ave*_close_distance/_airpath_ave;
 
-        double _polar = 1;
-        if (!_nopolar){
-            Eigen::Vector3d _incident(-source_X[0], -source_Y[0], -source_Z[0]);
-            _incident = _incident / _incident.norm();
-            // component of diffracted unit vector along incident beam unit vector
-            double cos2theta = _incident.dot(_diffracted_ave);
-            double cos2theta_sqr = cos2theta*cos2theta;
-            double sin2theta_sqr = 1-cos2theta_sqr;
+            double _polar = 1;
+            if (!_nopolar){
+                Eigen::Vector3d _incident(-source_X[0], -source_Y[0], -source_Z[0]);
+                _incident = _incident / _incident.norm();
+                // component of diffracted unit vector along incident beam unit vector
+                double cos2theta = _incident.dot(_diffracted_ave);
+                double cos2theta_sqr = cos2theta*cos2theta;
+                double sin2theta_sqr = 1-cos2theta_sqr;
 
-            double _psi=0;
-            if(kahn_factor != 0.0){
-                // cross product to get "vertical" axis that is orthogonal to the cannonical "polarization"
-                Eigen::Vector3d B_in = _polarization_axis.cross(_incident);
-                // cross product with incident beam to get E-vector direction
-                Eigen::Vector3d E_in = _incident.cross(B_in);
-                // get components of diffracted ray projected onto the E-B plane
-                double _kEi = _diffracted_ave.dot(E_in);
-                double _kBi = _diffracted_ave.dot(B_in);
-                // compute the angle of the diffracted ray projected onto the incident E-B plane
-                _psi = -atan2(_kBi,_kEi);
+                double _psi=0;
+                if(kahn_factor != 0.0){
+                    // cross product to get "vertical" axis that is orthogonal to the cannonical "polarization"
+                    Eigen::Vector3d B_in = _polarization_axis.cross(_incident);
+                    // cross product with incident beam to get E-vector direction
+                    Eigen::Vector3d E_in = _incident.cross(B_in);
+                    // get components of diffracted ray projected onto the E-B plane
+                    double _kEi = _diffracted_ave.dot(E_in);
+                    double _kBi = _diffracted_ave.dot(B_in);
+                    // compute the angle of the diffracted ray projected onto the incident E-B plane
+                    _psi = -atan2(_kBi,_kEi);
+                }
+                // correction for polarized incident beam
+                _polar = 0.5*(1.0 + cos2theta_sqr - kahn_factor*cos(2*_psi)*sin2theta_sqr);
             }
-            // correction for polarized incident beam
-            _polar = 0.5*(1.0 + cos2theta_sqr - kahn_factor*cos(2*_psi)*sin2theta_sqr);
+
+            double _om = 1;
+            if (!_oversample_omega)
+                _om=_omega_pixel_ave;
+
+            // final scale term to being everything to photon number units
+            _scale_term = _r_e_sqr*_fluence*_spot_scale*_polar*_om/Nsteps*num_sausages;
+
+            int roi_i = i_pix; // TODO replace roi_i with i_pix
+
+            floatimage[i_pix] = _scale_term*_I;
+
         }
-
-        double _om = 1;
-        if (!_oversample_omega)
-            _om=_omega_pixel_ave;
-
-        // final scale term to being everything to photon number units
-        double _scale_term = _r_e_sqr*_fluence*_spot_scale*_polar*_om/Nsteps*num_sausages;
-
-        int roi_i = i_pix; // TODO replace roi_i with i_pix
-
-        floatimage[i_pix] = _scale_term*_I;
-
         /* udpate the rotation derivative images*/
         for (int i_rot =0 ; i_rot < 3 ; i_rot++){
             if (refine_Umat[i_rot]){
@@ -795,10 +831,12 @@ void diffBragg::diffBragg_sum_over_steps(
 
         /* update Fcell derivative image */
         if(refine_fcell){
-            double value = _scale_term*fcell_manager_dI;
-            double value2 = _scale_term*fcell_manager_dI2;
-            d_fcell_images[i_pix] = value;
-            d2_fcell_images[i_pix] = value2;
+            for (int i_fcell=0; i_fcell < 3; i_fcell++){
+                double value = _scale_term*fcell_manager_dI[i_fcell];
+                double value2 = _scale_term*fcell_manager_dI2[i_fcell];
+                d_fcell_images[i_fcell*Npix_to_model+ i_pix] = value;
+                d2_fcell_images[i_fcell*Npix_to_model + i_pix] = value2;
+            }
         }/* end Fcell deriv image increment */
 
         if (refine_fp_fdp){
@@ -875,6 +913,10 @@ void diffBragg::diffBragg_sum_over_steps(
                 d_panel_orig_images[idx] = value;
                 d2_panel_orig_images[idx] = value2;
             }/* end panel orig deriv image increment */
+        }
+        if (track_Fhkl){
+            for(auto &x: Fhkl_tracker)
+                printf("Pixel %d: Fhkl linear index %s came up %d times\n", i_pix, x.first.c_str(), x.second);
         }
     } // end i_pix loop
 } // END of CPU kernel

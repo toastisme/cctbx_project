@@ -27,7 +27,7 @@ __global__ void gpu_sum_over_steps(
         CUDAREAL* d_fp_fdp_images,
         const int Nsteps, int _printout_fpixel, int _printout_spixel, bool _printout, CUDAREAL _default_F,
         int oversample, bool _oversample_omega, CUDAREAL subpixel_size, CUDAREAL pixel_size,
-        CUDAREAL detector_thickstep, CUDAREAL _detector_thick, CUDAREAL close_distance, CUDAREAL detector_attnlen,
+        CUDAREAL detector_thickstep, CUDAREAL _detector_thick, const CUDAREAL* __restrict__ close_distances, CUDAREAL detector_attnlen,
         int detector_thicksteps, int sources, int phisteps, int mosaic_domains,
         bool use_lambda_coefficients, CUDAREAL lambda0, CUDAREAL lambda1,
         MAT3 eig_U, MAT3 eig_O, MAT3 eig_B, MAT3 RXYZ,
@@ -68,4 +68,5 @@ __global__ void gpu_sum_over_steps(
         const CUDAREAL* __restrict__ fpfdp,
         const CUDAREAL* __restrict__ fpfdp_derivs,
         const CUDAREAL*__restrict__ atom_data, int num_atoms,
-        bool doing_fp_fdp_derivs);
+        bool doing_fp_fdp_derivs,
+        const int* __restrict__ nominal_l);

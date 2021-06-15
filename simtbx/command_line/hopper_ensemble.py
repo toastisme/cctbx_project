@@ -1387,6 +1387,7 @@ def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_
     #exit()
 #   TODO generalize ucell
     t_mpi_start = time.time()
+    # TODO fix this:
     fucell_len = COMM.bcast(COMM.reduce(sum(fucell[:3])))
     fucell_ang = COMM.bcast(COMM.reduce(sum(fucell[3:])))
     fchi = COMM.bcast(COMM.reduce(fchi))

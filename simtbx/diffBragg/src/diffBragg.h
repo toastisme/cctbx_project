@@ -157,7 +157,7 @@ class diffBragg: public nanoBragg{
         int* source_pos, int* phi_pos, int* mos_pos, int* sausage_pos,
         const int Nsteps, int _printout_fpixel, int _printout_spixel, bool _printout, double _default_F,
         int oversample, bool _oversample_omega, double subpixel_size, double pixel_size,
-        double detector_thickstep, double _detector_thick, double close_distance, double detector_attnlen,
+        double detector_thickstep, double _detector_thick, std::vector<double>& close_distances, double detector_attnlen,
         bool use_lambda_coefficients, double lambda0, double lambda1,
         Eigen::Matrix3d& eig_U, Eigen::Matrix3d& eig_O, Eigen::Matrix3d& eig_B, Eigen::Matrix3d& RXYZ,
         std::vector<Eigen::Vector3d,Eigen::aligned_allocator<Eigen::Vector3d> >& dF_vecs,
@@ -197,9 +197,11 @@ class diffBragg: public nanoBragg{
         bool no_Nabc_scale,
         std::vector<double>& fpfdp,
         std::vector<double>& fpfdp_derivs,
-        std::vector<double>& atom_data);
+        std::vector<double>& atom_data, bool track_Fhkl, std::vector<int>& nominal_l);
 
 
+  bool track_Fhkl;
+  std::vector<int> nominal_l;
   void update_xray_beams(scitbx::af::versa<dxtbx::model::Beam, scitbx::af::flex_grid<> > const& value);
   void diffBragg_rot_mats();
   void linearize_Fhkl();
@@ -225,6 +227,7 @@ class diffBragg: public nanoBragg{
   void rotate_fs_ss_vecs(double panel_rot_ang);
   void rotate_fs_ss_vecs_3D(double panel_rot_angO, double panel_rot_angF, double panel_rot_angS);
   void add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows);
+  void add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows, boost::python::list per_pix_nominal_l);
   void add_diffBragg_spots();
   void init_raw_pixels_roi();
   void zero_raw_pixel_rois();
@@ -263,6 +266,7 @@ class diffBragg: public nanoBragg{
   void set_ncells_def_values( boost::python::tuple const& values);
   void print_if_refining();
   boost::python::tuple get_ncells_values();
+  boost::python::tuple get_fcell_derivative_pixels();
   boost::python::list get_sausage_derivative_pixels();
   boost::python::list get_sausage_scale_derivative_pixels();
   bool refining_sausages=false;
@@ -351,7 +355,7 @@ class diffBragg: public nanoBragg{
   std::vector<boost::shared_ptr<origin_manager> > origin_managers;
   std::vector<boost::shared_ptr<lambda_manager> > lambda_managers;
   std::vector<boost::shared_ptr<panel_manager> > panels;
-  boost::shared_ptr<Fcell_manager> fcell_man;
+  std::vector<boost::shared_ptr<derivative_manager> > fcell_managers;
   //boost::shared_ptr<eta_manager> eta_man;
   boost::shared_ptr<panel_manager> panel_rot_man;
   boost::shared_ptr<panel_manager> panel_rot_manF;
@@ -441,7 +445,8 @@ class diffBragg: public nanoBragg{
   std::vector<double> FhklLinear, Fhkl2Linear;
   // Eigen types
   Eigen::Matrix3d eig_U, eig_B, eig_O;
-  std::vector<double> fdet_vectors, sdet_vectors, pix0_vectors, odet_vectors;
+  std::vector<double> fdet_vectors, sdet_vectors, pix0_vectors, odet_vectors, close_distances;
+  void set_close_distances();
   int Npix_total, Npix_to_model;
 
   // cuda properties

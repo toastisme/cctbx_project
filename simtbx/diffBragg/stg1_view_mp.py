@@ -116,16 +116,27 @@ def get_strong_refl(name):
     return strong_name
 
 
+if "stage1_output_img" in list(df):
+    print("NEWWAYimAGES")
+    df["imgs"] = df.stage1_output_img
 
 if "imgs" not in list(df):
     #df["imgs"] = [df.opt_exp_name.values[0].replace("expers", "imgs").replace(".expt", ".h5")][f.replace("expers", "imgs").replace(".expt", ".h5") for f in df.opt_exp_name]
     df['imgs'] = [f.replace("expers", "imgs").replace(".expt", ".h5") for f in df.opt_exp_name]
-if "refl_names" not in list(df):
-    #df['refl_names'] = [f.replace(".expt", ".refl") for f in df.exp_name]
+# NOTE new way
+if "stage1_refls" in list(df):
+    print("NEWWAY refls")
+    df['refl_names'] = df.stage1_refls
+
+elif "refl_names" not in list(df):
+    df['refl_names'] = [f.replace(".expt", ".refl") for f in df.exp_name]
     #df['refl_names'] = [get_strong_refl(f) for f in df.exp_name]
     #refls = [f.replace("_pathmod.expt", "_idx.refl") for f in df.exp_name]
     #df['refl_names'] = [f.replace(".expt", "_indexed2.refl") for f in df.exp_name]
-    df['refl_names'] = [f.replace(".expt", "_indexed3.refl") for f in df.exp_name]
+    #df['refl_names'] = [f.replace(".expt", "_indexed3.refl") for f in df.exp_name]
+    #from IPython import embed
+    #embed()
+    #df['refl_names'] = [f.replace(".expt", "_expanded.refl") for f in df.exp_name]
 
 def main(jid):
     dev_res =[]
