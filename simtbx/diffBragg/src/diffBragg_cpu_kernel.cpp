@@ -63,7 +63,7 @@ void diffBragg::diffBragg_sum_over_steps(
         bool _nopolar, bool _point_pixel, double _fluence, double _r_e_sqr, double _spot_scale ,
         bool no_Nabc_scale,
         std::vector<double>& fpfdp, std::vector<double>& fpfdp_derivs,
-        std::vector<double>& atom_data, bool track_Fhkl, std::vector<int>& nominal_l) {
+        std::vector<double>& atom_data, bool track_Fhkl, std::vector<int>& nominal_hkl) {
 
     #pragma omp parallel for
     for (int i_pix=0; i_pix < Npix_to_model; i_pix++){
@@ -73,9 +73,9 @@ void diffBragg::diffBragg_sum_over_steps(
         double _close_distance = close_distances[_pid];
         //std::unordered_map<int, int> Fhkl_tracker;
         std::unordered_map<std::string, int> Fhkl_tracker;
-        bool use_nominal_l = false;
-        if (!nominal_l.empty())
-            use_nominal_l = true;
+        bool use_nominal_hkl = false;
+        if (!nominal_hkl.empty())
+            use_nominal_hkl = true;
         // reset photon count for this pixel
         double _I=0;
         double II_max = -1;
@@ -565,23 +565,33 @@ void diffBragg::diffBragg_sum_over_steps(
 
             /* checkpoint for Fcell manager */
             if (refine_fcell){
+                int nom_h=_h0;
+                int nom_k=_k0;
                 int nom_l=_l0;
-                int f_cell_idx = 1;
-                if (use_nominal_l){
-                    nom_l = nominal_l[i_pix];
-                    f_cell_idx = _l0 - nom_l + 1;
+                //int f_cell_idx = 1;
+                if (use_nominal_hkl){
+                    nom_h = nominal_hkl[i_pix*3];
+                    nom_k = nominal_hkl[i_pix*3+1];
+                    nom_l = nominal_hkl[i_pix*3+2];
+                    //f_cell_idx = _l0 - nom_l + 1;
                 }
                 double value = 2*Iincrement/_F_cell ;
                 double value2=0;
                 if (compute_curvatures){
                     value2 = value/_F_cell;
                 }
-                if (f_cell_idx >= 0 && f_cell_idx <= 2){
-                    fcell_manager_dI[f_cell_idx] += value;
-                    fcell_manager_dI2[f_cell_idx] += value2;
+                //if (f_cell_idx >= 0 && f_cell_idx <= 2){
+                // NOTE use nominal hkl to regulate when gradients are compputed, as h,k,l can drift within a shoebox
+                if (use_nominal_hkl){
+                    if (nom_h==_h0 && nom_k==_k0 && nom_l==_l0 ){
+                        fcell_manager_dI[1] += value;
+                        fcell_manager_dI2[1] += value2;
+                    }
                 }
-                else
-                    printf("WARNING: step-computed l in miller index %d %d %d is out of bounds from nominal l %d !\n", _h0, _k0, _l0, nom_l);
+                else{
+                    fcell_manager_dI[1] += value;
+                    fcell_manager_dI2[1] += value2;
+                }
             } /* end of fcell man deriv */
 
             /* checkpoint for eta manager */
@@ -831,12 +841,16 @@ void diffBragg::diffBragg_sum_over_steps(
 
         /* update Fcell derivative image */
         if(refine_fcell){
-            for (int i_fcell=0; i_fcell < 3; i_fcell++){
-                double value = _scale_term*fcell_manager_dI[i_fcell];
-                double value2 = _scale_term*fcell_manager_dI2[i_fcell];
-                d_fcell_images[i_fcell*Npix_to_model+ i_pix] = value;
-                d2_fcell_images[i_fcell*Npix_to_model + i_pix] = value2;
-            }
+            double value = _scale_term*fcell_manager_dI[1];
+            double value2 = _scale_term*fcell_manager_dI2[1];
+            d_fcell_images[Npix_to_model+ i_pix] = value;
+            d2_fcell_images[Npix_to_model + i_pix] = value2;
+            //for (int i_fcell=0; i_fcell < 3; i_fcell++){
+            //    double value = _scale_term*fcell_manager_dI[i_fcell];
+            //    double value2 = _scale_term*fcell_manager_dI2[i_fcell];
+            //    d_fcell_images[i_fcell*Npix_to_model+ i_pix] = value;
+            //    d2_fcell_images[i_fcell*Npix_to_model + i_pix] = value2;
+            //}
         }/* end Fcell deriv image increment */
 
         if (refine_fp_fdp){

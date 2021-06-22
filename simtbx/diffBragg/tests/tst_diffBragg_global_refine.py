@@ -227,7 +227,7 @@ for i_shot in range(N_SHOTS):
     SIM.instantiate_diffBragg(oversample=0, auto_set_spotscale=True)
     SIM.D.nopolar = False
     SIM.D.default_F = 0
-    SIM.D.progress_meter =  False
+    SIM.D.progress_meter = False
     #SIM.water_path_mm = 0.005
     SIM.water_path_mm = 0.15
     SIM.air_path_mm = 0.1

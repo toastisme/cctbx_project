@@ -272,7 +272,7 @@ diffBragg::diffBragg(const dxtbx::model::Detector& detector, const dxtbx::model:
     //fcell_man = boost::shared_ptr<Fcell_manager>(new Fcell_manager());
     //fcell_man->refine_me = false;
     track_Fhkl=false;
-    nominal_l.clear();
+    nominal_hkl.clear();
 
     boost::shared_ptr<eta_manager> eta0 = boost::shared_ptr<eta_manager>(new eta_manager());
     boost::shared_ptr<eta_manager> eta1 = boost::shared_ptr<eta_manager>(new eta_manager());
@@ -1775,14 +1775,20 @@ void diffBragg::add_diffBragg_spots(){
 }
 
 
-void diffBragg::add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows, boost::python::list per_pix_nominal_l){
+void diffBragg::add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows, boost::python::list per_pix_nominal_hkl){
 
-    nominal_l.clear();
+    nominal_hkl.clear();
     Npix_to_model = panels_fasts_slows.size()/3;
-    SCITBX_ASSERT(Npix_to_model==boost::python::len(per_pix_nominal_l));
+    SCITBX_ASSERT(Npix_to_model==boost::python::len(per_pix_nominal_hkl));
+    // NOTE each element of the list needs to be a 3-tuple
     for (int i_pix=0; i_pix <Npix_to_model; i_pix++){
-        int nom_l = boost::python::extract<int>(per_pix_nominal_l[i_pix]);
-        nominal_l.push_back(nom_l);
+        boost::python::tuple hkl = boost::python::extract<boost::python::tuple>( per_pix_nominal_hkl[i_pix]);
+        int nom_h = boost::python::extract<int>(hkl[0]);
+        int nom_k = boost::python::extract<int>(hkl[1]);
+        int nom_l = boost::python::extract<int>(hkl[2]);
+        nominal_hkl.push_back(nom_h);
+        nominal_hkl.push_back(nom_k);
+        nominal_hkl.push_back(nom_l);
     }
     add_diffBragg_spots(panels_fasts_slows);
 }
@@ -1942,7 +1948,7 @@ void diffBragg::add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows
             fdet_vectors, sdet_vectors,
             odet_vectors, pix0_vectors,
             nopolar, point_pixel, fluence, r_e_sqr, spot_scale, no_Nabc_scale,
-            fpfdp, fpfdp_derivs, atom_data, track_Fhkl, nominal_l);
+            fpfdp, fpfdp_derivs, atom_data, track_Fhkl, nominal_hkl);
         }
     else { // we are using cuda
 #ifdef NANOBRAGG_HAVE_CUDA
@@ -1998,7 +2004,7 @@ void diffBragg::add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows
            update_dB_matrices_on_device, update_rotmats_on_device,
            update_Fhkl_on_device, update_detector_on_device, update_refine_flags_on_device,
            update_panel_deriv_vecs_on_device, update_sausages_on_device, detector_thicksteps, phisteps,
-           Npix_to_allocate, no_Nabc_scale, fpfdp, fpfdp_derivs, atom_data, nominal_l);
+           Npix_to_allocate, no_Nabc_scale, fpfdp, fpfdp_derivs, atom_data, nominal_hkl);
 #else
        // no statement
 #endif

@@ -197,11 +197,11 @@ class diffBragg: public nanoBragg{
         bool no_Nabc_scale,
         std::vector<double>& fpfdp,
         std::vector<double>& fpfdp_derivs,
-        std::vector<double>& atom_data, bool track_Fhkl, std::vector<int>& nominal_l);
+        std::vector<double>& atom_data, bool track_Fhkl, std::vector<int>& nominal_hkl);
 
 
   bool track_Fhkl;
-  std::vector<int> nominal_l;
+  std::vector<int> nominal_hkl;
   void update_xray_beams(scitbx::af::versa<dxtbx::model::Beam, scitbx::af::flex_grid<> > const& value);
   void diffBragg_rot_mats();
   void linearize_Fhkl();
@@ -227,7 +227,7 @@ class diffBragg: public nanoBragg{
   void rotate_fs_ss_vecs(double panel_rot_ang);
   void rotate_fs_ss_vecs_3D(double panel_rot_angO, double panel_rot_angF, double panel_rot_angS);
   void add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows);
-  void add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows, boost::python::list per_pix_nominal_l);
+  void add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows, boost::python::list per_pix_nominal_hkl);
   void add_diffBragg_spots();
   void init_raw_pixels_roi();
   void zero_raw_pixel_rois();

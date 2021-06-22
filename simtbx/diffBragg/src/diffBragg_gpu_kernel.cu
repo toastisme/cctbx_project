@@ -59,12 +59,13 @@ void gpu_sum_over_steps(
         const CUDAREAL* __restrict__ fpfdp,
         const CUDAREAL* __restrict__ fpfdp_derivs,
         const CUDAREAL* __restrict__ atom_data, int num_atoms, bool refine_fp_fdp,
-        const int* __restrict__ nominal_l)
+        const int* __restrict__ nominal_hkl, bool use_nominal_hkl)
 { // BEGIN GPU kernel
 
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int thread_stride = blockDim.x * gridDim.x;
 
+    __shared__ bool s_use_nominal_hkl;
     __shared__ bool s_refine_fp_fdp;
     __shared__ bool s_complex_miller;
     __shared__ int s_num_atoms;
@@ -110,6 +111,7 @@ void gpu_sum_over_steps(
             s_refine_panel_origin[i] = refine_panel_origin[i];
             s_refine_panel_rot[i] = refine_panel_rot[i];
         }
+        s_use_nominal_hkl = use_nominal_hkl;
         s_aniso_eta = aniso_eta;
         s_no_Nabc_scale = no_Nabc_scale;
         s_complex_miller = complex_miller;
@@ -207,9 +209,14 @@ void gpu_sum_over_steps(
         int _pid = panels_fasts_slows[i_pix*3];
         int _fpixel = panels_fasts_slows[i_pix*3+1];
         int _spixel = panels_fasts_slows[i_pix*3+2];
-        int nom_l = 0;
-        if (s_refine_fcell)
-            nom_l = nominal_l[i_pix];
+
+        //int fcell_idx=1;
+        int nom_h, nom_k, nom_l;
+        if (s_use_nominal_hkl){
+            nom_h = nominal_hkl[i_pix*3];
+            nom_k = nominal_hkl[i_pix*3+1];
+            nom_l = nominal_hkl[i_pix*3+2];
+        }
         CUDAREAL close_distance = close_distances[_pid];
 
         // reset photon count for this pixel
@@ -631,15 +638,26 @@ void gpu_sum_over_steps(
 
             // checkpoint for Fcell manager
             if (s_refine_fcell){
-                int fcell_idx = _l0 - nom_l + 1;
+                //if (s_use_nominal_hkl)
+                //    fcell_idx = _l0 - nom_l + 1;
+                //if (_F_cell > 0)
                 CUDAREAL value = 2*Iincrement/_F_cell ;
                 CUDAREAL value2=0;
                 if (s_compute_curvatures){
+                //    NOTE if _Fcell >0
                     value2 = value/_F_cell;
                 }
-                if (fcell_idx >=0 && fcell_idx <=2){
-                    fcell_manager_dI[fcell_idx] += value;
-                    fcell_manager_dI2[fcell_idx] += value2;
+                //if (fcell_idx >=0 && fcell_idx <=2){
+                if (s_use_nominal_hkl){
+                    if (_h0==nom_h && _k0==nom_k && _l0==nom_l){
+                        fcell_manager_dI[1] += value;
+                        fcell_manager_dI2[1] += value2;
+                    }
+                }
+                else{
+                    fcell_manager_dI[1] += value;
+                    fcell_manager_dI2[1] += value2;
+
                 }
             } // end of fcell man deriv
 
@@ -894,11 +912,14 @@ void gpu_sum_over_steps(
 
         // update Fcell derivative image
         if(s_refine_fcell){
-            for(int fcell_idx=0; fcell_idx < 3; fcell_idx++){
-                CUDAREAL value = _scale_term*fcell_manager_dI[fcell_idx];
-                CUDAREAL value2 = _scale_term*fcell_manager_dI2[fcell_idx];
-                d_fcell_images[fcell_idx*Npix_to_model+i_pix] = value;
-            }
+            CUDAREAL value = _scale_term*fcell_manager_dI[1];
+            CUDAREAL value2 = _scale_term*fcell_manager_dI2[1];
+            d_fcell_images[Npix_to_model+i_pix] = value;
+            //for(int fcell_idx=0; fcell_idx < 3; fcell_idx++){
+            //    CUDAREAL value = _scale_term*fcell_manager_dI[fcell_idx];
+            //    CUDAREAL value2 = _scale_term*fcell_manager_dI2[fcell_idx];
+            //    d_fcell_images[fcell_idx*Npix_to_model+i_pix] = value;
+            //}
             //d2_fcell_images[i_pix] = value2;
         }// end Fcell deriv image increment
 

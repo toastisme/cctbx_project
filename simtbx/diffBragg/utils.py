@@ -1346,7 +1346,7 @@ def spots_from_pandas(pandas_frame, mtz_file=None, mtz_col=None,
                       d_max=999, d_min=1.5, defaultF=1e3,
                       njobs=1,
                       output_img=None, omp=False, norm_by_spectrum=False,
-                      symbol_override=None, quiet=False):
+                      symbol_override=None, quiet=False, reset_Bmatrix=False):
     if time_panels and quiet:
         print("NOTE: quiet=True will suppress panel simulation timing print output")
     from joblib import Parallel, delayed
@@ -1358,6 +1358,14 @@ def spots_from_pandas(pandas_frame, mtz_file=None, mtz_col=None,
     expt_name = df.opt_exp_name.values[0]
     El = ExperimentListFactory.from_json_file(expt_name, check_format=False)
     expt = El[0]
+
+    if "detz_shift_mm" in list(df):  # NOTE, this could also be inside expt_name directly
+        expt.detector = shift_panelZ(expt.detector, df.detz_shift_mm.values[0])
+
+    if reset_Bmatrix:
+        ucell_params = df[["a", "b", "c", "al", "be", "ga"]].values[0]
+        ucell_man = manager_from_params(ucell_params)
+        expt.crystal.set_B(ucell_man.B_recipspace)
     if not quiet:print("Done loading models!")
     if not quiet:print("Crystal model:")
     if not quiet:El[0].crystal.show()
@@ -1645,6 +1653,9 @@ def indexed_from_model(strong_refls, model_images, expt, thresh=1, tolerance=0.3
     El.append(expt)
 
     model_refls = index_refls(model_refls, expt, tolerance=tolerance)
+
+    #_=refls_to_hkl(model_refls, expt.detector, expt.beam, expt.crystal,
+    #                                update_table=True)
     print("Indexed %d / %d spots from the model using the nominal wavelength"
           % (sum(model_refls['id'] == 0), len(model_refls)))
     if strong_refls is None:

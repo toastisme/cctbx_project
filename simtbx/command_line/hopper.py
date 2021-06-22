@@ -645,9 +645,9 @@ class DataModeler:
                 self.E.crystal.set_B(ucman.B_recipspace)
 
             ## TODO , currently need this anyway
-            #ucparam = best[["a","b","c","al","be","ga"]].values[0]
-            #ucman = utils.manager_from_params(ucparam)
-            #self.E.crystal.set_B(ucman.B_recipspace)
+            ucparam = best[["a","b","c","al","be","ga"]].values[0]
+            ucman = utils.manager_from_params(ucparam)
+            self.E.crystal.set_B(ucman.B_recipspace)
 
             # mosaic block
             self.params.init.Nabc = tuple(best.ncells.values[0])
@@ -1436,8 +1436,12 @@ def save_to_pandas(x, SIM, orig_exp_name, params, expt, rank_exp_idx, stg1_refls
     RZ = zax.axis_and_angle_as_r3_rotation_matrix(rotZ, deg=False)
     M = RX * RY * RZ
     U = M * sqr(SIM.crystal.dxtbx_crystal.get_U())
-    # TODO set_B matrix as well !!!!!!!!!!!!!!!!
     SIM.crystal.dxtbx_crystal.set_U(U)
+
+    ucparam = a,b,c,al,be,ga
+    ucman = utils.manager_from_params(ucparam)
+    SIM.crystal.dxtbx_crystal.set_B(ucman.B_recipspace)
+
     Amats = [SIM.crystal.dxtbx_crystal.get_A()]
     ncells_def_vals = [(0, 0, 0)]
     ncells_vals = [(Na, Nb, Nc)]

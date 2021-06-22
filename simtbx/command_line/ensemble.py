@@ -18,7 +18,7 @@ FHKL_ID = 11
 # LIBTBX_SET_DISPATCHER_NAME simtbx.diffBragg.ensemble
 
 import numpy as np
-#np.seterr(invalid='ignore')
+np.seterr(invalid='ignore')
 import os
 from dials.array_family import flex
 from dxtbx.model.experiment_list import ExperimentListFactory
@@ -32,6 +32,9 @@ from simtbx.diffBragg.phil import philz
 from simtbx.diffBragg.refiners.parameters import NormalParameter, RangedParameter
 
 hopper_phil = """
+sigma_frac = None
+  .type = float
+  .help = sigma for Fhkl restraints will be some fraction of the starting value
 sanity_test_hkl_variation = False
   .type = bool
   .help = measure the variation of each HKL within the shoebox
@@ -379,30 +382,32 @@ class Script:
                 #assert "best_model_image_file" in list(bests[i_exp])
                 assert "stage1_output_img" in list(bests[i_exp])
                 h = h5py.File(bests[i_exp].stage1_output_img.values[0], 'r')
-                max_diffs = []
-                for i in range(h['rois'].shape[0]):
+                #max_diffs = []
+                nroi = h['rois'].shape[0]
+                for i in range(nroi):
                     assert h['pids'][i] == M.pids[i]
                     assert np.all(h['rois'][i] == M.rois[i])
                     ref_img = h['bragg/roi%d' %i][()]
                     current_img = bragg_subimg[i]
-                    #assert np.allclose(ref_img, current_img)
-                    print(i)
+                    assert np.allclose(ref_img, current_img)
+                    print("Model for %s ROI %d / %d is as expected!" % (M.exp_name, i+1 , nroi ))
+                    continue
 
-                    rois_per_panel = {M.pids[i]: [M.rois[i]]}
-                    model_from_nanoBragg = utils.roi_spots_from_pandas(bests[i_exp], rois_per_panel, quiet=True,
-                                                        mtz_file=self.params.simulator.structure_factors.mtz_name,
-                                                        mtz_col=self.params.simulator.structure_factors.mtz_column,
-                                                        cuda=False, reset_Bmatrix=True, nopolar=True,
-                                                        force_no_detector_thickness=True,
-                                                        norm_by_nsource=True)
-                    x1,x2,y1,y2 = M.rois[i]
-                    nanoBragg_img = model_from_nanoBragg[M.pids[i]][y1:y2, x1:x2]
-                    nanoBragg_img *= self.SIM.D.spot_scale
-                    #nanoBragg_img /= len(self.SIM.D.xray_beams)
+                    #rois_per_panel = {M.pids[i]: [M.rois[i]]}
+                    #model_from_nanoBragg = utils.roi_spots_from_pandas(bests[i_exp], rois_per_panel, quiet=True,
+                    #                                    mtz_file=self.params.simulator.structure_factors.mtz_name,
+                    #                                    mtz_col=self.params.simulator.structure_factors.mtz_column,
+                    #                                    cuda=False, reset_Bmatrix=True, nopolar=True,
+                    #                                    force_no_detector_thickness=True,
+                    #                                    norm_by_nsource=True)
+                    #x1,x2,y1,y2 = M.rois[i]
+                    #nanoBragg_img = model_from_nanoBragg[M.pids[i]][y1:y2, x1:x2]
+                    #nanoBragg_img *= self.SIM.D.spot_scale
+                    ##nanoBragg_img /= len(self.SIM.D.xray_beams)
 
-                    max_diff = np.abs(nanoBragg_img - current_img)
-                    max_diffs.append(max_diff)
-                    assert np.allclose(nanoBragg_img, current_img)
+                    #max_diff = np.abs(nanoBragg_img - current_img)
+                    #max_diffs.append(max_diff)
+                    #assert np.allclose(nanoBragg_img, current_img)
                 #all_m = []
                 #for m in max_diffs:
                 #    m = m.ravel()
@@ -419,7 +424,10 @@ class Script:
                 #plt.show()
 
                 #print(max_diffs, np.max(max_diffs))
+            if self.params.sanity_test_models:
+                print("Tested models for sanity, all seem good! exiting...")
                 exit()
+
             img_path = "rank%d_img%d_before.h5" %(COMM.rank, i_exp)
             img_path = os.path.join(self.params.outdir, img_path)
             save_model_Z(img_path, M, best_mod)
@@ -517,7 +525,7 @@ class DataModeler:
 
         self.Hi_asu = None
         self.hi_asu_perpix = None
-        self.all_nominal_l = []
+        self.all_nominal_hkl = []
 
     def GatherFromExperiment(self, exp, ref, sg_symbol, ref_indices=None):
         """
@@ -566,6 +574,10 @@ class DataModeler:
             if not self.params.quiet: print("No pixels slected, continuing")
             return False
         # print("sel")
+        #Hi = list(refls["miller_index"])
+        #Hi_asu = utils.map_hkl_list(Hi, True, sg_symbol)
+        #self.selection_flags = [h==(-34,-19,-10) for h in Hi_asu]
+
         self.rois = [roi for i_roi, roi in enumerate(self.rois) if self.selection_flags[i_roi]]
         self.tilt_abc = [abc for i_roi, abc in enumerate(self.tilt_abc) if self.selection_flags[i_roi]]
         self.pids = [pid for i_roi, pid in enumerate(self.pids) if self.selection_flags[i_roi]]
@@ -586,7 +598,7 @@ class DataModeler:
         all_sigmas = []
         all_background = []
         roi_id = []
-        self.all_nominal_l = []
+        self.all_nominal_hkl = []
         #refl_id = []
         for i_roi in range(len(self.rois)):
             pid = self.pids[i_roi]
@@ -612,7 +624,7 @@ class DataModeler:
             all_pid += [pid] * npix
             hi_asu_perpix += [self.Hi_asu[i_roi]] * npix
             roi_id += [i_roi] * npix
-            self.all_nominal_l += [Hi[i_roi][2]]*npix  # this is the nominal l component of the miller index in the P1 setting
+            self.all_nominal_hkl += [tuple(Hi[i_roi])]*npix  # this is the nominal l component of the miller index in the P1 setting
             #refl_id += [self.refl_index[i_roi]] * npix
         pan_fast_slow = np.ascontiguousarray((np.vstack([all_pid, all_fast, all_slow]).T).ravel())
         self.pan_fast_slow = flex.size_t(pan_fast_slow)
@@ -647,15 +659,25 @@ class DataModeler:
         PAR.Scale = p
 
         #ucell_man = utils.manager_from_crystal(self.E.crystal)
+        #rotX, rotY, rotZ = best[["rotX", "rotY", "rotZ"]].values[0]
+        #xax = col((-1, 0, 0))
+        #yax = col((0, -1, 0))
+        #zax = col((0, 0, -1))
+        #RX = xax.axis_and_angle_as_r3_rotation_matrix(rotX, deg=False)
+        #RY = yax.axis_and_angle_as_r3_rotation_matrix(rotY, deg=False)
+        #RZ = zax.axis_and_angle_as_r3_rotation_matrix(rotZ, deg=False)
+        #M = RX * RY * RZ
+        #U = M * sqr(self.E.crystal.get_U())
+        #self.E.crystal.set_U(U)
         PAR.Umatrix = sqr(self.E.crystal.get_U())
 
         # NOTE intermitent fix for Bmatrix
         # ideally this:
-        #PAR.Bmatrix = sqr(self.E.crystal.get_B())
+        PAR.Bmatrix = sqr(self.E.crystal.get_B())
         # but for now this:
-        ucell_params =  best[["a", "b", "c", "al", "be", "ga"]].values[0]
-        ucell_man = utils.manager_from_params(ucell_params)
-        PAR.Bmatrix = ucell_man.B_recipspace
+        #ucell_params =  best[["a", "b", "c", "al", "be", "ga"]].values[0]
+        #ucell_man = utils.manager_from_params(ucell_params)
+        #PAR.Bmatrix = ucell_man.B_recipspace
 
         PAR.Nabc = tuple(best.ncells.values[0])
 
@@ -771,10 +793,11 @@ def model(x, SIM, Modeler, compute_grad=True, sanity_test=None):
                         count_stats[hkl] = count
             ntot = sum(count_stats.values())
             assert shoebox_hkl in count_stats
+            print("Shoebox hkl", shoebox_hkl)
             for hkl in count_stats:
                 frac = count_stats[hkl] / float(ntot)
-                #h,k, l = hkl
-                #print("\tstep hkl %d,%d,%d : frac=%.1f%%" % (h,k,l,frac*100))
+                h,k, l = hkl
+                print("\tstep hkl %d,%d,%d : frac=%.1f%%" % (h,k,l,frac*100))
                 count_stats[hkl] = frac
             if len(count_stats)==1:
                 all_good_count_stats.append([shoebox_hkl,count_stats])
@@ -800,7 +823,7 @@ def model(x, SIM, Modeler, compute_grad=True, sanity_test=None):
         return  # end sanity test on hkl variation
 
     # compute the forward model, and gradients when instructed
-    SIM.D.add_diffBragg_spots(pfs, Modeler.all_nominal_l)
+    SIM.D.add_diffBragg_spots(pfs, Modeler.all_nominal_hkl)
     bragg = scale*(SIM.D.raw_pixels_roi[:npix].as_numpy_array())
 
     model_pix = bragg + Modeler.all_background
@@ -854,7 +877,7 @@ def model(x, SIM, Modeler, compute_grad=True, sanity_test=None):
                     bad_amp = np.nan
                 value_of_grad = grad[-SIM.n_global_fcell + i_fcell]
                 h,k,l = hkl_asu
-                print("No signal in Bragg peak at %d %d %d: Famp=%f, grad=%f" %(h,k,l,bad_amp, value_of_grad))
+                print("No signal in %s; Bragg peak at %d %d %d: Famp=%f, grad=%f" %(Modeler.exp_name, h,k,l,bad_amp, value_of_grad))
             print("NANs above indicate an hkl that is not in the starting structure factor array")
             print("Others indicate that the model has no signal in the shoebox")
             print("Remove the bad ROIS from the input, exiting.")
@@ -979,7 +1002,11 @@ def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_
         for i_fcell in range(SIM.n_global_fcell)])
     Fhkl_init = np.array([SIM.Fhkl_modelers[i_fcell].init for i_fcell in range(SIM.n_global_fcell)])
     delta_F = Fhkl_init - Fhkl_current
-    var_F = np.sum(Fhkl_init**2)
+    if params.sigma_frac is None:
+        var_F = np.sum(Fhkl_init**2)
+    else:
+        var_F = (params.sigma_frac*Fhkl_init)**2
+
     f_Fhkl = np.sum(delta_F**2 / var_F)
 
     if compute_grad:
@@ -1042,6 +1069,19 @@ class Fhkl_updater:
         for i_exp in Modelers:
             Hi_asu_in_exp = Modelers[i_exp].Hi_asu
             self.unique_hkl = self.unique_hkl.union(set(Hi_asu_in_exp))
+        #n_unique = len(self.unique_hkl)
+
+        # occastionally shoeboxes model neighboring spots , so we need to update those as well
+        for h, k, l in self.unique_hkl.copy():
+            for dl in [-1,0,1]:
+                for dk in [-1,0,1]:
+                    for dh in [-1,0,1]:
+                        hkl_shifted = h+dh, k+dk, l+dl
+                        if hkl_shifted in SIM.i_fcell_from_asu:
+                            # add the hkls that are being updated potentially on other ranks modeling other shots
+                            self.unique_hkl.add(hkl_shifted)
+        #if len(self.unique_hkl)> n_unique:
+        #    print("rank %d added neighboring spot Fhkl to updater" % COMM.rank)
 
         self.equiv_hkls = {}
         self.update_idx = flex.miller_index()

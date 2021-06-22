@@ -5,6 +5,7 @@ from __future__ import absolute_import, division, print_function
 import glob
 import time
 import os
+import numpy as np
 try:
     import pandas
 except ImportError:
@@ -223,10 +224,21 @@ class Script:
                     cuda=self.params.cuda, d_max=self.params.d_max, d_min=self.params.d_min,
                     output_img=output_img,
                     njobs=self.params.njobs, device_Id=dev_id, omp=self.params.omp, norm_by_spectrum=True,
-                    symbol_override=self.params.symbol_override, defaultF=self.params.default_F, quiet=self.params.quiet)
+                    symbol_override=self.params.symbol_override, defaultF=self.params.default_F, quiet=self.params.quiet,
+                     reset_Bmatrix=True, time_panels=True)
 
             # if strong is None, this will just return all the predictions
             # else it returns the strong reflections that are indexed by the prediction model
+            C = exper.crystal
+            uc_param = panda_frame[['a','b','c','al', 'be', 'ga']].values[0]
+            ucell_man = utils.manager_from_params(uc_param)
+            C.set_B(ucell_man.B_recipspace)
+            exper.crystal = C
+            exper.detector = utils.strip_thickness_from_detector(exper.detector)
+            wave, I = map(np.array, zip(*utils.load_spectra_file(panda_frame.spectrum_filename.values[0], as_spectrum=True)))
+            wavelen = sum(wave * I) / sum(I)
+            exper.beam.set_wavelength(wavelen)
+            exper.detector = utils.shift_panelZ(exper.detector, panda_frame.detz_shift_mm.values[0])
             Rindexed = utils.indexed_from_model(strong, model_imgs, exper, tolerance=self.params.tolerance,
                                                 thresh=self.params.thresh, Qdist_cutoff=self.params.Qdist_cutoff)
             Rindexed['id'] = flex.int(len(Rindexed), 0)

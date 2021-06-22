@@ -60,7 +60,7 @@ struct diffBragg_cudaPointers {
   CUDAREAL * cu_pix0_vectors;
   CUDAREAL * cu_close_distances;
 
-  int * cu_nominal_l=NULL;
+  int * cu_nominal_hkl=NULL;
   CUDAREAL * cu_fpfdp=NULL;
   CUDAREAL * cu_fpfdp_derivs=NULL;
   CUDAREAL * cu_atom_data=NULL;
@@ -158,7 +158,7 @@ void diffBragg_loopy(
         int detector_thicksteps, int phisteps, int Npix_to_allocate, bool no_Nabc_scale,
         std::vector<double>& fpfdp,
         std::vector<double>& fpfdp_derivs,
-        std::vector<double>& atom_data, std::vector<int>& nominal_l);
+        std::vector<double>& atom_data, std::vector<int>& nominal_hkl);
 
 
 void freedom(diffBragg_cudaPointers& cp);

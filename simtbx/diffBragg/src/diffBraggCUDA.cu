@@ -85,7 +85,7 @@ void diffBragg_loopy(
         std::vector<CUDAREAL>& fpfdp,
         std::vector<CUDAREAL>& fpfdp_derivs,
         std::vector<CUDAREAL>&atom_data,
-        std::vector<int>&nominal_l){ // diffBragg cuda loopy
+        std::vector<int>&nominal_hkl){ // diffBragg cuda loopy
 
 
     if (phi0 != 0 || phisteps > 1){
@@ -168,8 +168,6 @@ void diffBragg_loopy(
             gpuErr(cudaMallocManaged((void **)&cp.cu_UMATS_RXYZ_prime, UMATS_RXYZ_prime.size()*sizeof(MAT3)));
         if (UMATS_RXYZ_dbl_prime.size()>0)
             gpuErr(cudaMallocManaged((void **)&cp.cu_UMATS_RXYZ_dbl_prime, UMATS_RXYZ_dbl_prime.size()*sizeof(MAT3)));
-        if(nominal_l.size() >0)
-            gpuErr(cudaMallocManaged(&cp.cu_nominal_l, nominal_l.size()*sizeof(int)));
 
         gpuErr(cudaMallocManaged((void **)&cp.cu_dB_Mats, dB_Mats.size()*sizeof(MAT3)));
         gpuErr(cudaMallocManaged((void **)&cp.cu_dB2_Mats, dB2_Mats.size()*sizeof(MAT3)));
@@ -232,6 +230,8 @@ void diffBragg_loopy(
         //gpuErr(cudaMallocManaged(&cp.cu_d_panel_orig_images, Npix_to_allocate*3*sizeof(CUDAREAL)));
         //gpuErr(cudaMallocManaged(&cp.cu_d_lambda_images, Npix_to_allocate*2*sizeof(CUDAREAL)));
         gpuErr(cudaMallocManaged(&cp.cu_d2_Bmat_images, Npix_to_allocate*6*sizeof(CUDAREAL)));
+        if(nominal_hkl.size() >0)
+            gpuErr(cudaMallocManaged(&cp.cu_nominal_hkl, Npix_to_allocate*3*sizeof(int)));
         //gpuErr(cudaMallocManaged(&cp.cu_d_sausage_XYZ_scale_images, num_sausages*Npix_to_allocate*4*sizeof(CUDAREAL)));
 
         //gettimeofday(&t4, 0);
@@ -368,8 +368,8 @@ void diffBragg_loopy(
 //  END  DETECTOR VECTORS
 
     if ( ALLOC || FORCE_COPY){
-      for(int i=0; i< nominal_l.size(); i++){
-        cp.cu_nominal_l[i] = nominal_l[i];
+      for(int i=0; i< nominal_hkl.size(); i++){
+        cp.cu_nominal_hkl[i] = nominal_hkl[i];
       }
       for (int i=0; i< atom_data.size(); i++){
         cp.cu_atom_data[i] = atom_data[i];
@@ -456,6 +456,7 @@ void diffBragg_loopy(
     //int sm_size = number_of_sources*5*sizeof(CUDAREAL);
     //gpu_sum_over_steps<<<numblocks, blocksize, sm_size >>>(
     bool aniso_eta = UMATS_RXYZ.size() != UMATS_RXYZ_prime.size();
+    bool use_nominal_hkl = !nominal_hkl.empty();
     gpu_sum_over_steps<<<numblocks, blocksize>>>(
         Npix_to_model, cp.cu_panels_fasts_slows,
         cp.cu_floatimage,
@@ -506,7 +507,7 @@ void diffBragg_loopy(
         cp.cu_odet_vectors, cp.cu_pix0_vectors,
         _nopolar, _point_pixel, _fluence, _r_e_sqr, _spot_scale, Npanels, aniso_eta, no_Nabc_scale,
         cp.cu_fpfdp,  cp.cu_fpfdp_derivs, cp.cu_atom_data, num_atoms,
-        refine_fp_fdp, cp.cu_nominal_l);
+        refine_fp_fdp, cp.cu_nominal_hkl, use_nominal_hkl);
 
     error_msg(cudaGetLastError(), "after kernel call");
 
@@ -586,8 +587,8 @@ void freedom(diffBragg_cudaPointers& cp){
         gpuErr(cudaFree(cp.cu_odet_vectors));
         gpuErr(cudaFree(cp.cu_pix0_vectors));
         gpuErr(cudaFree(cp.cu_close_distances));
-        if (cp.cu_nominal_l != NULL)
-          gpuErr(cudaFree(cp.cu_nominal_l));
+        if (cp.cu_nominal_hkl != NULL)
+          gpuErr(cudaFree(cp.cu_nominal_hkl));
         if (cp.cu_atom_data != NULL)
             gpuErr(cudaFree(cp.cu_atom_data));
         if(cp.cu_fpfdp != NULL)
