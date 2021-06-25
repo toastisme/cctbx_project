@@ -10,6 +10,7 @@ parser.add_argument("--n", type=int, help="pixel cutoff", default=2)
 parser.add_argument("--j", type=int, help="number of jobs", default=1)
 parser.add_argument("--save", type=str, help="optional file name for saving figure output", default=None)
 parser.add_argument("--signalcut", type=float, default=None, help="optional signal to backgroud cutoff")
+parser.add_argument("--symbol", type=str, default="P1", help="space group symbol for mapping HKL list")
 args = parser.parse_args()
 import h5py
 from simtbx.diffBragg import ls49_utils
@@ -18,6 +19,7 @@ import pandas
 from scipy.ndimage.filters import gaussian_filter as GF
 from scipy.spatial import distance, cKDTree
 import os
+import re
 from simtbx.diffBragg import utils
 from dials.array_family import flex
 from scipy.ndimage import label, maximum_filter,center_of_mass, generate_binary_structure
@@ -64,39 +66,39 @@ def plot_overall_delta(df, savename=None):
     else:
         plt.show()
 
-    res_bins = [30.0051,
-                4.0169,
-                3.1895,
-                2.7867,
-                2.5320,
-                2.3506,
-                2.2121,
-                2.1013,
-                2.0099,
-                1.9325,
-                1.8658,
-                1.8075,
-                1.7558,
-                1.7096,
-                1.6679,
-                1.6300]
+    #res_bins = [30.0051,
+    #            4.0169,
+    #            3.1895,
+    #            2.7867,
+    #            2.5320,
+    #            2.3506,
+    #            2.2121,
+    #            2.1013,
+    #            2.0099,
+    #            1.9325,
+    #            1.8658,
+    #            1.8075,
+    #            1.7558,
+    #            1.7096,
+    #            1.6679,
+    #            1.6300]
 
-def get_centroid(img):
-    bs = generate_binary_structure(2,3)
-    lab, nlab = label(img > np.percentile(img,90), bs)
-    # take the central label if 2 exist
-    if nlab > 1:
-        y, x = img.shape
-        coms = [center_of_mass(img, lab, i+1) for i in range(1, nlab)]
-        cent = y*.5, x*.5
-        com = coms[np.argmin([distance.euclidean(xy, cent) for xy in coms])]
-        nlab = 1
-    else:
-        com = center_of_mass(img, lab, 1)
-    return com, nlab
-
-def get_centroid2(img):
-    peakmask = maximum_filter(img, size=2)
+#def get_centroid(img):
+#    bs = generate_binary_structure(2,3)
+#    lab, nlab = label(img > np.percentile(img,90), bs)
+#    # take the central label if 2 exist
+#    if nlab > 1:
+#        y, x = img.shape
+#        coms = [center_of_mass(img, lab, i+1) for i in range(1, nlab)]
+#        cent = y*.5, x*.5
+#        com = coms[np.argmin([distance.euclidean(xy, cent) for xy in coms])]
+#        nlab = 1
+#    else:
+#        com = center_of_mass(img, lab, 1)
+#    return com, nlab
+#
+#def get_centroid2(img):
+#    peakmask = maximum_filter(img, size=2)
 
 print("pandas input")
 if args.glob is not None:
@@ -106,26 +108,22 @@ if args.glob is not None:
 else:
     df = pandas.read_pickle(args.input)
 
-
-import re
-
-def get_strong_refl(name):
-    s = re.search("run[0-9]+_shot[0-9]+",name)
-    rs = name[s.start():s.end()]
-    strong_name = "/global/cfs/cdirs/m3562/der/indexed/%s_indexed.refl" % rs
-    return strong_name
+#def get_strong_refl(name):
+#    s = re.search("run[0-9]+_shot[0-9]+",name)
+#    rs = name[s.start():s.end()]
+#    strong_name = "/global/cfs/cdirs/m3562/der/indexed/%s_indexed.refl" % rs
+#    return strong_name
 
 
 if "stage1_output_img" in list(df):
-    print("NEWWAYimAGES")
     df["imgs"] = df.stage1_output_img
 
 if "imgs" not in list(df):
-    #df["imgs"] = [df.opt_exp_name.values[0].replace("expers", "imgs").replace(".expt", ".h5")][f.replace("expers", "imgs").replace(".expt", ".h5") for f in df.opt_exp_name]
     df['imgs'] = [f.replace("expers", "imgs").replace(".expt", ".h5") for f in df.opt_exp_name]
+
 # NOTE new way
-df["refl_names"] = ["/global/cfs/cdirs/m3562/der/indexed/%s_indexed.refl" % utils.get_rs(f) for f in df.exp_name]
-import os
+#df["refl_names"] = ["/global/cfs/cdirs/m3562/der/indexed/%s_indexed.refl" % utils.get_rs(f) for f in df.exp_name]
+df["refl_names"] = df.stage1_refls #["/global/cfs/cdirs/m3562/der/indexed/%s_indexed.refl" % utils.get_rs(f) for f in df.exp_name]
 assert os.path.exists(df.refl_names.values[0])
 
 #if "stage1_refls" in list(df):
@@ -154,6 +152,7 @@ def main(jid):
     per_img_dials_vec_dists =[]
     img_names =[]
     per_img_shot_roi = []
+    per_img_hkl = []
     Nno_sig = 0
     Nposs =0
     Nroi = 0
@@ -164,10 +163,10 @@ def main(jid):
             print("Processing %d / %d" % (ii+1, len(df)))
         h = h5py.File(imgf, "r")
         dat = h['data']
-        if 'bragg' in list(h.keys()):
-            mod = h['bragg']
-        else:
-            mod = h['model']
+        #if 'bragg' in list(h.keys()):
+        mod = h['bragg']
+        #else:
+        mod_with_bg = h['model']
         nroi = len(dat.keys())
         R = flex.reflection_table.from_file(reff)
         R["refl_index"] = flex.int(range(len(R)))
@@ -182,6 +181,7 @@ def main(jid):
         all_dials_vec_dists = []
         all_Z =[]
         all_Z2 =[]
+        all_hkl = []
         all_shot_roi = []
         sigma_rdout = h["sigma_rdout"][()]
         Nroi+= nroi
@@ -193,6 +193,7 @@ def main(jid):
 
             ddd = dat["roi%d" % img_i_roi][()]
             mmm = mod["roi%d" % img_i_roi][()]
+            mmm_with_bg = mod_with_bg["roi%d" % img_i_roi][()]
             if np.all(mmm==0):
                 #print("Empty spot! continue")
                 Nno_sig += 1
@@ -203,8 +204,8 @@ def main(jid):
                 print("signal cut!")
                 continue
             #noise = np.sqrt(ddd + sigma_rdout**2)
-            noise = np.sqrt(mmm + sigma_rdout**2)
-            Z = (ddd-mmm) / noise
+            noise = np.sqrt(mmm_with_bg + sigma_rdout**2)
+            Z = (ddd-mmm_with_bg) / noise
             #Z2 = (ddd-mmm) / noise2
             roi_d = GF(ddd, 1) 
             roi_m = GF(mmm, 0 )
@@ -262,7 +263,9 @@ def main(jid):
             xcal,ycal,_ = r['xyzcal.px']
             xobs,yobs,_ = r['xyzobs.px.value']
             rlp = r['rlp']
+            hkl = r['miller_index']
             reso = 1 / np.linalg.norm(rlp)
+            refl_idx = r['refl_index']
             #d_dials = distance.euclidean((x_com, y_com), (xcal, ycal))
             d_dials = distance.euclidean((xobs, yobs), (xcal, ycal))
             d = distance.euclidean((xobs, yobs), (x_nelder, y_nelder))
@@ -282,13 +285,15 @@ def main(jid):
             vec_d = np.array((xobs, yobs)) - np.array((x_nelder, y_nelder))
             all_vec_dists.append(vec_d)
             all_dials_vec_dists.append(vec_dials_d)
-            all_shot_roi.append(img_i_roi)
+            all_shot_roi.append(refl_idx)  # NOTE hijacking container for refls idx
             assert r['panel'] == pid
             all_ref_index.append(pid)  # NOTE hijacking refl index to be pid
             #all_signal.append(signal)
             all_signal.append(reso) # NOTE hijacking this container, rename to reso later
+            all_hkl.append(hkl)
 
         img_names.append(imgf)
+        per_img_hkl.append(tuple(utils.map_hkl_list(all_hkl, True, args.symbol)))
         per_img_ref_index.append(tuple(all_ref_index))
         per_img_signal.append(tuple(all_signal))
         per_img_dists.append(tuple(all_dists))
@@ -301,7 +306,7 @@ def main(jid):
 
     return dev_res, per_img_dists, per_img_dials_dists, per_img_Z, per_img_Z2, per_img_vec_dists\
                 ,per_img_dials_vec_dists, per_img_shot_roi, per_img_signal, img_names, per_img_ref_index,\
-           (Nno_sig, Nposs, Nroi)
+           (Nno_sig, Nposs, Nroi), per_img_hkl
 
 results = Parallel(n_jobs=args.j)(delayed(main)(j) for j in range(args.j))
 
@@ -315,6 +320,7 @@ per_img_signal = []
 per_img_ref_index =[]
 per_img_dials_vec_dists =[]
 per_img_shot_roi = []
+per_img_hkl = []
 img_names =[]
 n1=n2=n3 = 0
 for r in results:
@@ -330,6 +336,7 @@ for r in results:
     img_names += r[9]
     per_img_ref_index += r[10]
     nno_sig, nposs, nroi = r[11]
+    per_img_hkl += r[12]
     n1 += nno_sig
     n2 += nposs
     n3 += nroi
@@ -343,7 +350,8 @@ df_process = pandas.DataFrame(
     #"refl_index": per_img_ref_index,
      "panel": per_img_ref_index,
     "pred_offsets_dials" : per_img_dials_dists,
-    "img_i_roi" : per_img_shot_roi,"imgs": img_names})
+     "hkl": per_img_hkl,
+    "refls_idx" : per_img_shot_roi,"imgs": img_names})
 
 df = pandas.merge(df, df_process, on="imgs", how='inner')
 # NOTE uncomment for LS49

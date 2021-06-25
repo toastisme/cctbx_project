@@ -565,6 +565,7 @@ void diffBragg::diffBragg_sum_over_steps(
 
             /* checkpoint for Fcell manager */
             if (refine_fcell){
+            //    TODO rewrite so no divide by Fcell
                 int nom_h=_h0;
                 int nom_k=_k0;
                 int nom_l=_l0;

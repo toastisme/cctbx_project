@@ -1,6 +1,7 @@
 from __future__ import absolute_import, division, print_function
 
 from simtbx.command_line.hopper import get_data_model_pairs
+import lmfit
 from cctbx import sgtbx, miller
 import time
 from collections import Counter
@@ -15,7 +16,7 @@ from stream_redirect import Redirect
 # diffBragg internal parameter indices
 FHKL_ID = 11
 
-# LIBTBX_SET_DISPATCHER_NAME simtbx.diffBragg.ensemble
+# LIBTBX_SET_DISPATCHER_NAME simtbx.diffBragg.ensemble_all
 
 import numpy as np
 np.seterr(invalid='ignore')
@@ -275,14 +276,14 @@ class Script:
             spectra_file = input_lines[i_exp].strip().split()[2]
             spectrum = utils.load_spectra_file(spectra_file, total_flux, spectrum_stride, as_spectrum=True)
 
-            # set parameter objects for this shot
-            Modeler.PAR = Modeler.SimulatorParamsForExperiment(self.SIM, bests[i_exp])
+            # set lmfit parameter objects for this shot
+            Modeler.shot_params = Modeler.SimulatorParamsForExperiment(self.SIM, bests[i_exp])
+
             #Modeler.spectrum = spectrum  # store the spectrum as part of the modeler
             self.SIM.beam.spectrum = spectrum
             Modeler.spectrum = spectrum
             Modeler.xray_beams = self.SIM.beam.xray_beams
 
-            # define the fcell global index for each modeled pixel
             Modeler.all_fcell_global_idx = np.array([self.SIM.i_fcell_from_asu[h] for h in Modeler.hi_asu_perpix])
             Modeler.unique_i_fcell = set(Modeler.all_fcell_global_idx)
             Modeler.is_i_fcell = {}
@@ -664,35 +665,28 @@ class DataModeler:
     def SimulatorParamsForExperiment(self, SIM, best=None):
         """optional best parameter is a single row of a pandas datafame containing the starting
         models, presumably optimized from a previous minimzation using this program"""
-        ParameterType = RangedParameter
-        PAR = SimParams()
+        shot_params = []
 
-        # set per shot parameters
-        p = ParameterType()
-        p.sigma = self.params.sigmas.G
         if best is not None:
-            p.init = best.spot_scales.values[0]
+            scale_init = best.spot_scales.values[0]
         else:
-            p.init = self.params.init.G
-        p.minval = self.params.mins.G
-        p.maxval = self.params.maxs.G
-        PAR.Scale = p
+            scale_init = self.params.init.G
+        p_Scale = lmfit.Parameter( \
+            "Scale_%s" % self.exp_name, value=scale_init,
+            min=self.params.mins.G, max=self.params.maxs.G,
+            vary=self.params.G_refine)
+
+        shot_params.append(p_Scale)
 
         if best is not None:
             self.E.crystal.set_A(best.Amats.values[0])
-        PAR.Umatrix = sqr(self.E.crystal.get_U())
+        self.Umatrix = sqr(self.E.crystal.get_U())
 
         # NOTE intermitent fix for Bmatrix
         # ideally this:
-        PAR.Bmatrix = sqr(self.E.crystal.get_B())
-        # but for now this:
-        #ucell_params =  best[["a", "b", "c", "al", "be", "ga"]].values[0]
-        #ucell_man = utils.manager_from_params(ucell_params)
-        #PAR.Bmatrix = ucell_man.B_recipspace
-
-        PAR.Nabc = tuple(best.ncells.values[0])
-
-        return PAR
+        self.Bmatrix = sqr(self.E.crystal.get_B())
+        self.Nabc = tuple(best.ncells.values[0])
+        return shot_params
 
 
 def Minimize(x0, rank_xidx, params, SIM, Modelers, ntimes, nshots_total):
@@ -739,28 +733,25 @@ class SimParams:
 
 #@profile
 def model(x, SIM, Modeler, compute_grad=True, sanity_test=None):
+    """
+
+    :param x: lmfit parameters object
+    :param SIM: Sim data instance with added attributes
+    :param Modeler: Modeler instance with added attributes
+    :param compute_grad: whether to compute grad
+    :param sanity_test: not used now
+    :return:
+    """
 
     pfs = Modeler.pan_fast_slow
-    PAR = Modeler.PAR
 
     # update the simlator crystal model
-    SIM.D.Umatrix = PAR.Umatrix
-    SIM.D.Bmatrix = PAR.Bmatrix
-    SIM.D.set_ncells_values(PAR.Nabc)
+    SIM.D.Umatrix = Modeler.Umatrix
+    SIM.D.Bmatrix = Modeler.Bmatrix
+    SIM.D.set_ncells_values(Modeler.Nabc)
     SIM.D.shift_origin_z(SIM.detector, Modeler.shiftZ_meters)  # set the originZ as SIM.detector.origin plus the shiftZ which should be in meters
-    # detector shift code looks like
-    # for (int pid=0; pid< detector.size(); pid++)
-    #  pix0_vectors[pid*3 + 2] = detector[pid].get_origin()[2]/1000.0 + shiftZ;
-    #print(PAR.Nabc)
-    #print(PAR.Umatrix)
-    #print(PAR.Bmatrix)
 
-    # update the energy spectrum
-    #SIM.beam.spectrum = Modeler.spectrum
-    #SIM.D.xray_beams = SIM.beam.xray_beams
-    #print("Simulating %d energy channels" % len(SIM.D.xray_beams))
-    SIM.D.xray_beams = Modeler.xray_beams #SIM.beam.xray_beams
-    #SIM.D.update_xray_beams(SIM.beam.xray_beams)
+    SIM.D.xray_beams = Modeler.xray_beams
 
     # how many parameters we simulate
     npix = int(len(pfs) / 3)
@@ -769,69 +760,67 @@ def model(x, SIM, Modeler, compute_grad=True, sanity_test=None):
     grad = np.zeros(nparam)  # gradient
 
     # get the scale factor for this shots
-    scale_reparam = x[0]
-    scale = PAR.Scale.get_val(scale_reparam)
+    scale = x["Scale_%s" % Modeler.exp_name].value
 
+    #if sanity_test==0:  # test hkl variation within each shoebox
+    #    SIM.D.track_Fhkl = True
+    #    PFS = np.reshape(pfs, (npix, 3))
+    #    uroi = set(Modeler.roi_id)
+    #    all_good_count_stats = []
+    #    all_bad_count_stats = []
+    #    for ii,i_roi in enumerate(uroi):
+    #        output = Redirect(stdout=True)
+    #        i_roi_sel = Modeler.roi_id==i_roi
+    #        with output:
+    #            sel = np.logical_and(i_roi_sel, Modeler.all_trusted)
+    #            pfs_roi = PFS[sel]
+    #            pfs_roi = np.ascontiguousarray(pfs_roi.ravel())
+    #            pfs_roi = flex.size_t(pfs_roi)
+    #            SIM.D.add_diffBragg_spots(pfs_roi)
+    #        i_fcell = Modeler.all_fcell_global_idx[i_roi_sel][0]
+    #        shoebox_hkl = SIM.asu_from_i_fcell[i_fcell]
+    #        lines = output.stdout.split("\n")
+    #        count_stats = {}
+    #        for l in lines:
+    #            if l.startswith("Pixel"):
+    #                hkl = l.split()[5]
+    #                hkl = tuple(map(int, hkl.split(",")))
+    #                hkl = utils.map_hkl_list([hkl], True, SIM.space_group_symbol)[0]
+    #                count = int(l.split()[8])
+    #                if hkl in count_stats:
+    #                    count_stats[hkl] += count
+    #                else:
+    #                    count_stats[hkl] = count
+    #        ntot = sum(count_stats.values())
+    #        assert shoebox_hkl in count_stats
+    #        print("Shoebox hkl", shoebox_hkl)
+    #        for hkl in count_stats:
+    #            frac = count_stats[hkl] / float(ntot)
+    #            h,k, l = hkl
+    #            print("\tstep hkl %d,%d,%d : frac=%.1f%%" % (h,k,l,frac*100))
+    #            count_stats[hkl] = frac
+    #        if len(count_stats)==1:
+    #            all_good_count_stats.append([shoebox_hkl,count_stats])
+    #        else:
+    #            all_bad_count_stats .append([shoebox_hkl, count_stats])
+    #    if all_bad_count_stats:
+    #        print("Shot %s had %d /  %d rois with HKL variation" %(Modeler.exp_name, len(all_bad_count_stats), len(uroi)))
+    #        percs = [stats[sb_hkl]*100 for sb_hkl, stats in all_bad_count_stats]
+    #        ave_perc = sum(percs) / len(percs)
+    #        min_perc = min(percs)
+    #        nmax = max(len(stats) for _,stats in all_bad_count_stats)
+    #        print("\tMin %.1f%%, Mean=%.1f%%, most variation: %d hkls in a shoebox" %(min_perc, ave_perc, nmax))
 
-    if sanity_test==0:  # test hkl variation within each shoebox
-        SIM.D.track_Fhkl = True
-        PFS = np.reshape(pfs, (npix, 3))
-        uroi = set(Modeler.roi_id)
-        all_good_count_stats = []
-        all_bad_count_stats = []
-        for ii,i_roi in enumerate(uroi):
-            output = Redirect(stdout=True)
-            i_roi_sel = Modeler.roi_id==i_roi
-            with output:
-                sel = np.logical_and(i_roi_sel, Modeler.all_trusted)
-                pfs_roi = PFS[sel]
-                pfs_roi = np.ascontiguousarray(pfs_roi.ravel())
-                pfs_roi = flex.size_t(pfs_roi)
-                SIM.D.add_diffBragg_spots(pfs_roi)
-            i_fcell = Modeler.all_fcell_global_idx[i_roi_sel][0]
-            shoebox_hkl = SIM.asu_from_i_fcell[i_fcell]
-            lines = output.stdout.split("\n")
-            count_stats = {}
-            for l in lines:
-                if l.startswith("Pixel"):
-                    hkl = l.split()[5]
-                    hkl = tuple(map(int, hkl.split(",")))
-                    hkl = utils.map_hkl_list([hkl], True, SIM.space_group_symbol)[0]
-                    count = int(l.split()[8])
-                    if hkl in count_stats:
-                        count_stats[hkl] += count
-                    else:
-                        count_stats[hkl] = count
-            ntot = sum(count_stats.values())
-            assert shoebox_hkl in count_stats
-            print("Shoebox hkl", shoebox_hkl)
-            for hkl in count_stats:
-                frac = count_stats[hkl] / float(ntot)
-                h,k, l = hkl
-                print("\tstep hkl %d,%d,%d : frac=%.1f%%" % (h,k,l,frac*100))
-                count_stats[hkl] = frac
-            if len(count_stats)==1:
-                all_good_count_stats.append([shoebox_hkl,count_stats])
-            else:
-                all_bad_count_stats .append([shoebox_hkl, count_stats])
-        if all_bad_count_stats:
-            print("Shot %s had %d /  %d rois with HKL variation" %(Modeler.exp_name, len(all_bad_count_stats), len(uroi)))
-            percs = [stats[sb_hkl]*100 for sb_hkl, stats in all_bad_count_stats]
-            ave_perc = sum(percs) / len(percs)
-            min_perc = min(percs)
-            nmax = max(len(stats) for _,stats in all_bad_count_stats)
-            print("\tMin %.1f%%, Mean=%.1f%%, most variation: %d hkls in a shoebox" %(min_perc, ave_perc, nmax))
+    #        for sb_h,stats in all_bad_count_stats:
+    #            h,k,l = zip(*stats.keys())
+    #            if len(set(h))>1 or len(set(k))>1:
+    #                print("Weird HK vary: shot %s" % Modeler.exp_name, sb_h)
+    #            if not np.all(np.sort(l) == np.arange(min(l), min(l)+len(l))):
+    #                print("Weird L sort: shot %s" % Modeler.exp_name, sb_h)
+    #            if len(stats) > 3:
+    #                print("Weird Nmax: shot %s" % Modeler.exp_name, sb_h)
 
-            for sb_h,stats in all_bad_count_stats:
-                h,k,l = zip(*stats.keys())
-                if len(set(h))>1 or len(set(k))>1:
-                    print("Weird HK vary: shot %s" % Modeler.exp_name, sb_h)
-                if not np.all(np.sort(l) == np.arange(min(l), min(l)+len(l))):
-                    print("Weird L sort: shot %s" % Modeler.exp_name, sb_h)
-                if len(stats) > 3:
-                    print("Weird Nmax: shot %s" % Modeler.exp_name, sb_h)
-
-        return  # end sanity test on hkl variation
+    #    return  # end sanity test on hkl variation
 
     # compute the forward model, and gradients when instructed
     SIM.D.add_diffBragg_spots(pfs, Modeler.all_nominal_hkl)
@@ -847,7 +836,7 @@ def model(x, SIM, Modeler, compute_grad=True, sanity_test=None):
 
         # compute the scale factor gradient term, which is related directly to the forward model
         scale_grad = bragg / scale
-        scale_grad = PAR.Scale.get_deriv(scale_reparam, scale_grad)
+        #scale_grad = PAR.Scale.get_deriv(scale_reparam, scale_grad)
         grad[0] += (common_grad_term * scale_grad)[Modeler.all_trusted].sum()
 
         # TODO add a dimension to get_derivative_pixels(FHKL_ID), in case that pixels hold information on multiple HKL
@@ -856,9 +845,6 @@ def model(x, SIM, Modeler, compute_grad=True, sanity_test=None):
         for i_fcell in Modeler.unique_i_fcell:
             sel = Modeler.is_i_fcell[i_fcell]
             this_fcell_grad = fcell_grad[sel]
-            rescaled_amplitude = x[1+i_fcell]
-            #TODO try numexpr to speed up the trig operations in get_deriv
-            this_fcell_grad = SIM.Fhkl_modelers[i_fcell].get_deriv(rescaled_amplitude, this_fcell_grad)
 
             this_common_g = common_grad_term[sel]
             this_trusted = Modeler.all_trusted[sel]
@@ -866,32 +852,32 @@ def model(x, SIM, Modeler, compute_grad=True, sanity_test=None):
     resid_term = (.5*(np.log(2*np.pi*V) + resid_square / V))[Modeler.all_trusted].sum()   # negative log Likelihood target
 
     ## sanity check on amplitudes:
-    if sanity_test==1:
-        bad_rois = []
-        for i in set(Modeler.roi_id):
-            bragg_i = bragg[Modeler.roi_id == i]
-            if np.all(bragg_i == 0):
-                bad_rois.append(i)
-            else:
-                i_fcell = Modeler.all_fcell_global_idx[Modeler.roi_id == i][0]
-                if np.isnan(grad[-SIM.n_global_fcell+i_fcell]):
-                    bad_rois.append(i)
+    #if sanity_test==1:
+    #    bad_rois = []
+    #    for i in set(Modeler.roi_id):
+    #        bragg_i = bragg[Modeler.roi_id == i]
+    #        if np.all(bragg_i == 0):
+    #            bad_rois.append(i)
+    #        else:
+    #            i_fcell = Modeler.all_fcell_global_idx[Modeler.roi_id == i][0]
+    #            if np.isnan(grad[-SIM.n_global_fcell+i_fcell]):
+    #                bad_rois.append(i)
 
-        if bad_rois:
-            #raise ValueError("Oops")
-            for b in bad_rois:
-                i_fcell = Modeler.all_fcell_global_idx[Modeler.roi_id == b][0]
-                hkl_asu = SIM.asu_from_i_fcell[i_fcell]
-                try:
-                    bad_amp = SIM.crystal.miller_array.value_at_index(hkl_asu)
-                except AssertionError:
-                    bad_amp = np.nan
-                value_of_grad = grad[-SIM.n_global_fcell + i_fcell]
-                h,k,l = hkl_asu
-                print("No signal in %s; Bragg peak at %d %d %d: Famp=%f, grad=%f" %(Modeler.exp_name, h,k,l,bad_amp, value_of_grad))
-            print("NANs above indicate an hkl that is not in the starting structure factor array")
-            print("Others indicate that the model has no signal in the shoebox")
-            print("Remove the bad ROIS from the input, exiting.")
+    #    if bad_rois:
+    #        #raise ValueError("Oops")
+    #        for b in bad_rois:
+    #            i_fcell = Modeler.all_fcell_global_idx[Modeler.roi_id == b][0]
+    #            hkl_asu = SIM.asu_from_i_fcell[i_fcell]
+    #            try:
+    #                bad_amp = SIM.crystal.miller_array.value_at_index(hkl_asu)
+    #            except AssertionError:
+    #                bad_amp = np.nan
+    #            value_of_grad = grad[-SIM.n_global_fcell + i_fcell]
+    #            h,k,l = hkl_asu
+    #            print("No signal in %s; Bragg peak at %d %d %d: Famp=%f, grad=%f" %(Modeler.exp_name, h,k,l,bad_amp, value_of_grad))
+    #        print("NANs above indicate an hkl that is not in the starting structure factor array")
+    #        print("Others indicate that the model has no signal in the shoebox")
+    #        print("Remove the bad ROIS from the input, exiting.")
 
     #if np.any(np.isnan(grad)):
     #    bad_i = np.where(np.isnan(grad))[0]
@@ -967,32 +953,22 @@ def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_
     t_start = time.time()
     timestamps = list(Modelers.keys())
     fchi = fG = 0
-    g = np.zeros_like(x)
+    nglobal_param = len(x)
+    g = np.zeros(nglobal_param)
 
-#   do a global update of the Fhkl parameters in the simulator object
+    # do a global update of the Fhkl parameters in the simulator object
     t_update = time.time()
     SIM.update_Fhkl(SIM, x)
     t_update = time.time()-t_update
-
 
     all_t_model = 0
     for t in timestamps:
         # data modeler for this expt
         Mod_t = Modelers[t]
 
-        #  x_t should be [G,Fhkl0, Fhkl1, Fhkl2, ..]
-        x_t = x[rank_xidx[t]]
-
         t_model = time.time()
 
-        if params.sanity_test_hkl_variation:
-            sanity_test = 0
-        elif params.sanity_test_amplitudes:
-            sanity_test = 1
-        else:
-            sanity_test=None
-
-        resid_term, grad, _ = model(x_t, SIM, Mod_t, compute_grad=compute_grad, sanity_test=sanity_test)
+        resid_term, grad, _ = model(x, SIM, Mod_t, compute_grad=compute_grad)
         t_model  = time.time()-t_model
         all_t_model += t_model
 
@@ -1004,10 +980,8 @@ def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_
         # restraint terms by that factor
         nn = 1. / ntimes[t]
 
-
         # scale factor "G" restraint
-        G_rescaled = x_t[0]
-        G = Mod_t.PAR.Scale.get_val(G_rescaled)
+        G = x["Scale_%s" % Mod_t.exp_name].value
         delG = params.centers.G - G
         G_V = params.betas.G
         fG += nn*(.5*(np.log(2*np.pi*G_V) + delG**2/G_V))
@@ -1023,7 +997,7 @@ def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_
             g[spot_scale_idx] += grad[0]
 
             # scale restraint term
-            g[spot_scale_idx] += nn*Mod_t.PAR.Scale.get_deriv(G_rescaled, -delG / G_V)
+            g[spot_scale_idx] += -nn*delG / G_V
 
     # bring in data from all ranks
     if params.sanity_test_amplitudes:
@@ -1038,24 +1012,19 @@ def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_
 
     # add the Fhkl restraints
     Fhkl_current = np.array([\
-        SIM.Fhkl_modelers[i_fcell].get_val(x[-SIM.n_global_fcell+i_fcell])\
-        for i_fcell in range(SIM.n_global_fcell)])
-    Fhkl_init = np.array([SIM.Fhkl_modelers[i_fcell].init for i_fcell in range(SIM.n_global_fcell)])
-    delta_F = Fhkl_init - Fhkl_current
+        x["Fhkl%d" % i_fcell].value for i_fcell in range(SIM.n_global_fcell)])
+    delta_F = SIM.Fhkl_inits - Fhkl_current
     if params.sigma_frac is None:
-        var_F = np.sum(Fhkl_init**2)
+        var_F = np.sum(SIM.Fhkl_inits_squared)
     else:
-        var_F = (params.sigma_frac*Fhkl_init)**2
+        var_F = params.sigma_frac**2 *SIM.Fhkl_inits_squared
 
     f_Fhkl = np.sum(delta_F**2 / var_F)
 
     if compute_grad:
         # update the gradient restraint term for structure factor amplitudes
-        Fhkl_rescaled = x[-SIM.n_global_fcell:]
         Fhkl_restraint_grad = -2*delta_F / var_F
-        g[-SIM.n_global_fcell:] += np.array([\
-            SIM.Fhkl_modelers[i_fcell].get_deriv(Fhkl_rescaled[i_fcell], Fhkl_restraint_grad[i_fcell])\
-            for i_fcell in range(SIM.n_global_fcell)])
+        g[-SIM.n_global_fcell:] += Fhkl_restraint_grad
 
 
     f = fchi + fG + f_Fhkl
@@ -1109,7 +1078,6 @@ class Fhkl_updater:
         for i_exp in Modelers:
             Hi_asu_in_exp = Modelers[i_exp].Hi_asu
             self.unique_hkl = self.unique_hkl.union(set(Hi_asu_in_exp))
-        #n_unique = len(self.unique_hkl)
 
         # occastionally shoeboxes model neighboring spots , so we need to update those as well
         for h, k, l in self.unique_hkl.copy():
@@ -1120,8 +1088,6 @@ class Fhkl_updater:
                         if hkl_shifted in SIM.i_fcell_from_asu:
                             # add the hkls that are being updated potentially on other ranks modeling other shots
                             self.unique_hkl.add(hkl_shifted)
-        #if len(self.unique_hkl)> n_unique:
-        #    print("rank %d added neighboring spot Fhkl to updater" % COMM.rank)
 
         self.equiv_hkls = {}
         self.update_idx = flex.miller_index()
@@ -1133,12 +1099,17 @@ class Fhkl_updater:
 
     #@profile
     def __call__(self, SIM, x):
+        """
+
+        :param SIM: SIM data instance with added attributes
+        :param x: global lmfit Parameters object
+        :return: None
+        """
         #idx, data = SIM.D.Fhkl_tuple
         update_amps = []
         for hkl_asu in self.unique_hkl:
             i_fcell = SIM.i_fcell_from_asu[hkl_asu]
-            rescaled_amplitude = x[-SIM.n_global_fcell+i_fcell]
-            amp = SIM.Fhkl_modelers[i_fcell].get_val(rescaled_amplitude)
+            amp = x["Fhkl%d" % i_fcell].value
             update_amps += [amp]*len(self.equiv_hkls[hkl_asu])
 
         update_amps = flex.double(update_amps)
@@ -1155,8 +1126,7 @@ def update_Fhkl(SIM, x):
         hkl_asu = SIM.asu_from_i_fcell[i_fcell]
 
         # get the current amplitude
-        xval = x[-SIM.n_global_fcell+i_fcell]
-        new_amplitude = SIM.Fhkl_modelers[i_fcell].get_val(xval)
+        new_amplitude = x["Fhkl%d" % i_fcell].value
 
         # now surgically update the p1 array in nanoBragg with the new amplitudes
         # (need to update each symmetry equivalent)
@@ -1184,15 +1154,20 @@ def setup_Fhkl_attributes(SIM, params, Modelers):
     asu_hi = [SIM.asu_from_i_fcell[i_fcell] for i_fcell in range(SIM.n_global_fcell)]
     SIM.fcell_init_from_asu = {h: SIM.Fdata[SIM.idx_from_p1[h]] for h in asu_hi}
 
-    SIM.Fhkl_modelers = []
+    SIM.Fhkl_parameters = []
+    SIM.Fhkl_inits = []
     for i_fcell in range(SIM.n_global_fcell):
-        p = RangedParameter()
-        p.sigma = params.sigmas.Fhkl
-        p.maxval = params.maxs.Fhkl
-        p.minval = params.mins.Fhkl
         asu = SIM.asu_from_i_fcell[i_fcell]
-        p.init = SIM.fcell_init_from_asu[asu]
-        SIM.Fhkl_modelers.append(p)
+
+        init = SIM.fcell_init_from_asu[asu]
+        SIM.Fhkl_inits.append(init)
+        p_Fhkl = lmfit.Parameter(\
+            "Fhkl%d" % i_fcell, value=init,
+            min=params.mins.Fhkl, max=params.maxs.Fhkl,
+            vary=params.RotXYZ_refine)
+        SIM.Fhkl_parameters.append(p_Fhkl)
+    SIM.Fhkl_inits = np.array(SIM.Fhkl_inits)
+    SIM.Fhkl_inits_squared = SIM.Fhkl_inits**2
 
     # sanity test, passes
     #for i in range(SIM.n_global_fcell):

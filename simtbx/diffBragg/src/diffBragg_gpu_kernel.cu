@@ -640,8 +640,10 @@ void gpu_sum_over_steps(
             if (s_refine_fcell){
                 //if (s_use_nominal_hkl)
                 //    fcell_idx = _l0 - nom_l + 1;
+
                 //if (_F_cell > 0)
-                CUDAREAL value = 2*Iincrement/_F_cell ;
+                //CUDAREAL value = 2*Iincrement/_F_cell ;
+                CUDAREAL value = 2*I0*_F_cell * texture_scale; //Iincrement/_F_cell ;
                 CUDAREAL value2=0;
                 if (s_compute_curvatures){
                 //    NOTE if _Fcell >0
