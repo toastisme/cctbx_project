@@ -17,6 +17,7 @@ ROTZ_ID = 2
 NCELLS_ID = 9
 UCELL_ID_OFFSET = 3
 DETZ_ID = 10
+FHKL_ID = 11
 
 
 class DataModeler:

@@ -229,8 +229,11 @@ sigmas {
     .type = float
     .help = sensitivity for Bfactor
   ucell = [1,1,1,1,1,1]
-    .type = ints
+    .type = floats 
     .help = sensitivity for unit cell params
+  Fhkl = 1
+    .type = float
+    .help = sensitivity for structure factors
 }
 init {
   detz_shift = 0
@@ -271,6 +274,9 @@ mins {
   B = 0
     .type = float
     .help = min for Bfactor 
+  Fhkl = 0
+    .type = float
+    .help = min for structure factors
 }
 maxs {
   detz_shift = 10
@@ -294,6 +300,9 @@ maxs {
   B = 1e3
     .type = float
     .help = max for Bfactor 
+  Fhkl = 1e6
+    .type = float
+    .help = max for structure factors
 }
 RotXYZ_refine = True
   .type = bool

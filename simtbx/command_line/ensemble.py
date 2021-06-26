@@ -66,6 +66,9 @@ first_n = None
 hess = None
   .type = str
   .help = scipy minimize hessian argument, 2-point, 3-point, cs, or None
+dump_roi_info = False
+  .type = bool
+  .help = print the ROIS that each rank will model
 stepsize = 0.5
   .type = float
   .help = basinhopping stepsize
@@ -207,7 +210,7 @@ class Script:
         if self.params.first_n is not None:
             input_lines = input_lines[:self.params.first_n]
 
-        shot_roi_dict = count_rois(input_lines, self.params.quiet)
+        shot_roi_dict = count_rois(input_lines, self.params.dump_roi_info)
         # gether statistics, e.g. how many total ROIs
         nshots = len(shot_roi_dict)
         nrois = sum([len(shot_roi_dict[s]) for s in shot_roi_dict])
@@ -343,7 +346,8 @@ class Script:
             rank_xidx[i_exp] = xidx
 
             Scale_param = Modelers[i_exp].PAR.Scale
-            scale_param_data.append([shot_mapping[i_exp], Scale_param])
+            global_shot_idx = shot_mapping[i_exp]
+            scale_param_data.append([global_shot_idx, Scale_param])
 
         mpi_safe_makedirs(self.params.outdir)
         mpi_safe_makedirs(os.path.join(self.params.outdir, "x"))
@@ -361,8 +365,10 @@ class Script:
                 if i_shot not in output_Scales:
                     output_Scales[i_shot] = Scale
                 else:
-                    assert output_Scales[i_shot] == Scale
-
+                    if output_Scales[i_shot].init != Scale.init:
+                        print("Something weird with global scale organization shot %d, outputScale %f != this Scale %f"\
+                              % (i_shot, output_Scales[i_shot].init, Scale.init))
+                        COMM.Abort()
             # at this point there should be a single scale per shot! We verify that here:
             ordered_shot_inds = np.sort(list(output_Scales.keys()))
             assert np.all(ordered_shot_inds == np.arange(global_Nshots))
@@ -483,7 +489,7 @@ def get_diffBragg_simulator(expt, params):
     return SIM
 
 
-def count_rois(lines, quiet):
+def count_rois(lines, dump_roi_info=False):
     info = []
     for i_line, line in enumerate(lines):
         if i_line % COMM.size != COMM.rank:
@@ -513,7 +519,7 @@ def count_rois(lines, quiet):
     for shot in shot_rois:
         roi_s = ",".join(map(str, shot_rois[shot]))
         out += "\tShot %d; rois=%s\n" % (shot, roi_s)
-    if not quiet: print(out+"\n")
+    if dump_roi_info: print(out+"\n")
     return shot_rois
 
 
@@ -1233,8 +1239,8 @@ def determine_per_rank_max_num_pix(Modelers):
         x1, x2, y1, y2 = map(np.array, zip(*rois))
         npix = np.sum((x2 - x1) * (y2 - y1))
         max_npix = max(npix, max_npix)
-        print("Rank %d, shot %d has %d pixels" % (COMM.rank, i_exp + 1, npix))
-    print("Rank %d, max pix to be modeled: %d" % (COMM.rank, max_npix))
+        #print("Rank %d, shot %d has %d pixels" % (COMM.rank, i_exp + 1, npix))
+    #print("Rank %d, max pix to be modeled: %d" % (COMM.rank, max_npix))
     return max_npix
 
 

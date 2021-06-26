@@ -39,6 +39,7 @@ import numpy as np
 from dxtbx.model.experiment_list import ExperimentListFactory
 from iotbx.reflection_file_reader import any_reflection_file
 import pandas
+from copy import deepcopy
 
 
 def get_pfs(E, rois, pids):
@@ -89,8 +90,14 @@ quiet = True
 
 nold = 0
 n = 0
+shots_with_nmiss = 0
 nmiss = 0
 df = pandas.read_pickle(args.pkl)
+
+# get the average unit cell used
+ucell_params = df.a.mean(), df.b.mean(), df.c.mean(), df.al.mean(), df.be.mean(), df.ga.mean()
+ucell_man = utils.manager_from_params(ucell_params)
+
 output_df = []
 for i_exp_name, exp_name in enumerate(df.opt_exp_name.values):
     if i_exp_name % COMM.size != COMM.rank:
@@ -99,17 +106,25 @@ for i_exp_name, exp_name in enumerate(df.opt_exp_name.values):
     exp_name = df_exp.opt_exp_name.values[0]
     print("Loading expt")
     El = ExperimentListFactory.from_json_file(exp_name, True)
+    expt = El[0]
     print("Done Loading expt")
     strong_reflections = flex.reflection_table.from_observations(El, PHIL_PARAMS)
     strong_refl_name = exp_name.replace(".expt", "_strong.refl")
     strong_reflections.as_file(strong_refl_name)
+    # TODO shfit detZ and strip thickness
+    if "detz_shift_mm" in list(df):  # NOTE, this could also be inside expt_name directly
+        expt.detector = utils.shift_panelZ(expt.detector, df.detz_shift_mm.values[0])
 
-    _=utils.refls_to_q(strong_reflections, El[0].detector, El[0].beam,update_table=True)
+    if PHIL_PARAMS.hopper.simulator.detector.force_zero_thickness:
+        expt.detector = utils.strip_thickness_from_detector(expt.detector)
+
+
+    _=utils.refls_to_q(strong_reflections, expt.detector, expt.beam,update_table=True)
 
     print("Wrote %d refls for exper pair\n%s %s" %(len(strong_reflections), strong_refl_name, exp_name))
-    rois, _ = utils.get_roi_deltaQ(strong_reflections, deltaQ, El[0])
+    rois, _ = utils.get_roi_deltaQ(strong_reflections, deltaQ, expt)
 
-    img_data = utils.image_data_from_expt(El[0])
+    img_data = utils.image_data_from_expt(expt)
 
     img_data /= PHIL_PARAMS.hopper.refiner.adu_per_photon
     is_trusted = utils.load_mask(PHIL_PARAMS.hopper.roi.hotpixel_mask)
@@ -126,7 +141,7 @@ for i_exp_name, exp_name in enumerate(df.opt_exp_name.values):
         use_robust_estimation=not PHIL_PARAMS.hopper.roi.fit_tilt,
         set_negative_bg_to_zero=PHIL_PARAMS.hopper.roi.force_negative_background_to_zero,
         pad_for_background_estimation=PHIL_PARAMS.hopper.roi.pad_shoebox_for_background_estimation,
-        sigma_rdout=sigma_rdout, deltaQ=PHIL_PARAMS.hopper.roi.deltaQ, experiment=El[0],
+        sigma_rdout=sigma_rdout, deltaQ=PHIL_PARAMS.hopper.roi.deltaQ, experiment=expt,
         weighted_fit=PHIL_PARAMS.hopper.roi.fit_tilt_using_weights,
         tilt_relative_to_corner=PHIL_PARAMS.hopper.relative_tilt, ret_cov=True)
 
@@ -138,7 +153,6 @@ for i_exp_name, exp_name in enumerate(df.opt_exp_name.values):
     pids_rois = sorted(list(zip(pids, rois)), key=lambda x: x[0])
     gb = groupby(pids_rois, key=lambda x: x[0])
     rois_per_panel = {pid: [x[1] for x in list(v)] for pid, v in gb}
-    #pfs, roi_id = get_pfs(El[0], rois, pids)
     print("Modeling!")
     model = utils.roi_spots_from_pandas(df_exp, rois_per_panel, quiet=quiet,
                                         mtz_file=REF_NAME, mtz_col=REF_COL, cuda=False,
@@ -209,20 +223,27 @@ for i_exp_name, exp_name in enumerate(df.opt_exp_name.values):
     strong_reflections["sigZ"] = flex.double(all_sigZ)
     strong_reflections["Z"] = flex.double(all_Z)
     indexed_refls = strong_reflections.select(flex.bool(sel))
-    hkl, hkl_i = utils.refls_to_hkl(indexed_refls, El[0].detector, El[0].beam, El[0].crystal,
+    hkl, hkl_i = utils.refls_to_hkl(indexed_refls, expt.detector, expt.beam, expt.crystal,
                            update_table=True)
-    # NOTE next few lines of checking hkl2 versus hkl shouldnt be necessary anymore after bug fix
-    ucell_params = df_exp[["a", "b", "c", "al", "be", "ga"]].values[0]
-    ucell_man = utils.manager_from_params(ucell_params)
-    C = El[0].crystal
-    C.set_B(ucell_man.B_recipspace)
-    hkl2, hkl_i2 = utils.refls_to_hkl(indexed_refls, El[0].detector, El[0].beam, C,
+
+    # Shouldn't the hkl be set using the average unit cell ?
+    Cave =deepcopy(expt.crystal)
+    Cave.set_B(ucell_man.B_recipspace)
+    hkl2, hkl_i2 = utils.refls_to_hkl(indexed_refls, expt.detector, expt.beam, Cave,
                                     update_table=True)
+    sel_misindexed = np.ones(len(hkl_i), bool)
     if not np.all(hkl_i==hkl_i2):
-        nmiss+= 1
-    hkl_i_asu = utils.map_hkl_list(hkl_i, True, "P6522")
-    sel_hkl = flex.bool([tuple(hi) in REF_IDX for hi in hkl_i_asu])
-    indexed_refls = indexed_refls.select(sel_hkl)
+        shots_with_nmiss+= 1
+        for i_h, (h1, h2) in enumerate(zip(hkl_i, hkl_i2)):
+            if not np.all(h1 == h2):
+                nmiss += 1
+                sel_misindexed[i_h] = False
+
+    hkl_i_asu = utils.map_hkl_list(hkl_i2, True, "P6522")
+    sel_hkl = np.array([tuple(hi) in REF_IDX for hi in hkl_i_asu])
+
+    SEL = flex.bool(np.logical_and(sel_hkl, sel_misindexed))
+    indexed_refls = indexed_refls.select(SEL)
 
     nidx = len(indexed_refls)
     md = np.median(indexed_refls["dists"])
@@ -264,6 +285,7 @@ for i_exp_name, exp_name in enumerate(df.opt_exp_name.values):
 nold = COMM.reduce(nold)
 n = COMM.reduce(n)
 nmiss = COMM.reduce(nmiss)
+shots_with_nmiss = COMM.reduce(shots_with_nmiss)
 all_output_df = COMM.reduce(output_df)
 if COMM.rank==0:
     DF = pandas.concat(all_output_df)
@@ -278,5 +300,7 @@ if COMM.rank==0:
     o.close()
     print("Saved exper ref file %s" % ofname)
     print("Nold=%d; Nnew=%d" % (nold, n) )
-    print("Nmiss indexed: %d" % nmiss)
+    print("Num mis-indexed by unit cell shift: %d" % nmiss)
+    print("Numshots with mis indexed refls by unit cell shift: %d" % shots_with_nmiss)
+    print("Average ucell used for indexing:", ucell_params)
     print("Done.")

@@ -5,6 +5,7 @@ from cctbx import sgtbx, miller
 import time
 from collections import Counter
 from scipy.optimize import basinhopping
+from simtbx.diffBragg import hopper_utils
 import h5py
 import pandas
 from scitbx.matrix import sqr, col
@@ -15,7 +16,7 @@ from stream_redirect import Redirect
 # diffBragg internal parameter indices
 FHKL_ID = 11
 
-# LIBTBX_SET_DISPATCHER_NAME simtbx.diffBragg.ensemble
+# LIBTBX_SET_DISPATCHER_NAME simtbx.diffBragg.ensemble_more
 
 import numpy as np
 np.seterr(invalid='ignore')
@@ -60,8 +61,7 @@ first_n = None
   .help = refine the first n shots only
 """
 
-philz = ensemble_phil + philz
-phil_scope = parse(philz, process_includes=True)
+phil_scope = parse(ensemble_phil, process_includes=True)
 
 
 class Script:
@@ -275,7 +275,9 @@ class Script:
                 if i_shot not in output_params:
                     output_params[i_shot] = Scale, Nabc_params
                 else:
-                    assert output_params[i_shot] == Scale, Nabc_params
+                    assert output_params[i_shot][0].init == Scale.init
+                    for i_N in range(3):
+                        assert output_params[i_shot][1][i_N].init == Nabc_params[i_N].init
 
             # at this point there should be a single scale per shot! We verify that here:
             ordered_shot_inds = np.sort(list(output_params.keys()))
@@ -605,7 +607,7 @@ class DataModeler:
             p = ParameterType()
             p.sigma = self.params.sigmas.Nabc[i_N]
             if best is not None:
-                p.init = best.ncells.values[i_N]
+                p.init = best.ncells.values[0][i_N]
             else:
                 p.init = self.params.init.Nabc[i_N]
             p.minval = self.params.mins.Nabc[i_N]
@@ -628,7 +630,9 @@ def Minimize(x0, rank_xidx, params, SIM, Modelers, ntimes, nshots_total):
 
     target = TargetFunc(params, SIM)
     niter = params.niter
-    SIM.D.refine(FHKL_ID)
+    # TODO optional parameter refinements
+    SIM.D.refine(hopper_utils.FHKL_ID)
+    SIM.D.refine(hopper_utils.NCELLS_ID)
 
     if params.method in ["Nelder-Mead", "Powell"]:
         compute_grad = False

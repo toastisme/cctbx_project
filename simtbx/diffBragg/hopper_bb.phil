@@ -9,8 +9,6 @@ niter=10
 niter_per_J=3
 rescale_params=True
 quiet=True
-ignore_existing=True
-max_process=753
 
 roi {
   deltaQ = 0.015
@@ -22,9 +20,7 @@ roi {
   pad_shoebox_for_background_estimation=10
 }
 refiner {
-  num_devices=8
   mask = /global/cfs/cdirs/m3562/der/master_files/newmask_withbad.pkl
-  sigma_r = 13.02
   adu_per_photon = 9.481
   sigma_r=10
 }
