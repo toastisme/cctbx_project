@@ -352,14 +352,16 @@ class Script:
         if COMM.rank==0:
             tsave = time.time()
 
-            i_shots, Scales = zip(*all_scale_param_data)
+            all_i_shots, all_Scales = zip(*all_scale_param_data)
 
             # sometimes a shot is distributed across multiple ranks, hence here are duplicates
             # in all_scale_param_data, so we will remove the duplicates here
             output_Scales = {}
-            for i_shot in i_shots:
+            for i_shot,Scale in zip(all_i_shots, all_Scales):
                 if i_shot not in output_Scales:
-                    output_Scales[i_shot] = Scales[i_shot]
+                    output_Scales[i_shot] = Scale
+                else:
+                    assert output_Scales[i_shot] == Scale
 
             # at this point there should be a single scale per shot! We verify that here:
             ordered_shot_inds = np.sort(list(output_Scales.keys()))

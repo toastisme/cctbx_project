@@ -74,9 +74,6 @@ PHIL_PARAMS.spotfinder.threshold.dispersion.global_threshold=0
 PHIL_PARAMS.spotfinder.filter.min_spot_size=4
 PHIL_PARAMS.spotfinder.lookup.mask="/global/cfs/cdirs/m3562/der/master_files/newmask_withbad.pkl"
 
-CUDA = os.environ.get("DIFFBRAGG_USE_CUDA") is not None
-if CUDA:
-    print("USINGCUDA")
 
 
 REF_NAME = os.environ.get("CYT")+"/braggnanimous/5wp2_noAnom.mtz"
@@ -144,7 +141,7 @@ for i_exp_name, exp_name in enumerate(df.opt_exp_name.values):
     #pfs, roi_id = get_pfs(El[0], rois, pids)
     print("Modeling!")
     model = utils.roi_spots_from_pandas(df_exp, rois_per_panel, quiet=quiet,
-                                        mtz_file=REF_NAME, mtz_col=REF_COL, cuda=CUDA,
+                                        mtz_file=REF_NAME, mtz_col=REF_COL, cuda=False,
                                         reset_Bmatrix=True,
                                         force_no_detector_thickness=True,
                                         norm_by_nsource=True)

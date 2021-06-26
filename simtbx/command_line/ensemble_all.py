@@ -157,10 +157,21 @@ relative_tilt = True
 no_Nabc_scale = False
   .type = bool
   .help = toggle Nabc scaling of the intensity
+refine {
+  G = True
+    .type = bool
+    .help = refine the spot scales
+  Fhkl = True
+    .type = bool
+    .help = refine the structure factors 
+}
 """
 
 philz = hopper_phil + philz
 phil_scope = parse(philz)
+
+def param_name(exp_path):
+    return exp_path.replace("/","_").replace(".", "_")
 
 
 class Script:
@@ -208,6 +219,8 @@ class Script:
         if self.params.first_n is not None:
             input_lines = input_lines[:self.params.first_n]
 
+        # they KEY of shot_roi_dict is the index of input_lines, and the VALUE is the ROIS to load from the
+        # experiment in that input_line
         shot_roi_dict = count_rois(input_lines, self.params.quiet)
         # gether statistics, e.g. how many total ROIs
         nshots = len(shot_roi_dict)
@@ -249,6 +262,7 @@ class Script:
 
             # store the modeler for later use(each rank has one modeler per shot in shot_roi_dict)
             Modeler.exp_name = exp
+            Modeler.lmfit_param_name = param_name(exp)
             Modelers[i_exp] = Modeler
 
         # count up the total number of pixels being modeled by this rank
@@ -334,38 +348,41 @@ class Script:
 
         # each rank has different modelers, and those will need to each reference different
         # portions of the global parameter array, and rank_xidx holds the referencing information
-        rank_xidx = {}
+        #rank_xidx = {}
         # Also, in this loop we will get the scale parameter info and send it to rank0 for writing
-        scale_param_data = []
+        all_shot_params = []
         for i_exp in shot_roi_dict:
             xidx_start = shot_mapping[i_exp]*nparam_per_shot
             xidx = list(range(xidx_start, xidx_start+nparam_per_shot))
             xidx += Fhkl_xidx
-            rank_xidx[i_exp] = xidx
+            #rank_xidx[i_exp] = xidx
 
-            Scale_param = Modelers[i_exp].PAR.Scale
-            scale_param_data.append([shot_mapping[i_exp], Scale_param])
+            shot_params = Modelers[i_exp].shot_params
+            all_shot_params.append([shot_mapping[i_exp], shot_params])
 
         mpi_safe_makedirs(self.params.outdir)
         mpi_safe_makedirs(os.path.join(self.params.outdir, "x"))
-
-        all_scale_param_data = COMM.reduce(scale_param_data)
+        all_scale_param_data = COMM.reduce(all_shot_params)
+        x0 = None
         if COMM.rank==0:
             tsave = time.time()
 
-            i_shots, Scales = zip(*all_scale_param_data)
+            all_i_shots, all_shot_params = zip(*all_scale_param_data)
 
             # sometimes a shot is distributed across multiple ranks, hence here are duplicates
             # in all_scale_param_data, so we will remove the duplicates here
-            output_Scales = {}
-            for i_shot in i_shots:
-                if i_shot not in output_Scales:
-                    output_Scales[i_shot] = Scales[i_shot]
+            output_params = {}
+            for i_shot, shot_params in zip(all_i_shots, all_shot_params):
+                if i_shot not in output_params:
+                    output_params[i_shot] = shot_params
+                else:
+                    assert output_params[i_shot] == shot_params
 
             # at this point there should be a single scale per shot! We verify that here:
-            ordered_shot_inds = np.sort(list(output_Scales.keys()))
+            ordered_shot_inds = np.sort(list(output_params.keys()))
             assert np.all(ordered_shot_inds == np.arange(global_Nshots))
-            scale_params = [output_Scales[i_shot] for i_shot in range(global_Nshots)]
+
+            scale_params = [output_params[i_shot][0] for i_shot in range(global_Nshots)]
 
             # save the parameter objects to pickle files using numpy
             scale_params_file =os.path.join(self.params.outdir, "x", "scale_params.npy")
@@ -373,13 +390,25 @@ class Script:
             print("Saving scale parameter objects to %s" % scale_params_file)
             np.save(scale_params_file, scale_params)
             print("Saving Fhkl parameter objects to %s" % Fhkl_params_file)
-            np.save(Fhkl_params_file, self.SIM.Fhkl_modelers)
+            np.save(Fhkl_params_file, self.SIM.Fhkl_parameters)
             tsave = time.time()-tsave
             print("Time to save parameter arrays: %f sec" % tsave)
             # These files can be used later in conjunction with the x-array output
+
+            x0 = lmfit.Parameters()
+            for i_shot in range(global_Nshots):
+                x0.add(scale_params[i_shot])
+            for i_fcell in range(self.SIM.n_global_fcell):
+                x0.add(self.SIM.Fhkl_parameters[i_fcell])
+        x0 = COMM.bcast(x0)
+        param_idx = {}
+        for i_x, x in enumerate(x0):
+            param_idx[x] = i_x
+
         COMM.barrier()
 
-        x0 = np.array([1] * total_params)
+        #if COMM.rank==0:
+        #    print(list(x0))
 
         # save the initial models
         for i_exp in Modelers.keys():
@@ -387,10 +416,10 @@ class Script:
             #self.SIM.D.nopolar=True
 
             if self.params.sanity_test_hkl_variation:
-                model(x0[rank_xidx[i_exp]], self.SIM, M, compute_grad=False, sanity_test=0)
+                model(x0, self.SIM, M, param_idx,compute_grad=False, sanity_test=0)
                 continue
             else:
-                _, _, best_mod = model(x0[rank_xidx[i_exp]], self.SIM, M, compute_grad=False)
+                _, _, best_mod = model(x0, self.SIM, M,param_idx, compute_grad=False)
             #self.SIM.D.nopolar=False
             if self.params.sanity_test_models:
                 # NOTE works on one MPI rank only, because shots are divided across ranks
@@ -458,14 +487,15 @@ class Script:
                 print("Sanity checked hkl variation")
             exit()
 
-        min_out = Minimize(x0, rank_xidx, self.params, self.SIM, Modelers, ntimes, global_Nshots)
-        x = min_out.x
+        min_out = Minimize(x0, param_idx, self.params, self.SIM, Modelers, ntimes, global_Nshots)
+
+        x = min_out.params
         # TODO analyze the convergence data here
 
         # save the final models
         for i_exp in Modelers:
             M = Modelers[i_exp]
-            _,_,best_mod = model(x[rank_xidx[i_exp]], self.SIM, M, compute_grad=False)
+            _,_,best_mod = model(x, self.SIM, M, param_idx,compute_grad=False)
             img_path = "rank%d_img%d_after.h5" %(COMM.rank, i_exp)
             img_path = os.path.join(self.params.outdir, img_path)
             save_model_Z(img_path, M, best_mod)
@@ -672,9 +702,9 @@ class DataModeler:
         else:
             scale_init = self.params.init.G
         p_Scale = lmfit.Parameter( \
-            "Scale_%s" % self.exp_name, value=scale_init,
+            "Scale%s" % self.lmfit_param_name, value=scale_init,
             min=self.params.mins.G, max=self.params.maxs.G,
-            vary=self.params.G_refine)
+            vary=self.params.refine.G)
 
         shot_params.append(p_Scale)
 
@@ -689,7 +719,7 @@ class DataModeler:
         return shot_params
 
 
-def Minimize(x0, rank_xidx, params, SIM, Modelers, ntimes, nshots_total):
+def Minimize(x0, param_idx, params, SIM, Modelers, ntimes, nshots_total):
     if params.refiner.randomize_devices is not None:
         dev = np.random.choice(params.refiner.num_devices)
     else:
@@ -697,24 +727,15 @@ def Minimize(x0, rank_xidx, params, SIM, Modelers, ntimes, nshots_total):
     SIM.D.device_Id = dev
 
     target = TargetFunc(params, SIM)
-    niter = params.niter
     SIM.D.refine(FHKL_ID)
 
     if params.method in ["Nelder-Mead", "Powell"]:
-        compute_grad = False
-        args = (rank_xidx, SIM, Modelers, True, params, False, ntimes)
+        func_args = (param_idx, SIM, Modelers, True, params, False, ntimes)
     else:
-        args = (rank_xidx, SIM, Modelers, True, params, True, ntimes)
-        compute_grad = True
-    out = basinhopping(target, x0,
-                       niter=niter,
-                       minimizer_kwargs={'args': args, "method": params.method,
-                                         "jac": compute_grad,
-                                         'hess': params.hess},
-                       T=params.temp,
-                       callback=None,
-                       disp=not params.quiet and COMM.rank==0,
-                       stepsize=params.stepsize)
+        func_args = (param_idx, SIM, Modelers, True, params, True, ntimes)
+    minimizer_kwargs = {"jac": target.jac}
+    out = lmfit.minimize(target, x0, method=params.method,
+                         args=func_args, **minimizer_kwargs)
 
     # save the final value for x
     #target.all_x.append(out.x)
@@ -732,7 +753,7 @@ class SimParams:
         self.slope = None # fdp edge slope
 
 #@profile
-def model(x, SIM, Modeler, compute_grad=True, sanity_test=None):
+def model(x, SIM, Modeler, param_idx, compute_grad=True, sanity_test=None):
     """
 
     :param x: lmfit parameters object
@@ -760,7 +781,7 @@ def model(x, SIM, Modeler, compute_grad=True, sanity_test=None):
     grad = np.zeros(nparam)  # gradient
 
     # get the scale factor for this shots
-    scale = x["Scale_%s" % Modeler.exp_name].value
+    scale = x["Scale%s" % Modeler.lmfit_param_name].value
 
     #if sanity_test==0:  # test hkl variation within each shoebox
     #    SIM.D.track_Fhkl = True
@@ -837,7 +858,8 @@ def model(x, SIM, Modeler, compute_grad=True, sanity_test=None):
         # compute the scale factor gradient term, which is related directly to the forward model
         scale_grad = bragg / scale
         #scale_grad = PAR.Scale.get_deriv(scale_reparam, scale_grad)
-        grad[0] += (common_grad_term * scale_grad)[Modeler.all_trusted].sum()
+        scale_idx = param_idx["Scale%s" % Modeler.lmfit_param_name]
+        grad[scale_idx] += (common_grad_term * scale_grad)[Modeler.all_trusted].sum()
 
         # TODO add a dimension to get_derivative_pixels(FHKL_ID), in case that pixels hold information on multiple HKL
         fcell_grad = SIM.D.get_derivative_pixels(FHKL_ID)
@@ -848,7 +870,7 @@ def model(x, SIM, Modeler, compute_grad=True, sanity_test=None):
 
             this_common_g = common_grad_term[sel]
             this_trusted = Modeler.all_trusted[sel]
-            grad[1+i_fcell] += (this_common_g*this_fcell_grad)[this_trusted].sum()
+            grad[-SIM.n_global_fcell + i_fcell] += (this_common_g*this_fcell_grad)[this_trusted].sum()
     resid_term = (.5*(np.log(2*np.pi*V) + resid_square / V))[Modeler.all_trusted].sum()   # negative log Likelihood target
 
     ## sanity check on amplitudes:
@@ -913,42 +935,46 @@ def model(x, SIM, Modeler, compute_grad=True, sanity_test=None):
 
 class TargetFunc:
     def __init__(self, params, SIM):
-        self.all_x = []
+        self.iter_number = 0
         self.params = params
         self.SIM = SIM
         self.save_count = 0
         self.num_minimum = 0
 
     def __call__(self, x, *args, **kwargs):
-        self.all_x.append(x)
-        if len(self.all_x) == self.params.x_write_freq:
-            self.save_x()
-        return target_func(x, *args, **kwargs)
+        if self.iter_number % self.params.x_write_freq ==0 :
+            self.save_x(x)
+        f, self.g = target_func(x, *args, **kwargs)
+        self.iter_number += 1
+        return f
 
-    def save_x(self, optimized=False):
+    def save_x(self, x, optimized=False):
         xdir = os.path.join(self.params.outdir, "x")
         mpi_safe_makedirs(xdir)
         if COMM.rank == 0:
             outpath = os.path.join(xdir, "x_info_hop%d_%d.npz" % (self.num_minimum,self.save_count))
             if optimized:
                 outpath = os.path.join(xdir, "x_info_hop%d_final.npz" % self.num_minimum)
-            Fidx, Fdata = update_Fhkl(self.SIM, self.all_x[-1])
+            Fidx, Fdata = update_Fhkl(self.SIM, x)
             # TODO save scale factors
-            np.savez(outpath, x=self.all_x[-1], Fidx=Fidx, Fdata=Fdata, Nhkl=self.SIM.n_global_fcell)
+            np.savez(outpath, Fidx=Fidx, Fdata=Fdata, Nhkl=self.SIM.n_global_fcell)
         COMM.barrier()
-        self.all_x = []
         self.save_count += 1
 
-    def at_minimum(self, x, f, accept):
-        self.all_x.append(x)
-        self.save_x(optimized=True)
-        self.save_count = 0
-        self.num_minimum += 1
-        self.all_x = []
+    #def at_minimum(self, x, f, accept):
+    #    pass
+    #    self.all_x.append(x)
+    #    self.save_x(optimized=True)
+    #    self.save_count = 0
+    #    self.num_minimum += 1
+    #    self.all_x = []
+
+    def jac(self, x, *args):
+        return self.g
 
 
 #@profile
-def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_grad=True, ntimes=None, save=None):
+def target_func(x, param_idx, SIM, Modelers, verbose=True, params=None, compute_grad=True, ntimes=None, save=None):
     verbose = verbose and COMM.rank==0
     t_start = time.time()
     timestamps = list(Modelers.keys())
@@ -968,7 +994,7 @@ def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_
 
         t_model = time.time()
 
-        resid_term, grad, _ = model(x, SIM, Mod_t, compute_grad=compute_grad)
+        resid_term, grad, _ = model(x, SIM, Mod_t, param_idx,compute_grad=compute_grad)
         t_model  = time.time()-t_model
         all_t_model += t_model
 
@@ -981,7 +1007,7 @@ def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_
         nn = 1. / ntimes[t]
 
         # scale factor "G" restraint
-        G = x["Scale_%s" % Mod_t.exp_name].value
+        G = x["Scale%s" % Mod_t.lmfit_param_name].value
         delG = params.centers.G - G
         G_V = params.betas.G
         fG += nn*(.5*(np.log(2*np.pi*G_V) + delG**2/G_V))
@@ -993,7 +1019,7 @@ def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_
             g[-SIM.n_global_fcell:] += grad[-SIM.n_global_fcell:]
 
             # scale gradient term
-            spot_scale_idx = rank_xidx[t][0]
+            spot_scale_idx = param_idx["Scale%s" % Mod_t.lmfit_param_name]
             g[spot_scale_idx] += grad[0]
 
             # scale restraint term
@@ -1044,10 +1070,7 @@ def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_
     if verbose:
         print("F=%10.7g (chi: %.1f%%, G: %.1f%%, Fhkl: %.1f%%); |g|=%10.7e; Total iter time=%.1f millisec (mpi: %.1f%% , model: %.1f%%, updateFhkl: %.1f%%)" \
               % (f, chi, gg, ff, gnorm, t_total*1000, frac_mpi, frac_model, frac_update))
-    if compute_grad:
-        return f, g
-    else:
-        return f
+    return f, g
 
 
 def save_model_Z(img_path, Modeler, model_pix):
@@ -1164,7 +1187,7 @@ def setup_Fhkl_attributes(SIM, params, Modelers):
         p_Fhkl = lmfit.Parameter(\
             "Fhkl%d" % i_fcell, value=init,
             min=params.mins.Fhkl, max=params.maxs.Fhkl,
-            vary=params.RotXYZ_refine)
+            vary=params.refine.Fhkl)
         SIM.Fhkl_parameters.append(p_Fhkl)
     SIM.Fhkl_inits = np.array(SIM.Fhkl_inits)
     SIM.Fhkl_inits_squared = SIM.Fhkl_inits**2
