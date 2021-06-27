@@ -635,15 +635,15 @@ def Minimize(x0, rank_xidx, params, SIM, Modelers, ntimes, nshots_total):
     SIM.D.refine(hopper_utils.NCELLS_ID)
 
     if params.method in ["Nelder-Mead", "Powell"]:
-        compute_grad = False
         args = (rank_xidx, SIM, Modelers, True, params, False, ntimes)
+        jac = None
     else:
         args = (rank_xidx, SIM, Modelers, True, params, True, ntimes)
-        compute_grad = True
+        jac = target.jac
     out = basinhopping(target, x0,
                        niter=niter,
                        minimizer_kwargs={'args': args, "method": params.method,
-                                         "jac": compute_grad,
+                                         "jac": jac,
                                          'hess': params.hess},
                        T=params.temp,
                        callback=None,
@@ -870,12 +870,18 @@ class TargetFunc:
         self.SIM = SIM
         self.save_count = 0
         self.num_minimum = 0
+        self.f_evals = []
 
     def __call__(self, x, *args, **kwargs):
         self.all_x.append(x)
         if len(self.all_x) == self.params.x_write_freq:
             self.save_x()
-        return target_func(x, *args, **kwargs)
+        f, self.g = target_func(x, *args, **kwargs)
+        self.f_evals.append(f)
+        return f
+
+    def jac(self, x, *args):
+        return self.g
 
     def save_x(self, optimized=False):
         xdir = os.path.join(self.params.outdir, "x")
@@ -886,7 +892,7 @@ class TargetFunc:
                 outpath = os.path.join(xdir, "x_info_hop%d_final.npz" % self.num_minimum)
             Fidx, Fdata = update_Fhkl(self.SIM, self.all_x[-1])
             # TODO save scale factors
-            np.savez(outpath, x=self.all_x[-1], Fidx=Fidx, Fdata=Fdata, Nhkl=self.SIM.n_global_fcell)
+            np.savez(outpath, f_evals=self.f_evals, x=self.all_x[-1], Fidx=Fidx, Fdata=Fdata, Nhkl=self.SIM.n_global_fcell)
         COMM.barrier()
         self.all_x = []
         self.save_count += 1
