@@ -137,7 +137,6 @@ class Script:
                     best = best_models.query("opt_exp_name=='%s'" % exp)
                 if len(best) != 1:
                     raise ValueError("Should be 1 entry for exp %s in best pickle %s" % (exp, self.params.best_pickle))
-            bests[i_exp] = best
 
             # dont think this is necessary, but doesnt matter
             self.params.simulator.spectrum.filename = spec
@@ -151,6 +150,7 @@ class Script:
             # store the modeler for later use(each rank has one modeler per shot in shot_roi_dict)
             Modeler.exp_name = exp
             Modelers[i_exp] = Modeler
+            bests[i_exp] = best  # TODO questionable
 
         # count up the total number of pixels being modeled by this rank
         npix = [len(modeler.all_data) for modeler in Modelers.values()]
@@ -195,10 +195,8 @@ class Script:
             Modeler.sigma_rdout = self.params.refiner.sigma_r / self.params.refiner.adu_per_photon
 
             Modeler.shiftZ_meters = 0
-            if bests[i_exp] is not None:  # NOTE, bests should almost always be not None
-                if "detz_shift_mm" in list(bests[i_exp]):
+            if bests[i_exp] is not None and "detz_shift_mm" in list(bests[i_exp]):
                     Modeler.shiftZ_meters = bests[i_exp].detz_shift_mm.values[0]*1e-3
-
 
         self.SIM.update_Fhkl = Fhkl_updater(self.SIM, Modelers)
 
@@ -210,7 +208,7 @@ class Script:
         # of shots being modeled. If a shot fails to load in the GatherFromExperiment step, then i_exp
         # will no longer form a uniform range of values from 0 to N-1, hence why we need this mapping
         shot_mapping = {}
-        rank_exp_indices = COMM.gather(list(shot_roi_dict.keys()), root=0)
+        rank_exp_indices = COMM.gather(i_exps, root=0)
         ntimes = None
         if COMM.rank == 0:
             all_indices = [i_exp for indices in rank_exp_indices for i_exp in indices]
@@ -249,7 +247,7 @@ class Script:
         rank_xidx = {}
         # Also, in this loop we will get the parameter objects and send em to rank0 for writing to disk
         param_data = []
-        for i_exp in shot_roi_dict:
+        for i_exp in i_exps:
             xidx_start = shot_mapping[i_exp]*nparam_per_shot
             xidx = list(range(xidx_start, xidx_start+nparam_per_shot))
             xidx += Fhkl_xidx
