@@ -648,6 +648,8 @@ def Minimize(x0, rank_xidx, params, SIM, Modelers, ntimes, nshots_total):
     # TODO optional parameter refinements
     SIM.D.refine(hopper_utils.FHKL_ID)
     SIM.D.refine(hopper_utils.NCELLS_ID)
+    for ROT_ID in hopper_utils.ROTXYZ_IDS:
+        SIM.D.refine(ROT_ID)
 
     if params.method in ["Nelder-Mead", "Powell"]:
         args = (rank_xidx, SIM, Modelers, True, params, False, ntimes)
@@ -811,8 +813,8 @@ def model(x, SIM, Modeler, compute_grad=True, sanity_test=None):
         # compute the RotXYZ gradient terms
         for i_rot in range(3):
             rot_grad = scale*SIM.D.get_derivative_pixels(hopper_utils.ROTXYZ_IDS[i_rot]).as_numpy_array()[:npix]
-            rot_grad = SIM.RotXYZ_params[i_rot].get_deriv(x[4+i_rot], rot_grad)
-            grad[4+i_rot] = rot_grad
+            rot_grad = PAR.RotXYZ_params[i_rot].get_deriv(x[4+i_rot], rot_grad)
+            grad[4+i_rot] += (common_grad_term * rot_grad)[Modeler.all_trusted].sum()
 
         # TODO add a dimension to get_derivative_pixels(FHKL_ID), in case that pixels hold information on multiple HKL
         fcell_grad = SIM.D.get_derivative_pixels(FHKL_ID)
@@ -990,7 +992,7 @@ def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_
 
         delRotXYZ = []
         for i_rot in range(3):
-            rot_V = params.betas.RotXYZ[i_rot]
+            rot_V = params.betas.RotXYZ # TODO this beta a list ?
             rot_current = Mod_t.PAR.RotXYZ_params[i_rot].get_val(x_t[4+i_rot])
             del_rot = params.centers.RotXYZ[i_rot] - rot_current
             delRotXYZ.append(del_rot)
@@ -1019,7 +1021,7 @@ def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_
                 # 4+i_rot is the per-shot position for Rot_i
                 RotXYZ_global_idx = rank_xidx[t][4+i_rot]
                 g[RotXYZ_global_idx] += grad[4+i_rot]  # model
-                rot_var = params.betas.RotXYZ[i_rot]
+                rot_var = params.betas.RotXYZ  #TODO make this beta a list?
                 del_rot = delRotXYZ[i_rot]
                 g[RotXYZ_global_idx] += \
                     Mod_t.PAR.RotXYZ_params[i_rot].get_deriv(x_t[4+i_rot], -del_rot / rot_var) # restraint
