@@ -243,6 +243,10 @@ for i_exp_name, exp_name in enumerate(df.opt_exp_name.values):
     sel_hkl = np.array([tuple(hi) in REF_IDX for hi in hkl_i_asu])
 
     SEL = flex.bool(np.logical_and(sel_hkl, sel_misindexed))
+    if sum(SEL) == 0:
+        print(" SHOT %s is a failure, continuing without..." % df_exp.exp_name.values[0])
+        continue
+
     indexed_refls = indexed_refls.select(SEL)
 
     nidx = len(indexed_refls)
@@ -294,8 +298,9 @@ if COMM.rank==0:
     print("Wrote new pkl %s" % outpkl)
     ofname = args.outputExpRef
     o = open(ofname, "w")
-    for e, eopt, s in zip(df.exp_name, df.opt_exp_name, df.spectrum_filename):
-        r = eopt.replace(".expt", "_%s.refl" %args.tag)
+    #for e, eopt, s in zip(df.exp_name, df.opt_exp_name, df.spectrum_filename):
+    # r = eopt.replace(".expt", "_%s.refl" %args.tag)
+    for e, r, s in zip(DF.exp_name, DF.stage1_refls, DF.spectrum_filename):
         o.write("%s %s %s\n" % (e, r, s))
     o.close()
     print("Saved exper ref file %s" % ofname)

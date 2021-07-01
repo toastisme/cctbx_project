@@ -14,6 +14,7 @@ from simtbx.diffBragg.refiners.parameters import NormalParameter, RangedParamete
 ROTX_ID = 0
 ROTY_ID = 1
 ROTZ_ID = 2
+ROTXYZ_IDS = ROTX_ID, ROTY_ID, ROTZ_ID
 NCELLS_ID = 9
 UCELL_ID_OFFSET = 3
 DETZ_ID = 10
@@ -656,6 +657,7 @@ def target_func(x, udpate_terms, SIM, pfs, data, sigmas, trusted, background, ve
         V = model_pix + sigma_rdout**2
         resid_square = resid**2
         fchi = (.5*(np.log(2*np.pi*V) + resid_square / V))[trusted].sum()   # negative log Likelihood target
+        zscore = np.std((data - model_pix) / np.sqrt(V))
         # TODo make this a method the __call__ method of a class, and cache these terms
         Na_V = params.betas.Nabc[0]
         Nb_V = params.betas.Nabc[1]
@@ -687,6 +689,7 @@ def target_func(x, udpate_terms, SIM, pfs, data, sigmas, trusted, background, ve
 
     else:
         fchi = (resid[trusted] ** 2 * W[trusted]).sum()   # weighted least squares target
+        zscore = 0
         fN = params.betas.Nabc[0]*(del_Na )**2 + \
              params.betas.Nabc[1]*(del_Nb )**2 + \
              params.betas.Nabc[2]*(del_Nc )**2
@@ -753,8 +756,8 @@ def target_func(x, udpate_terms, SIM, pfs, data, sigmas, trusted, background, ve
         gnorm = np.linalg.norm(g)
 
     if verbose:
-        print("F=%10.7g (chi: %.1f%%, rot: %.1f%% N: %.1f%%, G: %.1f%%, uc: %.1f%%, detz: %.1f%%), |g|=%10.7g" \
-              % (f, chi, rot, n, gg, uc,zz,gnorm))
+        print("F=%10.7g Z=%10.7g (chi: %.1f%%, rot: %.1f%% N: %.1f%%, G: %.1f%%, uc: %.1f%%, detz: %.1f%%), |g|=%10.7g" \
+              % (f, zscore, chi, rot, n, gg, uc,zz,gnorm))
 
     return f, g, model_bragg, Jac
 

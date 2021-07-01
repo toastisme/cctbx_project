@@ -669,6 +669,7 @@ def get_roi_background_and_selection_flags(refls, imgs, shoebox_sz=10, reject_ed
                                    min_trusted_pix_per_roi=4, deltaQ=None, experiment=None, weighted_fit=True,
                                    tilt_relative_to_corner=False, ret_cov=False):
 
+    # TODO handle divide by 0 warning that happens in is_outlier, when labeling background pix?
     npan, sdim, fdim = imgs.shape
 
     if hotpix_mask is not None:

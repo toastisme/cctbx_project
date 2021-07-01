@@ -152,6 +152,9 @@ class Script:
             Modelers[i_exp] = Modeler
             bests[i_exp] = best  # TODO questionable
 
+        if not Modelers:
+            raise ValueError("Need at least 1 modeler per rank, try reducing number of ranks.")
+
         # count up the total number of pixels being modeled by this rank
         npix = [len(modeler.all_data) for modeler in Modelers.values()]
         if not self.params.quiet: print("Rank %d wil model %d pixels in total" %(COMM.rank, sum(npix)))
@@ -231,7 +234,7 @@ class Script:
         self.SIM.D.Npix_to_allocate = int(self.NPIX_TO_ALLOC)
 
         global_Nshots = len(shot_mapping)  # total number of shots being modeled
-        nparam_per_shot = 4   # 1 scale factor per shot, 3 Nabc terms per shot
+        nparam_per_shot = 7   # 1 scale factor, 3 Nabc terms, 3 RotXYZ terms
         total_params = nparam_per_shot*global_Nshots + self.SIM.n_global_fcell  # total refinement paramters
         if COMM.rank==0:
             print("Refining %d parameters in total" % total_params)
@@ -269,7 +272,7 @@ class Script:
             # sometimes a shot is distributed across multiple ranks, hence here are duplicates
             # in all_scale_param_data, so we will remove the duplicates here
             output_params = {}
-            for i_shot,Scale, Nabc_params in zip(all_i_shots, all_Scales, all_Nabc_params):
+            for i_shot, Scale, Nabc_params in zip(all_i_shots, all_Scales, all_Nabc_params):
                 if i_shot not in output_params:
                     output_params[i_shot] = Scale, Nabc_params
                 else:
@@ -612,6 +615,20 @@ class DataModeler:
             p.maxval = self.params.maxs.Nabc[i_N]
             PAR.Nabc_params.append(p)
 
+        PAR.RotXYZ_params = []
+        for i_rot in range(3):
+            p = ParameterType()
+            p.sigma = self.params.sigmas.RotXYZ[i_rot]
+            #if best is not None:
+            #    p.init = best..values[0][i_rot]
+            #else:
+            #    p.init = self.params.init.RotXYZ[i_rot]
+            p.init = 0  # design choice, rotation parameters are perturbations from the Umat, thus we always init as 0
+            p.minval = self.params.mins.RotXYZ[i_rot]
+            p.maxval = self.params.maxs.RotXYZ[i_rot]
+            PAR.RotXYZ_params.append(p)
+
+        # each modeler has an experiment self.E, with a crystal attached
         if best is not None:
             self.E.crystal.set_A(best.Amats.values[0])
         PAR.Umatrix = sqr(self.E.crystal.get_U())
@@ -698,9 +715,14 @@ def model(x, SIM, Modeler, compute_grad=True, sanity_test=None):
     scale_reparam = x[0]  # scale is always first
     scale = PAR.Scale.get_val(scale_reparam)
 
-    # set the Ncells for this shot  (nabc are always in positions 1,2,3)
+    # set the Ncells for this shot  (nabc are always in x at positions 1,2,3)
     Nabc = [PAR.Nabc_params[i_N].get_val(x[1+i_N]) for i_N in range(3)]
     SIM.D.set_ncells_values(tuple(Nabc))
+
+    # set the Umatrix perturbation for this shot (rotx,roty,rotz are in x at positions 4,5,6)
+    RotXYZ = [PAR.RotXYZ_params[i_rot].get_val(x[4+i_rot]) for i_rot in range(3)]
+    for i_rot in range(3):
+        SIM.D.set_value(hopper_utils.ROTXYZ_IDS[i_rot], RotXYZ[i_rot])
 
     if sanity_test==0:  # test hkl variation within each shoebox
         SIM.D.track_Fhkl = True
@@ -785,6 +807,12 @@ def model(x, SIM, Modeler, compute_grad=True, sanity_test=None):
             N_grad = scale * (Nabc_grad[i_N][:npix].as_numpy_array())
             N_grad = PAR.Nabc_params[i_N].get_deriv(x[1+i_N], N_grad)
             grad[1+i_N] += (common_grad_term * N_grad)[Modeler.all_trusted].sum()
+
+        # compute the RotXYZ gradient terms
+        for i_rot in range(3):
+            rot_grad = scale*SIM.D.get_derivative_pixels(hopper_utils.ROTXYZ_IDS[i_rot]).as_numpy_array()[:npix]
+            rot_grad = SIM.RotXYZ_params[i_rot].get_deriv(x[4+i_rot], rot_grad)
+            grad[4+i_rot] = rot_grad
 
         # TODO add a dimension to get_derivative_pixels(FHKL_ID), in case that pixels hold information on multiple HKL
         fcell_grad = SIM.D.get_derivative_pixels(FHKL_ID)
@@ -908,14 +936,13 @@ def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_
     verbose = verbose and COMM.rank==0
     t_start = time.time()
     timestamps = list(Modelers.keys())
-    fchi = fG = fNabc = 0
+    fchi = fG = fNabc = f_RotXYZ = 0
     g = np.zeros_like(x)
 
     #   do a global update of the Fhkl parameters in the simulator object
     t_update = time.time()
     SIM.update_Fhkl(SIM, x)
     t_update = time.time()-t_update
-
 
     all_t_model = 0
     for t in timestamps:
@@ -961,6 +988,14 @@ def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_
             delNabc.append(del_N)
             fNabc += .5*(np.log(2*np.pi*N_V) + del_N**2 / N_V)
 
+        delRotXYZ = []
+        for i_rot in range(3):
+            rot_V = params.betas.RotXYZ[i_rot]
+            rot_current = Mod_t.PAR.RotXYZ_params[i_rot].get_val(x_t[4+i_rot])
+            del_rot = params.centers.RotXYZ[i_rot] - rot_current
+            delRotXYZ.append(del_rot)
+            f_RotXYZ += .5*(np.log(2*np.pi*rot_V) + del_rot**2 / rot_V)
+
         if compute_grad:
             # copy the per-shot contributions of the gradients to the global gradient array
 
@@ -979,6 +1014,17 @@ def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_
                 g[Nabc_global_idx] += \
                     Mod_t.PAR.Nabc_params[i_N].get_deriv(x_t[1+i_N], -del_N / N_var) # restraint
 
+            # RotXYZ gradient term
+            for i_rot in range(3):
+                # 4+i_rot is the per-shot position for Rot_i
+                RotXYZ_global_idx = rank_xidx[t][4+i_rot]
+                g[RotXYZ_global_idx] += grad[4+i_rot]  # model
+                rot_var = params.betas.RotXYZ[i_rot]
+                del_rot = delRotXYZ[i_rot]
+                g[RotXYZ_global_idx] += \
+                    Mod_t.PAR.RotXYZ_params[i_rot].get_deriv(x_t[4+i_rot], -del_rot / rot_var) # restraint
+
+
             # Fhkl term updates
             g[-SIM.n_global_fcell:] += grad[-SIM.n_global_fcell:]
 
@@ -991,6 +1037,7 @@ def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_
     fchi = COMM.bcast(COMM.reduce(fchi))
     fG = COMM.bcast(COMM.reduce(fG))
     fNabc = COMM.bcast(COMM.reduce(fNabc))
+    f_RotXYZ = COMM.bcast(COMM.reduce(f_RotXYZ))
     g = COMM.bcast(COMM.reduce(g))
     t_mpi_done = time.time()
 
@@ -1016,11 +1063,12 @@ def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_
             for i_fcell in range(SIM.n_global_fcell)])
 
 
-    f = fchi + fG + f_Fhkl + fNabc
+    f = fchi + fG + f_Fhkl + fNabc + f_RotXYZ
     chi = fchi / f *100
     gg = fG / f*100
     ff = f_Fhkl / f *100
     nn = fNabc / f * 100
+    rr = f_RotXYZ / f * 100
     gnorm = np.linalg.norm(g)
 
     t_done = time.time()
@@ -1032,8 +1080,8 @@ def target_func(x, rank_xidx, SIM, Modelers, verbose=True, params=None, compute_
     frac_update = t_update / t_total * 100.
 
     if verbose:
-        print("F=%10.7g (chi: %.1f%%, G: %.1f%%, N: %.1f%%, Fhkl: %.1f%%); |g|=%10.7e; Total iter time=%.1f millisec (mpi: %.1f%% , model: %.1f%%, updateFhkl: %.1f%%)" \
-              % (f, chi, gg, nn, ff, gnorm, t_total*1000, frac_mpi, frac_model, frac_update))
+        print("F=%10.7g (chi: %.1f%%, G: %.1f%%, N: %.1f%%, Rot: %.1f%%, Fhkl: %.1f%%); |g|=%10.7e; Total iter time=%.1f millisec (mpi: %.1f%% , model: %.1f%%, updateFhkl: %.1f%%)" \
+              % (f, chi, gg, nn, rr, ff, gnorm, t_total*1000, frac_mpi, frac_model, frac_update))
     if compute_grad:
         return f, g
     else:

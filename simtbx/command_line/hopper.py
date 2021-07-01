@@ -1,4 +1,5 @@
 from __future__ import absolute_import, division, print_function
+import socket
 import glob
 from copy import deepcopy
 from simtbx.diffBragg.hopper_utils import look_at_x, model, get_param_from_x, DataModeler, get_data_model_pairs
@@ -421,11 +422,12 @@ class Script:
                 continue
             Modeler.SimulatorFromExperiment(best)
 
-            if self.params.refiner.randomize_devices is not None:
+            if self.params.refiner.randomize_devices:
                 dev = np.random.choice(self.params.refiner.num_devices)
+                print("Rank %d will use random device %d on host %s" % (COMM.rank, dev, socket.gethostname()), flush=True)
             else:
                 dev = COMM.rank % self.params.refiner.num_devices
-
+                print("Rank %d will use fixed device %d on host %s" % (COMM.rank, dev, socket.gethostname()), flush=True)
 
             Modeler.SIM.D.device_Id = dev
 
@@ -526,6 +528,7 @@ def save_up(Modeler, x, exp, i_exp, input_refls):
 
     Modeler.SIM.D.free_all()
     Modeler.SIM.D.free_Fhkl2()
+    Modeler.SIM.D.gpu_free()
 
 
 def save_to_pandas(x, SIM, orig_exp_name, params, expt, rank_exp_idx, stg1_refls, stg1_img_path):

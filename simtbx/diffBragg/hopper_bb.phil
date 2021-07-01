@@ -23,6 +23,7 @@ refiner {
   mask = /global/cfs/cdirs/m3562/der/master_files/newmask_withbad.pkl
   adu_per_photon = 9.481
   sigma_r=10
+  randomize_devices=False
 }
 simulator {
   oversample=2
