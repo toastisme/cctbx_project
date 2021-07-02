@@ -2232,3 +2232,6 @@ def safe_makedirs(name):
 def get_rs(name):
     s = re.search("run[0-9]+_shot[0-9]+", name)
     return name[s.start():s.end()]
+
+def read_exp_ref_spec(fname):
+    return [l.strip().split() for l in open(fname, 'r').readlines()]

@@ -51,6 +51,12 @@ class DataModeler:
         self.refls_idx = None
         self.refls = None
 
+    def clean_up(self):
+        if self.SIM is not None:
+            self.SIM.D.free_all()
+            self.SIM.D.gpu_free()
+            self.SIM.D.free_Fhkl2()
+
     def set_experiment(self, exp, load_imageset=True):
         if isinstance(exp, str):
             self.E = ExperimentListFactory.from_json_file(exp, load_imageset)[0]
@@ -83,7 +89,6 @@ class DataModeler:
     def GatherFromReflectionTable(self, exp, ref):
         self.set_experiment(exp, load_imageset=False)
         self.refls = self.load_refls(ref)
-        self.refls = flex.reflection_table.from_file(ref)
         nref = len(self.refls)
         if nref ==0:
             return False
@@ -865,12 +870,12 @@ def target_func(x, udpate_terms, SIM, pfs, data, sigmas, trusted, background, ve
     return f, g, model_bragg, Jac
 
 
-def refine(exp, ref, params, spec=None, gpu_device=None, data_is_in_refl=False):
+def refine(exp, ref, params, spec=None, gpu_device=None):
     if gpu_device is None:
         gpu_device = 0
     params.simulator.spectrum.filename = spec
     Modeler = DataModeler(params)
-    if data_is_in_refl:
+    if params.load_data_from_refls:
         Modeler.GatherFromReflectionTable(exp, ref)
     else:
         assert Modeler.GatherFromExperiment(exp, ref)
@@ -904,14 +909,18 @@ def refine(exp, ref, params, spec=None, gpu_device=None, data_is_in_refl=False):
     best_model,_ = model(x, Modeler.SIM, Modeler.pan_fast_slow, compute_grad=False)
 
     new_crystal = update_crystal_from_x(Modeler.SIM, x)
-    new_exp = deepcopy(exp)
+    new_exp = deepcopy(Modeler.E)
     new_exp.crystal = new_crystal
 
-    new_exp.beam.set_wavelength(Modeler.SIM.dxtbx_spec.get_weighted_wavelength())
+    try:
+        new_exp.beam.set_wavelength(Modeler.SIM.dxtbx_spec.get_weighted_wavelength())
+    except:pass
     # if we strip the thickness from the detector, then update it here:
     #new_exp.detector. shift Z mm
 
     new_refl = new_xycalcs(Modeler, best_model)
+
+    Modeler.clean_up()
 
     return new_exp, new_refl
 
