@@ -476,7 +476,12 @@ class DataModeler:
         self.hi_asu_perpix = None
         self.all_nominal_hkl = []
 
+
+
+
+
     def GatherFromExperiment(self, exp, ref, sg_symbol, ref_indices=None):
+        #TODO delete the background attribute because its large(full image)
         """
         :param exp: input experiment filename
         :param ref: intput reflection filename

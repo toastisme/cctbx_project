@@ -686,6 +686,12 @@ def get_roi_background_and_selection_flags(refls, imgs, shoebox_sz=10, reject_ed
             return
         rois, is_on_edge = get_roi_deltaQ(refls, deltaQ, experiment)
 
+    #for i_ref, (x1,x2,y1,y2) in enumerate(rois):
+    #    x,y,_ = refls[i_ref]["xyzobs.px.value"]
+    #    assert x1 <= x <= x2, "refl %d, %f %f %f" % (i_ref, x1, x, x2)
+    #    assert y1 <= y <= y2, "refl %d, %f %f %f" % (i_ref, y1, y, y2)
+
+
     tilt_abc = []
     kept_rois = []
     panel_ids = []
@@ -784,6 +790,10 @@ def get_roi_background_and_selection_flags(refls, imgs, shoebox_sz=10, reject_ed
                     num_roi_negative_bg += 1
                     is_selected = False
 
+        #if i_roi==235:
+        #    print("WHOOPS!")
+        #    from IPython import embed
+        #    embed()
         if not np.all(background[pid, j1_nopad:j2_nopad, i1_nopad:i2_nopad] == -1):
             #print( "region of interest already accounted for roi size= %d %d" % (i2_nopad-i1_nopad, j2_nopad-j1_nopad))
             rois[i_roi] = i1_nopad+1,i2_nopad,j1_nopad+1,j2_nopad
@@ -812,6 +822,12 @@ def get_roi_background_and_selection_flags(refls, imgs, shoebox_sz=10, reject_ed
         #    embed()
         i_roi += 1
 
+    #assert len(kept_rois) == len(refls)
+    #for i_ref, (x1,x2,y1,y2) in enumerate(kept_rois):
+    #    x,y,_ = refls[i_ref]["xyzobs.px.value"]
+    #    assert x1 <= x <= x2, "refl %d, %f %f %f" % (i_ref, x1, x, x2)
+    #    assert y1 <= y <= y2, "refl %d, %f %f %f" % (i_ref, y1, y, y2)
+
     #plt.imshow(imgs[0], vmax=100)
     #for p in patches:
     #    plt.gca().add_patch(p)
@@ -824,14 +840,17 @@ def get_roi_background_and_selection_flags(refls, imgs, shoebox_sz=10, reject_ed
         return kept_rois, panel_ids, tilt_abc, selection_flags, background
 
 
-def determine_shoebox_ROI(detector, delta_Q, wavelength_A, refl):
+def determine_shoebox_ROI(detector, delta_Q, wavelength_A, refl, centroid="obs"):
     panel = detector[refl["panel"]]
     width = get_width_of_integration_shoebox(panel, delta_Q, wavelength_A, refl['rlp'])
     wby2 = int(round(width/2.))
     fdim,sdim = panel.get_image_size()
-    i1,i2,j1,j2,_,_ = refl['bbox']
-    i_com = (i1+i2) * .5
-    j_com = (j1+j2) * .5
+    if centroid=='obs':  #TODO: give this more options
+        i_com, j_com,_ = refl['xyzobs.px.value']
+    else:
+        i1,i2,j1,j2,_,_ = refl['bbox']  # super weird funky spots can skew bbox such that its a bad measure of centroid
+        i_com = (i1+i2) * .5
+        j_com = (j1+j2) * .5
     i1, i2, j1, j2 = i_com - wby2, i_com + wby2, j_com - wby2, j_com + wby2
     on_edge = False
     if i1 < 0 or j1 < 0:

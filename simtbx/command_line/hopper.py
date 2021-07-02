@@ -32,6 +32,30 @@ from simtbx.diffBragg import utils
 from simtbx.diffBragg.phil import philz
 
 hopper_phil = """
+use_float32 = False
+  .type = bool
+  .help = store pixel data and background models in 32bit arrays
+test_gathered_file = False
+  .type = bool
+  .help = run a quick test to ensure the gathered data file preserves information
+load_data_from_refls = False
+  .type = bool
+  .help = load image data, background etc from reflection tables
+gathered_output_file = None
+  .type = str
+  .help = optional file for storing a new hopper input file which points to the gathered data dumps 
+only_dump_gathers = False
+  .type = bool
+  .help = only reads in image data, fits background planes, and dumps
+  .help = results to disk, writes a new exper refl file at the end
+gathers_dir = None
+  .type = str
+  .help = folder where gathered data reflection tables
+  .help = will be writen (if dump_gathers=True)
+dump_gathers = False
+  .type = bool
+  .help = optionally dump the loaded experimental data to reflection tables
+  .help = for portability
 spectrum_from_imageset = False
   .type = bool
   .help = if True, load the spectrum from the imageset in the experiment, then probably downsample it
@@ -209,7 +233,7 @@ plot_at_end = False
   .help = plot subimgs at end of minimize
 embed_at_end = False
   .type = bool
-  .help = embedto ipython at end of minimize
+  .help = embed to ipython at end of minimize
 sigmas {
   detz_shift = 1
     .type = float
@@ -383,6 +407,11 @@ class Script:
             if self.params.best_pickle is not None:
                 if not self.params.quiet: print("reading pickle %s" % self.params.best_pickle)
                 best_models = pandas.read_pickle(self.params.best_pickle)
+
+            if self.params.dump_gathers:
+                if self.params.gathers_dir is None:
+                    raise ValueError("Need to provide a file dir path in order to dump_gathers")
+                utils.safe_makedirs(self.params.gathers_dir)
         input_lines = COMM.bcast(input_lines)
         best_models = COMM.bcast(best_models)
 
@@ -393,6 +422,7 @@ class Script:
                 exp_names_already = {os.path.basename(f) for f in glob.glob("%s/expers/rank*/*.expt" % self.params.outdir)}
             exp_names_already = COMM.bcast(exp_names_already)
 
+        exp_gatheredRef_spec = []  # optional list of expt, refls, spectra
         for i_exp, line in enumerate(input_lines):
             if i_exp == self.params.max_process:
                 break
@@ -417,10 +447,42 @@ class Script:
                     raise ValueError("Should be 1 entry for exp %s in best pickle %s" % (exp, self.params.best_pickle))
             self.params.simulator.spectrum.filename = spec
             Modeler = DataModeler(self.params)
-            if not Modeler.GatherFromExperiment(exp, ref):
+            if self.params.load_data_from_refls:
+                gathered = Modeler.GatherFromReflectionTable(exp, ref)
+            else:
+                gathered = Modeler.GatherFromExperiment(exp, ref)
+            if not gathered:
                 print("No refls in %s; CONTINUE; COMM.rank=%d" % (ref, COMM.rank))
                 continue
+            if self.params.dump_gathers:
+                output_name = os.path.splitext(os.path.basename(exp))[0]
+                output_name += "_withData.refl"
+                output_name = os.path.join(self.params.gathers_dir, output_name)
+                Modeler.dump_gathered_to_refl(output_name, do_xyobs_sanity_check=True)  # NOTE do this is modelin strong spots only
+                if self.params.test_gathered_file:
+                    all_data = Modeler.all_data.copy()
+                    all_roi_id = Modeler.roi_id.copy()
+                    all_bg = Modeler.all_background.copy()
+                    all_trusted = Modeler.all_trusted.copy()
+                    all_pids = np.array(Modeler.pids)
+                    all_rois = np.array(Modeler.rois)
+                    new_Modeler = DataModeler(self.params)
+                    assert new_Modeler.GatherFromReflectionTable(exp, output_name)
+                    assert np.allclose(new_Modeler.all_data, all_data)
+                    assert np.allclose(new_Modeler.all_background, all_bg)
+                    assert np.allclose(new_Modeler.rois, all_rois)
+                    assert np.allclose(new_Modeler.pids, all_pids)
+                    assert np.allclose(new_Modeler.all_trusted, all_trusted)
+                    assert np.allclose(new_Modeler.roi_id, all_roi_id)
+
+                exp_gatheredRef_spec.append((exp, os.path.abspath(output_name), spec))
+                if self.params.only_dump_gathers:
+                    continue
+
             Modeler.SimulatorFromExperiment(best)
+            if self.params.use_float32:
+                Modeler.all_data = Modeler.all_data.astype(np.float32)
+                Modeler.all_background = Modeler.all_background.astype(np.float32)
 
             if self.params.refiner.randomize_devices:
                 dev = np.random.choice(self.params.refiner.num_devices)
@@ -455,7 +517,13 @@ class Script:
             x = Modeler.Minimize(x0)
             save_up(Modeler, x, exp, i_exp, ref)
 
-
+        if self.params.dump_gathers and self.params.gathered_output_file is not None:
+            exp_gatheredRef_spec = COMM.reduce(exp_gatheredRef_spec)
+            if COMM.rank==0:
+                o = open(self.params.gathered_output_file, "w")
+                for e,r,s in exp_gatheredRef_spec:
+                    o.write("%s %s %s\n" % (e,r,s))
+                o.close()
 
 
 def save_up(Modeler, x, exp, i_exp, input_refls):
@@ -617,6 +685,7 @@ def save_to_pandas(x, SIM, orig_exp_name, params, expt, rank_exp_idx, stg1_refls
     df["stage1_output_img"] = stg1_img_path
 
     df.to_pickle(pandas_path)
+
 
 if __name__ == '__main__':
     from dials.util import show_mail_on_error

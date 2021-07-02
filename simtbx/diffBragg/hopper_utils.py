@@ -1,8 +1,11 @@
 from __future__ import absolute_import, division, print_function
+from dials.algorithms.shoebox import MaskCode
 from copy import deepcopy
+from dials.model.data import Shoebox
 import numpy as np
 
 from scipy.optimize import dual_annealing, basinhopping
+from collections import Counter
 from scitbx.matrix import sqr, col
 from dxtbx.model.experiment_list import ExperimentListFactory
 from simtbx.nanoBragg.utils import downsample_spectrum
@@ -48,19 +51,72 @@ class DataModeler:
         self.refls_idx = None
         self.refls = None
 
-    def GatherFromExperiment(self, exp, ref):
+    def set_experiment(self, exp, load_imageset=True):
         if isinstance(exp, str):
-            self.E = ExperimentListFactory.from_json_file(exp)[0]
+            self.E = ExperimentListFactory.from_json_file(exp, load_imageset)[0]
         else:
             self.E = exp
         if self.params.opt_det is not None:
             opt_det_E = ExperimentListFactory.from_json_file(self.params.opt_det, False)[0]
             self.E.detector = opt_det_E.detector
 
+    def load_refls(self, ref):
         if isinstance(ref, str):
             refls = flex.reflection_table.from_file(ref)
         else:
+            # assert is a reflection table. ..
             refls = ref
+        return refls
+
+    def is_duplicate_hkl(self, refls):
+        nref = len(refls)
+        is_duplicate = np.zeros(nref, bool)
+        if len(set(refls['miller_index'])) < nref:
+            hkls = refls['miller_index']
+            dupe_hkl = {h for h, count in Counter(hkls).items() if count > 1}
+            for i_ref in range(nref):
+                hh = refls[i_ref]['miller_index']
+                is_duplicate[i_ref] = hh in dupe_hkl
+
+        return is_duplicate
+
+    def GatherFromReflectionTable(self, exp, ref):
+        self.set_experiment(exp, load_imageset=False)
+        self.refls = self.load_refls(ref)
+        self.refls = flex.reflection_table.from_file(ref)
+        nref = len(self.refls)
+        if nref ==0:
+            return False
+        self.refls_idx = list(range(nref))
+        self.rois = [(x1, x2, y1, y2) for x1,x2,y1,y2,_,_ in self.refls["shoebox"].bounding_boxes()]
+        self.pids = list(self.refls["panel"])
+
+        npan = len(self.E.detector)
+        nfast, nslow = self.E.detector[0].get_image_size()  # NOTE assumes all panels same shape
+        img_data = np.zeros((npan, nslow, nfast))
+        background = np.zeros_like(img_data)
+        is_trusted = np.zeros((npan, nslow, nfast), bool)
+        for i_ref in range(nref):
+            ref = self.refls[i_ref]
+            pid = ref['panel']
+            x1,x2,y1,y2 = self.rois[i_ref]
+            sb = ref['shoebox']
+            img_data[pid,   y1:y2, x1:x2] = sb.data.as_numpy_array()[0]
+            background[pid, y1:y2, x1:x2] = sb.background.as_numpy_array()[0]
+            is_trusted[pid, y1:y2, x1:x2] = sb.mask.as_numpy_array()[0] == MaskCode.Valid  # I believe this is 1
+
+        # can be used for Bfactor modeling
+        self.Q = np.linalg.norm(self.refls["rlp"], axis=1)
+        self.sigma_rdout = self.params.refiner.sigma_r / self.params.refiner.adu_per_photon
+
+        self.data_to_one_dim(img_data, is_trusted, background)
+        return True
+
+    def GatherFromExperiment(self, exp, ref, remove_duplicate_hkl=True):
+        self.set_experiment(exp, load_imageset=True)
+
+        refls = self.load_refls(ref)
+
         img_data = utils.image_data_from_expt(self.E)
         img_data /= self.params.refiner.adu_per_photon
         is_trusted = utils.load_mask(self.params.roi.hotpixel_mask)
@@ -86,18 +142,28 @@ class DataModeler:
             return False
 
         self.rois, self.pids, self.tilt_abc, self.selection_flags, self.background, self.tilt_cov = roi_packet
+
+        if remove_duplicate_hkl:
+            is_not_a_duplicate = ~self.is_duplicate_hkl(refls)
+            #from IPython import embed;embed();exit()
+            self.selection_flags = np.logical_and( self.selection_flags, is_not_a_duplicate)
+
         if sum(self.selection_flags) == 0:
             if not self.params.quiet: print("No pixels slected, continuing")
             return False
-        # print("sel")
         self.refls = refls
         self.refls_idx = [i_roi for i_roi in range(len(refls)) if self.selection_flags[i_roi]]
+
         self.rois = [roi for i_roi, roi in enumerate(self.rois) if self.selection_flags[i_roi]]
         self.tilt_abc = [abc for i_roi, abc in enumerate(self.tilt_abc) if self.selection_flags[i_roi]]
         self.pids = [pid for i_roi, pid in enumerate(self.pids) if self.selection_flags[i_roi]]
         self.tilt_cov = [cov for i_roi, cov in enumerate(self.tilt_cov) if self.selection_flags[i_roi]]
         self.Q = [np.linalg.norm(refls[i_roi]["rlp"]) for i_roi in range(len(refls)) if self.selection_flags[i_roi]]
 
+        self.data_to_one_dim(img_data, is_trusted, self.background)
+        return True
+
+    def data_to_one_dim(self, img_data, is_trusted, background):
         all_data = []
         all_pid = []
         all_fast = []
@@ -117,7 +183,7 @@ class DataModeler:
             data = img_data[pid, y1:y2, x1:x2].copy()
 
             data = data.ravel()
-            all_background += list(self.background[pid, y1:y2, x1:x2].ravel())
+            all_background += list(background[pid, y1:y2, x1:x2].ravel())
             trusted = is_trusted[pid, y1:y2, x1:x2].ravel()
 
             # TODO implement per-shot masking here
@@ -127,7 +193,7 @@ class DataModeler:
             #d_strong_order = np.argsort(data)
             #trusted[d_strong_order[-1:]] = False
             all_trusted += list(trusted)
-            #TODO ignore invalid value warning, or else mitigate it!
+            #TODO ignore invalid value warning (handled below), or else mitigate it!
             all_sigmas += list(np.sqrt(data + self.sigma_rdout ** 2))
             all_fast += list(X.ravel() + x1)
             all_fast_relative += list(X.ravel())
@@ -137,10 +203,11 @@ class DataModeler:
             npix = len(data)  # np.sum(trusted)
             all_pid += [pid] * npix
             roi_id += [i_roi] * npix
-            a, b, c = self.tilt_abc[i_roi]
-            all_a += [a] * npix
-            all_b += [b] * npix
-            all_c += [c] * npix
+            #if self.tilt_abc is not None:
+            #    a, b, c = self.tilt_abc[i_roi]
+            #    all_a += [a] * npix
+            #    all_b += [b] * npix
+            #    all_c += [c] * npix
             all_q_perpix += [self.Q[i_roi]]*npix
 
         self.all_q_perpix = np.array(all_q_perpix)
@@ -157,7 +224,43 @@ class DataModeler:
         self.all_slow = np.array(all_slow)
         self.simple_weights = 1/self.all_sigmas**2
         self.u_id = set(self.roi_id)
-        return True
+
+    def dump_gathered_to_refl(self, output_name, do_xyobs_sanity_check=False):
+        """after running GatherFromExperiment, dump the gathered results
+        (data, background etc) to a new reflection file which can then be used to run
+        diffBragg without the raw data in the experiment (this exists mainly for portability, and
+        unit tests)"""
+        shoeboxes = []
+        R = flex.reflection_table()
+        for i_roi, i_ref in enumerate(self.refls_idx):
+            roi_sel = self.roi_id==i_roi
+            x1, x2, y1, y2 = self.rois[i_roi]
+            roi_shape = y2-y1, x2-x1
+            roi_img = self.all_data[roi_sel].reshape(roi_shape).astype(np.float32)  #NOTE this has already been converted to photon units
+            roi_bg = self.all_background[roi_sel].reshape(roi_shape).astype(np.float32)
+
+            sb = Shoebox((x1, x2, y1, y2, 0, 1))
+            sb.allocate()
+            sb.data = flex.float(np.ascontiguousarray(roi_img[None]))
+            sb.background = flex.float(np.ascontiguousarray(roi_bg[None]))
+
+            dials_mask = np.zeros(roi_img.shape).astype(np.int32)
+            mask = self.all_trusted[roi_sel].reshape(roi_shape)
+            dials_mask[mask] = dials_mask[mask] + MaskCode.Valid
+            sb.mask = flex.int(np.ascontiguousarray(dials_mask[None]))
+
+            # quick sanity test
+            if do_xyobs_sanity_check:
+                ref = self.refls[i_ref]
+                x,y,_ = ref['xyzobs.px.value']
+                assert x1 <= x <= x2, "exp %s; refl %d, %f %f %f" % (output_name, i_ref, x1,x,x2)
+                assert y1 <= y <= y2, "exp %s; refl %d, %f %f %f" % (output_name, i_ref, y1,y,y2)
+
+            R.extend(self.refls[i_ref: i_ref+1])
+            shoeboxes.append(sb)
+
+        R['shoebox'] = flex.shoebox(shoeboxes)
+        R.as_file(output_name)
 
     def SimulatorFromExperiment(self, best=None):
         """optional best parameter is a single row of a pandas datafame containing the starting
@@ -762,12 +865,16 @@ def target_func(x, udpate_terms, SIM, pfs, data, sigmas, trusted, background, ve
     return f, g, model_bragg, Jac
 
 
-def refine(exp, ref, params, spec=None, gpu_device=None):
+def refine(exp, ref, params, spec=None, gpu_device=None, data_is_in_refl=False):
     if gpu_device is None:
         gpu_device = 0
     params.simulator.spectrum.filename = spec
     Modeler = DataModeler(params)
-    assert Modeler.GatherFromExperiment(exp, ref)
+    if data_is_in_refl:
+        Modeler.GatherFromReflectionTable(exp, ref)
+    else:
+        assert Modeler.GatherFromExperiment(exp, ref)
+
     Modeler.SimulatorFromExperiment()
 
     Modeler.SIM.D.device_Id = gpu_device
