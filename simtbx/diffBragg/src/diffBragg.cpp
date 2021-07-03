@@ -1447,18 +1447,18 @@ double diffBragg::get_value(int refine_id){
 
 //af::flex_double diffBragg::get_Na_derivative_pixels(){
 // experimental
-boost::python::numpy::ndarray diffBragg::get_Na_derivative_pixels(){
-    SCITBX_ASSERT(Ncells_managers[0]->refine_me);
-    //https://stackoverflow.com/a/10705352/2077270
-    // note seems slow, best would be to drop in a contiguous 1-d numpy array instead of flex
-    // but is is possible using boost ?
-    af::flex_double v = Ncells_managers[0]->raw_pixels;
-    Py_intptr_t shape[1] = { v.size() };
-    boost::python::numpy::ndarray result = boost::python::numpy::zeros(
-            1, shape, boost::python::numpy::dtype::get_builtin<double>());
-    std::copy(v.begin(), v.end(), reinterpret_cast<double*>(result.get_data()));
-    return result;
-}
+//boost::python::numpy::ndarray diffBragg::get_Na_derivative_pixels(){
+//    SCITBX_ASSERT(Ncells_managers[0]->refine_me);
+//    //https://stackoverflow.com/a/10705352/2077270
+//    // note seems slow, best would be to drop in a contiguous 1-d numpy array instead of flex
+//    // but is is possible using boost ?
+//    af::flex_double v = Ncells_managers[0]->raw_pixels;
+//    Py_intptr_t shape[1] = { v.size() };
+//    boost::python::numpy::ndarray result = boost::python::numpy::zeros(
+//            1, shape, boost::python::numpy::dtype::get_builtin<double>());
+//    std::copy(v.begin(), v.end(), reinterpret_cast<double*>(result.get_data()));
+//    return result;
+//}
 
 af::flex_double diffBragg::get_derivative_pixels(int refine_id){
 
@@ -1799,11 +1799,13 @@ void diffBragg::add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows
     SCITBX_ASSERT(Npix_to_model <= Npix_total);
     double * floatimage_roi = raw_pixels_roi.begin();
 
+    printf("ROT mATS\n");
     diffBragg_rot_mats();
     if (refining_sausages){
         for (int i=0; i < num_sausages; i++)
             sausages_scale[i] = sausage_scale_managers[i]->value;
     }
+    printf("DONE ROT mATS\n");
     /* make sure we are normalizing with the right number of sub-steps */
     steps = phisteps*mosaic_domains*oversample*oversample;
     subpixel_size = pixel_size/oversample;
@@ -1816,7 +1818,9 @@ void diffBragg::add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows
     int* mos_pos = new int[Nsteps];
     int* sausage_pos = new int[Nsteps];
 
+    printf("list steps\n");
     diffBragg_list_steps(subS_pos, subF_pos, thick_pos, source_pos, phi_pos, mos_pos, sausage_pos);
+    printf("done list steps\n");
 
     int pan_rot_ids[3] = {0,4,5};
     int pan_orig_ids[3] = {1,2,3};
@@ -1895,6 +1899,10 @@ void diffBragg::add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows
     image_type d2_panel_orig_images(Npix_to_model*3,0.0);
     image_type d_sausage_XYZ_scale_images(Npix_to_model*num_sausages*4,0.0);
     image_type d_fp_fdp_images(Npix_to_model*2,0.0); // for now only support two parameters for fp, fdp
+
+    printf("SUM OVER STEPS\n");
+
+
 
     //fudge = 1.1013986013; // from manuscript computation
     struct timeval t1,t2;
