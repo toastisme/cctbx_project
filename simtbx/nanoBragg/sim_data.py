@@ -413,8 +413,12 @@ class SimData:
 
   def update_umats(self, mos_spread, mos_domains, crystal=None):
 
-    if self.umat_maker is None:
-      self.umat_maker = AnisoUmats(num_random_samples=mos_domains)
+    if mos_spread == 0 or mos_domains == 1:
+      Umats = [(1, 0, 0, 0, 1, 0, 0, 0, 1)]
+      Umats_prime = [(0, 0, 0, 0, 0, 0, 0, 0, 0)]
+      self.D.set_mosaic_blocks(Umats)
+      self.D.set_mosaic_blocks_prime(Umats_prime)
+      return
 
     #TODO remove arguments from this function as they are already in crystal attribute
     if not hasattr(self, "D"):
@@ -442,6 +446,10 @@ class SimData:
 
     Umats_prime = Umats_dbl_prime = None
 
+    if self.umat_maker is None and self.Umats_method in [2,3,4]:
+      assert mos_domains % 2 ==0
+      self.umat_maker = AnisoUmats(num_random_samples=mos_domains)
+
     # legacy
     if self.Umats_method == 0:
       Umats = SimData.Umats(mos_spread, mos_domains)
@@ -452,21 +460,17 @@ class SimData:
     elif self.Umats_method == 2:
       eta = mos_spread
       eta_tensor = eta, 0, 0, 0, eta, 0, 0, 0, eta
-      Umats, Umats_prime, Umats_dblprime = self.umat_maker.generate_Umats(eta_tensor, crystal,how=2, compute_derivs=True)
+      Umats, Umats_prime, Umats_dbl_prime = self.umat_maker.generate_Umats(eta_tensor, crystal,how=2, compute_derivs=True)
 
     elif self.Umats_method == 3:
       eta_a, eta_b, eta_c = mos_spread
       eta_tensor = eta_a, 0, 0, 0, eta_b, 0, 0, 0, eta_c
-      Umats, Umats_prime, Umats_dblprime = self.umat_maker.generate_Umats(eta_tensor, crystal,how=1, compute_derivs=True)
+      Umats, Umats_prime, Umats_dbl_prime = self.umat_maker.generate_Umats(eta_tensor, crystal,how=1, compute_derivs=True)
       Umats_prime = Umats_prime[0::3] + Umats_prime[1::3] + Umats_prime[2::3]
       Umats_dbl_prime = Umats_dbl_prime[0::3] + Umats_dbl_prime[1::3] + Umats_dbl_prime[2::3]
 
     else: # self.Umats_method == 4:
       raise NotImplementedError("full 6 parameter mosaic model still not refine-able")
-
-    if mos_spread == 0 or mos_domains == 1:
-      Umats = [(1, 0, 0, 0, 1, 0, 0, 0, 1)]
-      Umats_prime = [(0, 0, 0, 0, 0, 0, 0, 0, 0)]
 
     self.D.set_mosaic_blocks(Umats)
     if Umats_prime is not None:

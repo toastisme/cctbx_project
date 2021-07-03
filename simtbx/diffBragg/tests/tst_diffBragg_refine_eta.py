@@ -97,7 +97,8 @@ SIM.air_path_mm = 0.1
 SIM.add_air = True
 SIM.add_water = True
 SIM.include_noise = True
-SIM.D.use_cuda= args.cuda
+SIM.D.use_cuda = args.cuda
+SIM.D.compute_curvatures = args.curvatures
 SIM.D.add_diffBragg_spots()
 
 if args.finitediff:

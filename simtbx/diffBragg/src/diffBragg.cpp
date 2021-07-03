@@ -376,7 +376,7 @@ diffBragg::diffBragg(const dxtbx::model::Detector& detector, const dxtbx::model:
     update_oversample_during_refinement = true;
     oversample_omega = true;
     only_save_omega_kahn = false;
-    compute_curvatures = true;
+    compute_curvatures = false; // why was this True by default?
     isotropic_ncells = true;
     nmats=0;
     modeling_anisotropic_mosaic_spread = false;
@@ -1799,13 +1799,11 @@ void diffBragg::add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows
     SCITBX_ASSERT(Npix_to_model <= Npix_total);
     double * floatimage_roi = raw_pixels_roi.begin();
 
-    printf("ROT mATS\n");
     diffBragg_rot_mats();
     if (refining_sausages){
         for (int i=0; i < num_sausages; i++)
             sausages_scale[i] = sausage_scale_managers[i]->value;
     }
-    printf("DONE ROT mATS\n");
     /* make sure we are normalizing with the right number of sub-steps */
     steps = phisteps*mosaic_domains*oversample*oversample;
     subpixel_size = pixel_size/oversample;
@@ -1818,9 +1816,7 @@ void diffBragg::add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows
     int* mos_pos = new int[Nsteps];
     int* sausage_pos = new int[Nsteps];
 
-    printf("list steps\n");
     diffBragg_list_steps(subS_pos, subF_pos, thick_pos, source_pos, phi_pos, mos_pos, sausage_pos);
-    printf("done list steps\n");
 
     int pan_rot_ids[3] = {0,4,5};
     int pan_orig_ids[3] = {1,2,3};
@@ -1899,10 +1895,6 @@ void diffBragg::add_diffBragg_spots(const af::shared<size_t>& panels_fasts_slows
     image_type d2_panel_orig_images(Npix_to_model*3,0.0);
     image_type d_sausage_XYZ_scale_images(Npix_to_model*num_sausages*4,0.0);
     image_type d_fp_fdp_images(Npix_to_model*2,0.0); // for now only support two parameters for fp, fdp
-
-    printf("SUM OVER STEPS\n");
-
-
 
     //fudge = 1.1013986013; // from manuscript computation
     struct timeval t1,t2;
@@ -2167,7 +2159,7 @@ void diffBragg::diffBragg_rot_mats(){
         UMATS_RXYZ[mos_tic] = UMATS[mos_tic] * RXYZ;
         for (int i_eta=0; i_eta<3; i_eta++){
             if (eta_managers[i_eta]->refine_me){
-                //   printf("setting umat %d in vector of length %d\n" , mos_tic, UMATS_RXYZ_prime.size());
+                //printf("setting umat %d in vector of length %d\n" , mos_tic, UMATS_RXYZ_prime.size());
                 int mos_tic2 = mosaic_domains*i_eta + mos_tic;
                 UMATS_RXYZ_prime[mos_tic2] = UMATS_prime[mos_tic2]*RXYZ;
                 if (UMATS_dbl_prime.size() > 0){

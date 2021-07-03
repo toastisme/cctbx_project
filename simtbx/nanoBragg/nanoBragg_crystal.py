@@ -14,16 +14,17 @@ class NBcrystal(object):
         ucell = (79.1, 79.1, 38.4, 90, 90, 90)
         self.xtal_shape = "gauss"  # shapetype.Gauss
         self.Ncells_abc = (10, 10, 10)
+        self.isotropic_ncells = True
         self.Ncells_def = None
+        self.thick_mm = 0.1
+        self.symbol = "P43212"
+        self.miller_array = NBcrystal.dummie_Fhkl(ucell, self.symbol)
         self.mos_angles_per_axis = 10
         self.num_mos_axes = 10
         self.mos_spread_deg = 0
         self.anisotropic_mos_spread_deg = None
         self.n_mos_domains = 1
-        self.thick_mm = 0.1
-        self.symbol = "P43212"
-        self.miller_array = NBcrystal.dummie_Fhkl(ucell, self.symbol)
-        self.isotropic_ncells = True
+        self.umat_maker = None
         self.dxtbx_crystal = NBcrystal.dxtbx_crystal_from_ucell_and_symbol(
             ucell_tuple_Adeg=ucell, symbol=self.symbol)
 
