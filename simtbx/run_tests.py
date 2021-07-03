@@ -70,20 +70,20 @@ tst_list = [
 
 OPT = libtbx.env.build_options
 if OPT.enable_cuda:
-    tst_list_parallel = [
-        ["$D/nanoBragg/tst_gauss_argchk_gpu.py","GPU"] # tests CPU+GPU, argchk optimization
-    ]
+
+  tst_list_parallel = [
+    ["$D/nanoBragg/tst_gauss_argchk.py","GPU"], # tests CPU+GPU, argchk optimization
+    "$D/gpu/tst_exafel_api.py",                 # CPU / GPU, polychromatic beam, monolithic detector
+  ]
 else:
     tst_list.append(
         ["$D/nanoBragg/tst_gauss_argchk.py","CPU"]
     )
-
 
 def run():
   build_dir = libtbx.env.under_build("simtbx")
   dist_dir = libtbx.env.dist_path("simtbx")
   test_utils.run_tests(build_dir, dist_dir, tst_list)
 
-
-if __name__ == "__main__":
+if (__name__ == "__main__"):
   run()

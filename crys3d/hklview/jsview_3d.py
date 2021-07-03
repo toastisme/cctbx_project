@@ -47,9 +47,10 @@ class ArrayInfo:
       if (isinstance(data, flex.hendrickson_lattman)):
         data = graphics_utils.NoNansHL( data )
         # for now display HL coefficients as a simple sum
-        self.maxdata = max([e[0]+e[1]+e[2]+e[3] for e in data ])
-        self.mindata = min([e[0]+e[1]+e[2]+e[3] for e in data ])
-        arrsize = len([42 for e in millarr.data() if not math.isnan(e[0]+e[1]+e[2]+e[3])])
+        if arrsize:
+          self.maxdata = max([e[0]+e[1]+e[2]+e[3] for e in data ])
+          self.mindata = min([e[0]+e[1]+e[2]+e[3] for e in data ])
+          arrsize = len([42 for e in millarr.data() if not math.isnan(e[0]+e[1]+e[2]+e[3])])
         self.datatype = "ishendricksonlattman"
       else:
         arrsize = len([42 for e in millarr.data() if not math.isnan(abs(e))])
@@ -246,6 +247,9 @@ class hklview_3d:
     self.nuniqueval = 0
     self.bin_infotpls = []
     self.mapcoef_fom_dict = {}
+    # colourmap=brg, colourpower=1, powerscale=1, radiiscale=1
+    self.datatypedefault = ["brg", 1.0, 1.0, 1.0]
+    self.datatypedict = { }
     self.sceneid_from_arrayid = []
     self.parent = None
     if 'parent' in kwds:
@@ -327,6 +331,7 @@ class hklview_3d:
   def __exit__(self, exc_type, exc_value, traceback):
     # not called unless instantiated with a "with hklview_3d ... " statement
     self.JavaScriptCleanUp()
+    self.SendInfoToGUI( { "datatype_dict": self.datatypedict } ) # so the GUI can persist these across sessions
     nwait = 0
     if self.viewerparams.scene_id is None:
       self.WBmessenger.StopWebsocket()
@@ -417,6 +422,14 @@ class hklview_3d:
       self.sceneisdirty = True
     if has_phil_path(diff_phil, "scene_bin_thresholds"):
       self.sceneisdirty = True
+
+    if has_phil_path(diff_phil,
+                       "color_scheme",
+                       "color_powscale",
+                       "scale",
+                       "nth_power_scale_radii"
+                       ):
+      self.add_colour_map_radii_power_to_dict()
 
     if has_phil_path(diff_phil, "camera_type"):
       self.set_camera_type()
@@ -932,6 +945,8 @@ class hklview_3d:
     if sceneid is None:
       sceneid = self.viewerparams.scene_id
     HKLsceneKey = self.Sceneid_to_SceneKey(sceneid)
+    if not self.HKLscenedict.get(HKLsceneKey, False):
+      self.ConstructReciprocalSpace(self.params, scene_id=sceneid)
     return self.HKLscenedict[HKLsceneKey][1]
 
 
@@ -939,6 +954,8 @@ class hklview_3d:
     if sceneid is None:
       sceneid = self.viewerparams.scene_id
     HKLsceneKey = self.Sceneid_to_SceneKey(sceneid)
+    if not self.HKLscenedict.get(HKLsceneKey, False):
+      self.ConstructReciprocalSpace(self.params, scene_id=sceneid)
     return self.HKLscenedict[HKLsceneKey][2]
 
 
@@ -946,6 +963,8 @@ class hklview_3d:
     if sceneid is None:
       sceneid = self.viewerparams.scene_id
     HKLsceneKey = self.Sceneid_to_SceneKey(sceneid)
+    if not self.HKLscenedict.get(HKLsceneKey, False):
+      self.ConstructReciprocalSpace(self.params, scene_id=sceneid)
     return self.HKLscenedict[HKLsceneKey][3]
 
 
@@ -953,6 +972,8 @@ class hklview_3d:
     if sceneid is None:
       sceneid = self.viewerparams.scene_id
     HKLsceneKey = self.Sceneid_to_SceneKey(sceneid)
+    if not self.HKLscenedict.get(HKLsceneKey, False):
+      self.ConstructReciprocalSpace(self.params, scene_id=sceneid)
     return self.HKLscenedict[HKLsceneKey][4]
 
 
@@ -960,6 +981,8 @@ class hklview_3d:
     if sceneid is None:
       sceneid = self.viewerparams.scene_id
     HKLsceneKey = self.Sceneid_to_SceneKey(sceneid)
+    if not self.HKLscenedict.get(HKLsceneKey, False):
+      self.ConstructReciprocalSpace(self.params, scene_id=sceneid)
     return self.HKLscenedict[HKLsceneKey][5]
 
 
@@ -994,7 +1017,6 @@ class hklview_3d:
 
   def calc_bin_thresholds(self, binner_idx, nbins):
     # make default bin thresholds if scene_bin_thresholds is not set
-    #self.bin_labels_type_idx = self.bin_labels_type_idxs[binner_idx]
     binscenelabel = self.bin_labels_type_idxs[binner_idx][0]
     self.mprint("Using %s for binning" %binscenelabel)
     if binscenelabel=="Resolution":
@@ -1002,11 +1024,12 @@ class hklview_3d:
       dres = self.HKLscene_from_dict(int(self.viewerparams.scene_id)).dres
       uc = warray.unit_cell()
       indices = self.HKLscene_from_dict(int(self.viewerparams.scene_id)).indices
-      if flex.max(dres) == flex.min(dres): # say if only one reflection
-        binvals = [dres[0]-0.1, flex.min(dres)+0.1]
+      dmax,dmin = warray.d_max_min(d_max_is_highest_defined_if_infinite=True) # to avoid any F000 reflection
+      if dmax == dmin: # say if only one reflection
+        binvals = [dres[0]-0.1, dmin +0.1]
         nuniquevalues = 2
       else: # use generic binning function from cctbx
-        binning = miller.binning( uc, nbins, indices, flex.max(dres), flex.min(dres) )
+        binning = miller.binning( uc, nbins, indices, dmax, dmin )
         binvals = [ binning.bin_d_range(n)[0] for n in binning.range_all() ]
         binvals = [ e for e in binvals if e != -1.0] # delete dummy limit
         binvals = list( 1.0/flex.double(binvals) )
@@ -1126,6 +1149,33 @@ class hklview_3d:
       raise Sorry(str(e))
 
 
+  def get_colour_map_radii_power(self):
+    datatype = self.get_current_datatype()
+    if self.viewerparams.sigma_color_radius:
+      datatype = datatype + "_sigmas"
+    if datatype not in self.datatypedict.keys():
+        # ensure individual copies of datatypedefault and not references to the same
+      self.datatypedict[ datatype ] = self.datatypedefault[:]
+    colourscheme, colourpower, powerscale, radiiscale = \
+        self.datatypedict.get( datatype, self.datatypedefault[:] )
+    return colourscheme, colourpower, powerscale, radiiscale
+
+
+  def add_colour_map_radii_power_to_dict(self):
+    datatype = self.get_current_datatype()
+    if datatype is None:
+      return
+    if self.viewerparams.sigma_color_radius:
+      datatype = datatype + "_sigmas"
+    if datatype not in self.datatypedict.keys():
+        # ensure individual copies of datatypedefault and not references to the same
+      self.datatypedict[ datatype ] = self.datatypedefault[:]
+    self.datatypedict[datatype][0] = self.viewerparams.color_scheme
+    self.datatypedict[datatype][1] = self.viewerparams.color_powscale
+    self.datatypedict[datatype][2] = self.viewerparams.nth_power_scale_radii
+    self.datatypedict[datatype][3] = self.viewerparams.scale
+
+
   def DrawNGLJavaScript(self, blankscene=False):
     if not self.scene or not self.sceneisdirty:
       return
@@ -1164,6 +1214,9 @@ class hklview_3d:
     Lstararrowtxt  = roundoff( [self.unit_l_axis[0][0]*l2, self.unit_l_axis[0][1]*l2, self.unit_l_axis[0][2]*l2] )
 
     if not blankscene:
+      self.viewerparams.color_scheme, self.viewerparams.color_powscale, self.viewerparams.nth_power_scale_radii, \
+        self.viewerparams.scale = self.get_colour_map_radii_power()
+
       # Make colour gradient array used for drawing a bar of colours next to associated values on the rendered html
       mincolourscalar = self.HKLMinData_from_dict(self.colour_scene_id)
       maxcolourscalar = self.HKLMaxData_from_dict(self.colour_scene_id)
@@ -1439,7 +1492,7 @@ class hklview_3d:
     self.lastscene_id = self.viewerparams.scene_id
 
 
-  def ProcessMessage(self, message):
+  def ProcessBrowserMessage(self, message):
     try:
       if sys.version_info[0] > 2:
         ustr = str
@@ -1589,12 +1642,15 @@ Distance: %s
     uc = self.miller_array.unit_cell()
     OrtMx = matrix.sqr( uc.fractionalization_matrix() )
     InvMx = OrtMx.inverse()
+    # Our local coordinate system has x-axis pointing right and z axis pointing out of the screen
+    # unlike threeJS so rotate the coordinates emitted from there before presenting them
+    RotAroundYMx = matrix.sqr([-1.0,0.0,0.0, 0.0,1.0,0.0, 0.0,0.0,-1.0])
     Xvec =  matrix.rec([1,0,0] ,n=(1,3))
-    Xhkl = list(InvMx.transpose()* self.currentRotmx.inverse()* Xvec.transpose())
+    Xhkl = list(RotAroundYMx.transpose()* InvMx.transpose()* self.currentRotmx.inverse()* Xvec.transpose())
     Yvec =  matrix.rec([0,1,0] ,n=(1,3))
-    Yhkl = list(InvMx.transpose()* self.currentRotmx.inverse()* Yvec.transpose())
+    Yhkl = list(RotAroundYMx.transpose()*InvMx.transpose()* self.currentRotmx.inverse()* Yvec.transpose())
     Zvec =  matrix.rec([0,0,1] ,n=(1,3))
-    Zhkl = list(InvMx.transpose()* self.currentRotmx.inverse()* Zvec.transpose())
+    Zhkl = list(RotAroundYMx.transpose()*InvMx.transpose()* self.currentRotmx.inverse()* Zvec.transpose())
     if self.debug:
       self.SendInfoToGUI( { "StatusBar": "RotMx: %s, XHKL: %s, YHKL: %s, ZHKL: %s" \
         %(str(roundoff(self.currentRotmx,4)), str(roundoff(Xhkl, 2)),
@@ -2393,13 +2449,18 @@ in the space group %s\nwith unit cell %s\n""" \
     msg = "%s\n\n%s\n\n%s\n\n%s\n\n%s" %(ctop, cleft, label, fomlabel, str(colourgradarray) )
     self.AddToBrowserMsgQueue("MakeColourChart", msg )
 
+  def get_current_datatype(self):
+    # Amplitudes, Map coeffs, weights, floating points, etc
+    if self.viewerparams.scene_id is None:
+      return None
+    return self.array_infotpls[ self.scene_id_to_array_id(self.viewerparams.scene_id )][1]
+
 
   def onClickColourChart(self):
-    arrayinfotpl = self.array_infotpls[ self.scene_id_to_array_id(self.viewerparams.scene_id )]
     # if running the GUI show the colour chart selection dialog
     self.SendInfoToGUI( { "ColourChart": self.viewerparams.color_scheme,
                           "ColourPowerScale": self.viewerparams.color_powscale,
-                          "Datatype": arrayinfotpl[ 1 ], # Amplitudes, Map coeffs, etc
+                          "Datatype": self.get_current_datatype(),
                           "ShowColourMapDialog": 1
                          } )
 

@@ -4,7 +4,7 @@ organizer for setting the nanoBragg crystal properties
 from __future__ import absolute_import, division, print_function
 from collections import Iterable
 from simtbx.nanoBragg import shapetype
-from scitbx.matrix import sqr, col
+from scitbx.matrix import sqr
 from cctbx import sgtbx
 
 
@@ -132,14 +132,16 @@ class NBcrystal(object):
 
     @property
     def xtal_shape(self):
-        if self._xtal_shape == "gauss":
-          return shapetype.Gauss
-        elif self._xtal_shape == "round":
-          return shapetype.Round
-        elif self._xtal_shape == "square":
-          return shapetype.Square
-        else:
-          return shapetype.Tophat
+      if self._xtal_shape == "gauss":
+        return shapetype.Gauss
+      elif self._xtal_shape == "gauss_argchk":
+        return shapetype.Gauss_argchk
+      elif self._xtal_shape == "round":
+        return shapetype.Round
+      elif self._xtal_shape == "square":
+        return shapetype.Square
+      else:
+        return shapetype.Tophat
 
     @xtal_shape.setter
     def xtal_shape(self, val):
