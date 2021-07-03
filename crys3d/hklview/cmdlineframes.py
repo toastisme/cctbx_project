@@ -12,7 +12,7 @@ from cctbx.array_family import flex
 from libtbx.utils import Sorry, to_str
 from scitbx import matrix
 from cctbx import sgtbx
-from libtbx import group_args
+from libtbx import group_args, version
 import libtbx
 import libtbx.load_env
 import traceback
@@ -68,8 +68,8 @@ class HKLViewFrame() :
     self.uservectors = []
     self.new_miller_array_operations_lst = []
     self.copyrightpaths = [("CCTBX copyright", libtbx.env.under_root(os.path.join("modules","cctbx_project","COPYRIGHT.txt"))),
-     ("NGL copyright", libtbx.env.under_root(os.path.join("modules","cctbx_project","crys3d","hklview","License_for_NGL.txt"))),
-     ("html2canvas copyright", libtbx.env.under_root(os.path.join("modules","cctbx_project","crys3d","hklview","LICENSE_for_html2canvas.txt")))
+     ("NGL copyright", libtbx.env.under_dist("crys3d","hklview/License_for_NGL.txt")),
+     ("html2canvas copyright", libtbx.env.under_dist("crys3d","hklview/LICENSE_for_html2canvas.txt"))
     ]
     self.zmqsleeptime = 0.1
     if 'useGuiSocket' in kwds:
@@ -86,7 +86,8 @@ class HKLViewFrame() :
       pyversion = "cctbx.python.version: " + str(sys.version_info[0])
       # tell gui what python version we are
       self.SendInfoToGUI(pyversion )
-      self.SendInfoToGUI({"copyrights": self.copyrightpaths } )
+      self.SendInfoToGUI({"copyrights": self.copyrightpaths,
+                          "cctbxversion": version.get_version()} )
     kwds['websockport'] = self.find_free_port()
     kwds['parent'] = self
     self.viewer = view_3d.hklview_3d( **kwds )
@@ -131,16 +132,18 @@ class HKLViewFrame() :
     #time.sleep(5)
     while not self.STOP:
       try:
-        philstr = self.guisocket.recv()
-        philstr = philstr.decode("utf-8")
-        self.mprint("Received phil string:\n" + philstr, verbose=1)
-        new_phil = libtbx.phil.parse(philstr)
-        self.update_settings(new_phil)
+        msgstr = self.guisocket.recv().decode("utf-8")
+        self.mprint("Received string:\n" + msgstr, verbose=1)
+        msgtype, mstr = eval(msgstr)
+        if msgtype=="dict":
+          self.viewer.datatypedict = eval(mstr)
+        if msgtype=="philstr":
+          new_phil = libtbx.phil.parse(mstr)
+          self.update_settings(new_phil)
         time.sleep(self.zmqsleeptime)
       except Exception as e:
         self.mprint( str(e) + traceback.format_exc(limit=10), verbose=1)
     self.mprint( "Shutting down zmq_listen() thread", 1)
-    #del self.guisocket
     self.guiSocketPort=None
 
 
@@ -542,7 +545,14 @@ class HKLViewFrame() :
     valid_arrays = []
     self.viewer.array_infostrs = []
     self.viewer.array_infotpls = []
-    for i,array in enumerate(arrays) :
+    spg = arrays[0].space_group()
+    uc = arrays[0].unit_cell()
+    for i,array in enumerate(arrays):
+      if array.space_group() is None:
+        array._unit_cell = uc
+        array._space_group_info = spg.info()
+        self.mprint("""No unit cell or space group info present in the %d. miller array.
+Borrowing them from the first miller array""" %i)
       arrayinfo = ArrayInfo(array, self.mprint)
       self.viewer.array_infostrs.append( arrayinfo.infostr )
       self.viewer.array_infotpls.append( arrayinfo.infotpl )
@@ -588,13 +598,19 @@ class HKLViewFrame() :
         if hkl_file._file_type == 'cif':
           # use new cif label parser for reflections
           cifreader = hkl_file.file_content()
-          arrays = cifreader.as_miller_arrays(merge_equivalents=False, style="new")
+          cifarrays = cifreader.as_miller_arrays(merge_equivalents=False)
+          arrays = []
+          for arr in cifarrays:
+            if arr.info().labels[-1] not in ['_refln.crystal_id', # avoid these un-displayable arrays
+                      'HKLs','_refln.wavelength_id', '_refln.scale_group_code']:
+              arrays.append(arr)
           # sanitise labels by removing redundant strings.
           # remove the data name of this cif file from all labels
-          dataname = list(hkl_file._file_content.builder._model.keys_lower.keys())
+          dataname = list(hkl_file._file_content.builder._model.keys())
           unwantedstrings = dataname[:]
           # remove "_refln." from all labels
           unwantedstrings.append("_refln.")
+          unwantedstrings.append("_refln_")
           for arr in arrays:
             if len(arr.info().labels):
               newlabels = []
@@ -610,7 +626,22 @@ class HKLViewFrame() :
                 if not found:
                   newlabels.append(label)
                 arr.info().labels = newlabels
-          self.origarrays = cifreader.as_original_arrays()[dataname[0]]
+          ciforigarrays = cifreader.as_original_arrays()[dataname[0]]
+          self.origarrays = {}
+          for key in ciforigarrays:
+            if key not in ['_refln.crystal_id', # avoid these un-displayable arrays
+                      '_refln.wavelength_id', '_refln.scale_group_code']:
+              self.origarrays[key] = ciforigarrays[key]
+          # replace ? with nan in self.origarrays to allow sorting tables of data in HKLviewer
+          for labl in self.origarrays.keys():
+            origarray = self.origarrays[labl]
+            for i,e in enumerate(self.origarrays[labl]):
+              if e=="?":
+                origarray[i] = "nan"
+            try:
+              self.origarrays[labl] = flex.double(origarray)
+            except Exception as e:
+              self.origarrays[labl] = origarray
         else: # some other type of reflection file than cif
           arrays = hkl_file.as_miller_arrays(merge_equivalents=False)
         if hkl_file._file_type == 'ccp4_mtz':
@@ -768,15 +799,27 @@ class HKLViewFrame() :
         else:
           self.origarrays[arr.info().label_string()] = list(arr.data())
 
-    labels = eval(datalabels)
     indices = self.origarrays["HKLs"]
     dres = self.procarrays[0].unit_cell().d( indices)
     dreslst = [("d_res", roundoff(list(dres)),3)]
     hkls = list(indices)
     hkllst = [ ("H", [e[0] for e in hkls] ), ("K", [e[1] for e in hkls] ), ("L", [e[2] for e in hkls] )]
     datalst = []
-    for label in labels:
-      datalst.append( (label, list(self.origarrays[label])))
+    labellists = eval(datalabels)
+    for labels in labellists:
+      crystlbl = ""; wavelbl = ""; scalelbl =""
+      for i,label in enumerate(labels):
+        if "crystal_id" in label:
+          crystlbl = "," + label
+        if "wavelength_id" in label:
+          wavelbl = "," + label
+        if "scale_group_code" in label:
+          scalelbl = "," + label
+      for label in labels:
+        if "crystal_id" in label or "wavelength_id" in label or "scale_group_code" in label:
+          continue
+        fulllabel = label + crystlbl + wavelbl + scalelbl
+        datalst.append( (label, list(self.origarrays[fulllabel])))
     self.idx_data = hkllst + dreslst + datalst
     self.mprint("Sending table data...", verbose=0)
     mydict = { "tabulate_miller_array": self.idx_data }
@@ -904,6 +947,7 @@ class HKLViewFrame() :
     self.params.merge_data = val
     self.update_settings()
 
+
   def SetColourScene(self, colourcol):
     self.params.viewer.colour_scene_id = colourcol
     self.update_settings()
@@ -935,11 +979,6 @@ class HKLViewFrame() :
     self.params.viewer.color_scheme = color_scheme
     self.params.viewer.color_powscale = color_powscale
     self.update_settings()
-
-
-  #def SetColoursToPhases(self, val): # deprecated
-  #  self.params.viewer.phase_color = val
-  #  self.update_settings()
 
 
   def SetShapePrimitive(self, val):

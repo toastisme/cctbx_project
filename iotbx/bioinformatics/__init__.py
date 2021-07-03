@@ -1934,15 +1934,16 @@ def get_chain_type(model=None, hierarchy=None):
     elif count_rna_dna_p and count_rna:
       return "RNA"
     else:
-      raise Sorry("Model does not appear to contain protein or RNA or DNA")
+      return None  # cannot tell (may be UNK residue)
 
 def get_sequence_from_hierarchy(hierarchy, chain_type=None,
-     remove_white_space=False):
+     remove_white_space=False, require_chain_type=True):
   return get_sequence_from_pdb(hierarchy=hierarchy,chain_type=chain_type,
-     remove_white_space=remove_white_space)
+     remove_white_space=remove_white_space,
+      require_chain_type=require_chain_type)
 
 def get_sequence_from_pdb(file_name=None,text=None,hierarchy=None,
-    chain_type=None, remove_white_space=False):
+    chain_type=None, remove_white_space=False, require_chain_type=True):
 
   if not hierarchy:
     # read from PDB
@@ -1978,6 +1979,12 @@ def get_sequence_from_pdb(file_name=None,text=None,hierarchy=None,
       chain_type_use = chain_type
       if not chain_type_use:
         chain_type_use = get_chain_type_of_chain(chain)
+        if not chain_type_use:
+          if require_chain_type:
+            from libtbx.utils import Sorry
+            raise Sorry("Chain type could not be identified for chain %s" %(chain.id))
+          else:
+            continue
       one_letter_code = one_letter_code_dicts[chain_type_use]
       chain_sequence=""
       for rg in chain.residue_groups():
@@ -2175,8 +2182,22 @@ def chain_type_and_residues(text=None,chain_type=None,likely_chain_types=None):
   else:
     return ok_list[0],residues
 
-def random_sequence(n_residues=None,residue_basket=None):
-  assert n_residues and residue_basket
+def random_sequence(n_residues=None,residue_basket=None,
+   chain_type = 'PROTEIN'):
+  assert n_residues and (residue_basket or chain_type)
+  if not residue_basket:
+    chain_type = chain_type.upper()
+    if chain_type == "PROTEIN":
+        # Approximate eukaryotic frequencies using W as basic unit
+        residue_basket = "AAAAAACCCEEEEDDDDDGGGGGG"+\
+          "FFFIIIHHKKKKKKMLLLLLLNNNQQQPPPPSSSSSSRRRTTTTTWVVVVVYYY"
+    elif chain_type == "DNA":
+        residue_basket = "GATC"
+    elif chain_type == "RNA":
+        residue_basket = "GAUC"
+    else:
+        raise Sorry("Chain type needs to be RNA/DNA/PROTEIN")
+
   import random
   s=""
   nn=len(residue_basket)-1
