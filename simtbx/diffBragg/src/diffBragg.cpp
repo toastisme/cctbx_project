@@ -376,7 +376,7 @@ diffBragg::diffBragg(const dxtbx::model::Detector& detector, const dxtbx::model:
     update_oversample_during_refinement = true;
     oversample_omega = true;
     only_save_omega_kahn = false;
-    compute_curvatures = true;
+    compute_curvatures = false; // why was this True by default?
     isotropic_ncells = true;
     nmats=0;
     modeling_anisotropic_mosaic_spread = false;
@@ -1447,18 +1447,18 @@ double diffBragg::get_value(int refine_id){
 
 //af::flex_double diffBragg::get_Na_derivative_pixels(){
 // experimental
-boost::python::numpy::ndarray diffBragg::get_Na_derivative_pixels(){
-    SCITBX_ASSERT(Ncells_managers[0]->refine_me);
-    //https://stackoverflow.com/a/10705352/2077270
-    // note seems slow, best would be to drop in a contiguous 1-d numpy array instead of flex
-    // but is is possible using boost ?
-    af::flex_double v = Ncells_managers[0]->raw_pixels;
-    Py_intptr_t shape[1] = { v.size() };
-    boost::python::numpy::ndarray result = boost::python::numpy::zeros(
-            1, shape, boost::python::numpy::dtype::get_builtin<double>());
-    std::copy(v.begin(), v.end(), reinterpret_cast<double*>(result.get_data()));
-    return result;
-}
+//boost::python::numpy::ndarray diffBragg::get_Na_derivative_pixels(){
+//    SCITBX_ASSERT(Ncells_managers[0]->refine_me);
+//    //https://stackoverflow.com/a/10705352/2077270
+//    // note seems slow, best would be to drop in a contiguous 1-d numpy array instead of flex
+//    // but is is possible using boost ?
+//    af::flex_double v = Ncells_managers[0]->raw_pixels;
+//    Py_intptr_t shape[1] = { v.size() };
+//    boost::python::numpy::ndarray result = boost::python::numpy::zeros(
+//            1, shape, boost::python::numpy::dtype::get_builtin<double>());
+//    std::copy(v.begin(), v.end(), reinterpret_cast<double*>(result.get_data()));
+//    return result;
+//}
 
 af::flex_double diffBragg::get_derivative_pixels(int refine_id){
 
@@ -2159,7 +2159,7 @@ void diffBragg::diffBragg_rot_mats(){
         UMATS_RXYZ[mos_tic] = UMATS[mos_tic] * RXYZ;
         for (int i_eta=0; i_eta<3; i_eta++){
             if (eta_managers[i_eta]->refine_me){
-                //   printf("setting umat %d in vector of length %d\n" , mos_tic, UMATS_RXYZ_prime.size());
+                //printf("setting umat %d in vector of length %d\n" , mos_tic, UMATS_RXYZ_prime.size());
                 int mos_tic2 = mosaic_domains*i_eta + mos_tic;
                 UMATS_RXYZ_prime[mos_tic2] = UMATS_prime[mos_tic2]*RXYZ;
                 if (UMATS_dbl_prime.size() > 0){

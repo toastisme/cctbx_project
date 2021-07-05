@@ -276,7 +276,7 @@ class diffBragg: public nanoBragg{
   af::flex_double get_raw_pixels_roi();
   boost::python::tuple get_fp_fdp_derivative_pixels();
   boost::python::tuple get_ncells_derivative_pixels();
-  boost::python::numpy::ndarray get_Na_derivative_pixels();
+  //boost::python::numpy::ndarray get_Na_derivative_pixels();
   boost::python::tuple get_ncells_def_derivative_pixels();
   boost::python::tuple get_ncells_def_second_derivative_pixels();
   boost::python::tuple get_ncells_second_derivative_pixels();

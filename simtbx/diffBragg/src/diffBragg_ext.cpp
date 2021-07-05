@@ -356,7 +356,7 @@ namespace boost_python { namespace {
 
       .def("get_ncells_def_derivative_pixels", &simtbx::nanoBragg::diffBragg::get_ncells_def_derivative_pixels, "get derivatives of intensity w.r.t (Nd, Ne, Nf)")
 
-      .def("get_Na_derivative_pixels", &simtbx::nanoBragg::diffBragg::get_Na_derivative_pixels, "get derivatives of intensity w.r.t (Nd, Ne, Nf)")
+      //.def("get_Na_derivative_pixels", &simtbx::nanoBragg::diffBragg::get_Na_derivative_pixels, "get derivatives of intensity w.r.t (Nd, Ne, Nf)")
 
       .def("get_aniso_eta_deriv_pixels", &simtbx::nanoBragg::diffBragg::get_aniso_eta_deriv_pixels, "get derivatives of intensity w.r.t anisotropic mosaicity model")
 

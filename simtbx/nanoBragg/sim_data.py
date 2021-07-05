@@ -4,6 +4,7 @@ from collections import Iterable
 from simtbx.diffBragg import diffBragg
 from scitbx.array_family import flex
 import numpy as np
+from simtbx.nanoBragg.anisotropic_mosaicity import AnisoUmats
 from simtbx.nanoBragg import shapetype, nanoBragg
 from simtbx.nanoBragg.nanoBragg_crystal import NBcrystal
 from simtbx.nanoBragg.nanoBragg_beam import NBbeam
@@ -70,6 +71,7 @@ class SimData:
     self.mosaic_seeds = 777, 777
     self.D = None # nanoBragg instance
     self.panel_id = 0
+    self.umat_maker = None
 
   @property
   def background_raw_pixels(self):
@@ -410,14 +412,21 @@ class SimData:
       self.D.set_mosaic_blocks(mos_blocks)
 
   def update_umats(self, mos_spread, mos_domains, crystal=None):
+
+    if mos_spread == 0 or mos_domains == 1:
+      Umats = [(1, 0, 0, 0, 1, 0, 0, 0, 1)]
+      Umats_prime = [(0, 0, 0, 0, 0, 0, 0, 0, 0)]
+      self.D.set_mosaic_blocks(Umats)
+      self.D.set_mosaic_blocks_prime(Umats_prime)
+      return
+
     #TODO remove arguments from this function as they are already in crystal attribute
     if not hasattr(self, "D"):
-      print("Cannot set umats if diffBragg is not yet instantiated")
+      print("Cannot set umats if diffBragg/nanoBragg is not yet instantiated")
       return
-    # TODO anisotropic case
     if isinstance(mos_spread, Iterable):
-      # TODO does this matter ?
-      ave_spread =  sum(mos_spread) / len(mos_spread)
+      # TODO does this matter to set the ave spread under the hood ?
+      ave_spread =  sum(mos_spread) / len(list(mos_spread))
       assert ave_spread > 0
       self.D.mosaic_spread_deg = ave_spread
       self.crystal.mos_spread_deg = ave_spread
@@ -434,25 +443,36 @@ class SimData:
 
     self.D.mosaic_domains = mos_domains
     self.crystal.n_mos_domains = mos_domains
-    Umats_data = SimData.Umats(mos_spread, mos_domains, method=self.Umats_method,
-                               angles_per_axis=self.crystal.mos_angles_per_axis,
-                               crystal=crystal,
-                               num_axes=self.crystal.num_mos_axes)
-    if len(Umats_data) == 2:
-      Umats, Umats_prime = Umats_data
-      Umats_dbl_prime = None
-    else:
-      assert len(Umats_data) == 3
-      Umats, Umats_prime, Umats_dbl_prime = Umats_data
+
+    Umats_prime = Umats_dbl_prime = None
+
+    if self.umat_maker is None and self.Umats_method in [2,3,4]:
+      assert mos_domains % 2 ==0
+      self.umat_maker = AnisoUmats(num_random_samples=mos_domains)
+
+    # legacy
+    if self.Umats_method == 0:
+      Umats = SimData.Umats(mos_spread, mos_domains)
+
+    elif self.Umats_method == 1:
+      Umats, Umats_prime = run_uniform(mos_spread, mos_domains)
+
+    elif self.Umats_method == 2:
+      eta = mos_spread
+      eta_tensor = eta, 0, 0, 0, eta, 0, 0, 0, eta
+      Umats, Umats_prime, Umats_dbl_prime = self.umat_maker.generate_Umats(eta_tensor, crystal,how=2, compute_derivs=True)
+
+    elif self.Umats_method == 3:
+      eta_a, eta_b, eta_c = mos_spread
+      eta_tensor = eta_a, 0, 0, 0, eta_b, 0, 0, 0, eta_c
+      Umats, Umats_prime, Umats_dbl_prime = self.umat_maker.generate_Umats(eta_tensor, crystal,how=1, compute_derivs=True)
+      Umats_prime = Umats_prime[0::3] + Umats_prime[1::3] + Umats_prime[2::3]
+      Umats_dbl_prime = Umats_dbl_prime[0::3] + Umats_dbl_prime[1::3] + Umats_dbl_prime[2::3]
+
+    else: # self.Umats_method == 4:
+      raise NotImplementedError("full 6 parameter mosaic model still not refine-able")
 
     self.D.set_mosaic_blocks(Umats)
-    if self.Umats_method == 3 and Umats_prime is not None:
-      Umats_prime = Umats_prime[0::3] + Umats_prime[1::3] + Umats_prime[2::3]
-      assert len(Umats_prime) == 3*len(Umats)
-      if Umats_dbl_prime is not None:
-        Umats_dbl_prime = Umats_dbl_prime[0::3] + Umats_dbl_prime[1::3] + Umats_dbl_prime[2::3]
-        assert len(Umats_dbl_prime) == 3*len(Umats)
-
     if Umats_prime is not None:
       self.D.set_mosaic_blocks_prime(Umats_prime)
     if Umats_dbl_prime is not None:
