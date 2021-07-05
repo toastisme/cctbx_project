@@ -2,6 +2,7 @@ from __future__ import absolute_import, division, print_function
 from scitbx.array_family import flex
 from scitbx.matrix import sqr,col
 from simtbx.nanoBragg import nanoBragg
+from collections import Iterable
 import libtbx.load_env # possibly implicit
 import math
 from libtbx.test_utils import approx_equal
@@ -25,7 +26,7 @@ The purpose of function run_uniform() is to provide UMAT and d_UMAT_d_eta with t
 
 MOSAIC_SPREAD = 2.0 # top hat half width rotation in degrees
 
-def run_uniform(eta_angle, sample_size=20000, verbose=True):
+def run_uniform(eta_angle, sample_size=20000, verbose=True, crystal=None):
 
   UMAT = flex.mat3_double()
   d_UMAT_d_eta = flex.mat3_double()
@@ -38,14 +39,37 @@ def run_uniform(eta_angle, sample_size=20000, verbose=True):
   assert sample_size%2==0
   # the angle is sampled uniformly from its distribution
 
+  if not isinstance(eta_angle, Iterable):
+    eta_tensor = None
+  else:
+    assert len(eta_angle) == 9
+    eta_tensor = sqr(eta_angle)
+
   mosaic_rotation0 = np.array(range(sample_size//2))
   mosaic_rotation1 = special.erfinv(mosaic_rotation0/(sample_size//2))
   d_theta_d_eta = math.sqrt(2.0)*flex.double(mosaic_rotation1)
-  mosaic_rotation = (math.pi/180.)*eta_angle*d_theta_d_eta
+  #mosaic_rotation = (math.pi/180.)*eta_angle*d_theta_d_eta
 
-  for m, d in zip(mosaic_rotation, d_theta_d_eta):
+  if crystal is not None:
+    a, b, c = map(col, crystal.get_real_space_vectors())
+    unit_a = a.normalize()
+    unit_b = b.normalize()
+    unit_c = c.normalize()
+
+  for d in d_theta_d_eta:
     site = col(mersenne_twister.random_double_point_on_sphere())
-    UMAT.append( site.axis_and_angle_as_r3_rotation_matrix(m,deg=False) )
+
+    if eta_tensor is None:
+      m = (math.pi / 180.) * eta_angle * d
+    else:
+      Ca = site.dot(unit_a)
+      Cb = site.dot(unit_b)
+      Cc = site.dot(unit_c)
+      C = col((Ca, Cb, Cc)).normalize()
+      eta_eff = C.dot(eta_tensor*C)
+      m = (math.pi / 180.) * eta_eff * d
+
+    UMAT.append(site.axis_and_angle_as_r3_rotation_matrix(m,deg=False) )
     UMAT.append( site.axis_and_angle_as_r3_rotation_matrix(-m,deg=False) )
     d_umat = site.axis_and_angle_as_r3_derivative_wrt_angle(m, deg=False)
     d_UMAT_d_eta.append( (math.pi/180.) * d * d_umat )
@@ -67,6 +91,26 @@ def check_finite(mat1, mat2, dmat1, eps):
     f_diff = (m2 - m1)/eps
     deriv = sqr(dmat1[im])
     assert approx_equal(f_diff.elems, deriv.elems)
+
+def check_finite_second_order(mat1, mat2, mat3, dmat1, eps):
+  """
+  :param mat1:  Umat delta = 0
+  :param mat2:  Umat delta = + eps
+  :param mat3:  Umat delta = - eps
+  :param dmat1:  analytical second deriv
+  :param eps: shift in angle
+  :return:
+  """
+  n = 0
+  for im in range(len(mat1)):
+    m1 = sqr(mat1[im])
+    m2 = sqr(mat2[im])
+    m3 = sqr(mat3[im])
+    f_diff = (m2 - 2*m1 + m3)/eps/eps
+    deriv = sqr(dmat1[im])
+    if not approx_equal(f_diff.elems, deriv.elems):
+      n += 1
+  assert n==0, "%d / %d 2nd derivs were inaccurate" %(n , len(mat1))
 
 def tst_all(make_plots):
   eps =0.00001 # degrees
