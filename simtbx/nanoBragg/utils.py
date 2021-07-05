@@ -3,6 +3,8 @@ import json, h5py, numpy as np
 from scipy.interpolate import interp1d
 from scipy.stats import binned_statistic
 from scipy import signal
+from scipy.stats import binned_statistic
+from scipy import signal
 from scipy import constants
 from scipy.signal import argrelmax, argrelmin, savgol_filter
 import time
@@ -343,7 +345,6 @@ def downsample_spectrum(energies, fluences, total_flux=1e12, nbins=100, method=0
     kept_idx = [i for i in idx if w[i] > baseline]
     energies = energies[kept_idx]
     fluences = fluences[kept_idx]
-
   elif method==2:
     delta_en = method2_param["delta_en"]
     tail = method2_param["tail"]
@@ -362,36 +363,3 @@ def downsample_spectrum(energies, fluences, total_flux=1e12, nbins=100, method=0
   fluences /= fluences.sum()
   fluences *= total_flux
   return energies, fluences
-
-# TODO move to LS49_utils
-def get_complex_fcalc_from_pdb(pdb_file, high_res=2.1, unit_cell_length_tolerance=0.1,
-                               fp_test=0, fdp_test=0, test_elem="Fe"):
-  from iotbx import file_reader
-  import mmtbx.command_line.fmodel
-  import mmtbx.utils
-  import math
-
-  pdb_in = file_reader.any_file(pdb_file, force_type="pdb")
-  pdb_in.assert_file_type("pdb")
-  xray_structure = pdb_in.file_object.xray_structure_simple()
-  xray_structure.show_summary()
-  for sc in xray_structure.scatterers():
-    if sc.element_symbol() == test_elem:
-      sc.fp = fp_test
-      sc.fdp = fdp_test
-  phil2 = mmtbx.command_line.fmodel.fmodel_from_xray_structure_master_params
-  params2 = phil2.extract()
-  params2.high_resolution = high_res / math.pow(
-    1 + unit_cell_length_tolerance, 1 / 3)
-  params2.fmodel.k_sol = 0.435
-  params2.fmodel.b_sol = 46.0
-  params2.structure_factors_accuracy.algorithm = 'direct'
-  f_model = mmtbx.utils.fmodel_from_xray_structure(
-    xray_structure=xray_structure,
-    f_obs=None,
-    add_sigmas=False,
-    params=params2).f_model
-  if True:
-    f_model = f_model.generate_bijvoet_mates()
-
-  return f_model

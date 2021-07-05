@@ -475,7 +475,7 @@ class Toolbox(object):
     destpath, destdir = os.path.split(destination)
 
     # default to using ssh for private phenix repositories
-    if module in ['phenix', 'solve_resolve', 'phaser_voyager', 'phasertng']:
+    if module in ['phenix', 'solve_resolve', 'phenix_pathwalker', 'phaser_voyager', 'phasertng']:
       use_ssh = True
 
     if os.path.exists(destination):
@@ -780,7 +780,7 @@ class cbflib_module(SourceModule):
   anonymous = ['git',
                'git@github.com:yayahjb/cbflib.git',
                'https://github.com/yayahjb/cbflib.git',
-               'https://github.com/yayahjb/cbflib/archive/master.zip']
+               'https://github.com/yayahjb/cbflib/archive/main.zip']
 
 class ccp4io_adaptbx(SourceModule):
   module = 'ccp4io_adaptbx'
@@ -897,6 +897,10 @@ class buildbot_module(SourceModule):
   module = 'buildbot'
   authenticated = ['svn', 'svn+ssh://%(cciuser)s@cci.lbl.gov/buildbot/trunk']
 
+class phenix_pathwalker_module(SourceModule):
+  module = 'phenix_pathwalker'
+  anonymous = ['git', 'git@github.com:phenix-project/phenix_pathwalker.git']
+
 # Phaser repositories
 class phaser_module(SourceModule):
   module = 'phaser'
@@ -936,14 +940,14 @@ class dials_module(SourceModule):
   anonymous = ['git',
                'git@github.com:dials/dials.git',
                'https://github.com/dials/dials.git',
-               'https://github.com/dials/dials/archive/master.zip']
+               'https://github.com/dials/dials/archive/main.zip']
 
 class dxtbx_module(SourceModule):
   module = 'dxtbx'
   anonymous = ['git',
                'git@github.com:cctbx/dxtbx.git',
                'https://github.com/cctbx/dxtbx.git',
-               'https://github.com/cctbx/dxtbx/archive/master.zip']
+               'https://github.com/cctbx/dxtbx/archive/main.zip']
 
 class dials_regression_module(SourceModule):
   module = 'dials_regression'
@@ -1505,6 +1509,11 @@ class Builder(object):
         Toolbox().git(module, parameters, destination=destination,
             use_ssh=use_git_ssh, verbose=True, reference=reference_repository_path)
     self.add_step(_indirection())
+
+    # Update version information
+    if module == 'cctbx_project':
+      workdir = ['modules', module]
+      self.add_step(self.shell(command=['python', os.path.join('libtbx', 'version.py')], workdir=workdir))
 
     # Use dials-2.2 branches for Python 2
     if (module == 'dials' or module == 'dxtbx' or module == 'xia2') and not self.python3:
@@ -2242,6 +2251,7 @@ class PhenixBuilder(CCIBuilder):
     'phenix_regression',
     'phenix_html',
     'phenix_examples',
+    'phenix_pathwalker',
     'labelit',
     'Plex',
     'PyQuante',
@@ -2272,6 +2282,7 @@ class PhenixBuilder(CCIBuilder):
     'phenix_dev_doc',
     'phenix_regression',
     'phenix_examples',
+    'phenix_pathwalker',
     'solve_resolve',
     'reel',
     'phaser',
@@ -2285,6 +2296,18 @@ class PhenixBuilder(CCIBuilder):
     'xia2',
     'prime',
   ]
+
+  def get_codebases(self):
+    """
+    Phenix uses Boost in the conda environment for Python 3
+    """
+    codebases = super(PhenixBuilder, self).get_codebases()
+    if self.python3 and self.use_conda is not None:
+      try:
+        codebases.remove('boost')
+      except ValueError:
+        pass
+    return codebases
 
   def add_module(self, module, workdir=None, module_directory=None):
     """
@@ -2808,10 +2831,10 @@ def run(root=None):
   python_args = parser.add_mutually_exclusive_group(required=False)
   python_args.add_argument('--python',
                     default='27', type=str, nargs='?', const='27',
-                    choices=['27', '36', '37', '38'],
+                    choices=['27', '36', '37', '38', '39'],
                     help="""When set, a specific Python version of the
 conda environment will be used. This only affects environments selected with
-the --builder flag. For non-conda dependencies, "36", "37", and "38" implies
+the --builder flag. For non-conda dependencies, any Python 3 implies
 Python 3.7.""")
   parser.add_argument("--config-flags", "--config_flags",
                     dest="config_flags",
