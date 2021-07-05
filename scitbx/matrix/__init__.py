@@ -474,6 +474,19 @@ class rec(object):
     return prefactor * ( -I3*s + OP*s + CP*c ) # bug fix 8/27/13 NKS
     # note: the rotation operator itself is prefactor * (I3*c + OP*(1-c) + CP*s)
 
+  def axis_and_angle_as_r3_second_derivative_wrt_angle(self, angle, deg=False):
+      assert self.n in ((3,1), (1,3))
+      prefactor = 1.
+      if (deg): angle *= math.pi/180; prefactor = 180./math.pi
+      unit_axis = self.normalize()
+      #Use matrix form of Rodrigues' rotation formula (see Wikipedia, e.g.)
+      I3 = identity(n=3)
+      OP = unit_axis.outer_product(unit_axis)
+      CP = cross_product_matrix(unit_axis.elems)
+      c, s = math.cos(angle), math.sin(angle)
+      return prefactor * ( -I3*c + OP*c - CP*s )
+      # note: the rotation operator itself is prefactor * (I3*c + OP*(1-c) + CP*s)
+
   def rt_for_rotation_around_axis_through(self, point, angle, deg=False):
     assert self.n in ((3,1), (1,3))
     assert point.n in ((3,1), (1,3))

@@ -1,4 +1,6 @@
 Import("env", "env_etc")
+import os
+import libtbx
 
 # remove -ffast-math compile option
 nanoBragg_env = env.Clone()
@@ -14,8 +16,22 @@ nanoBragg_obj = nanoBragg_env.SharedObject(
     "nanoBragg_ext.cpp",
     "nanoBragg.cpp",
     "nanoBragg_nks.cpp",
+    "../diffBragg/src/diffBragg_ext.cpp",
+    "../diffBragg/src/diffBragg.cpp", "../diffBragg/src/diffBragg_cpu_kernel.cpp"
   ])
 
+env_etc.eigen_dist = os.path.abspath(os.path.join(libtbx.env.dist_path("boost"),"../eigen"))
+if not os.path.isdir(env_etc.eigen_dist) and hasattr(env_etc, "conda_cpppath"):
+  for candidate in env_etc.conda_cpppath:
+    if os.path.isdir(os.path.join(candidate, "eigen3")):
+      env_etc.eigen_dist = os.path.abspath(os.path.join(os.path.join(candidate, "eigen3")))
+if os.path.isdir(env_etc.eigen_dist):
+  env_etc.eigen_include = env_etc.eigen_dist
+
+env_etc.include_registry.append(
+  env=nanoBragg_env,
+  paths=[env_etc.eigen_include]
+)
 # compile nanoBraggCUDA.cu if possible
 if (env_etc.enable_cuda):
   import os
@@ -37,8 +53,9 @@ if (env_etc.enable_cuda):
   if "nanoBraggCUDA.cu" in os.listdir(os.path.join(env_etc.simtbx_dist,"nanoBragg")):
     env_bpl.Prepend(NVCCFLAGS=["-DHAVE_NANOBRAGG_SPOTS_CUDA"])
     cuda_src = ["nanoBraggCUDA.cu"]
+    if os.environ.get("CCTBX_WITH_HIP") is not None:
+      cuda_src = ["nanoBraggCUDA.cpp"]
   else:  cuda_src = []
-
   env_etc.include_registry.append(
     env=env_bpl,
     paths=[env_etc.simtbx_include, env_etc.dxtbx_include]
@@ -46,13 +63,25 @@ if (env_etc.enable_cuda):
   env_bpl.Prepend(CPPPATH=[env_etc.boost_adaptbx_include,
     env_etc.boost_include])
   cuda_lib = env_bpl.cudaSharedLibrary(
-    target = "#lib/libsimtbx_nanoBraggCUDA",
-    source = cuda_src + ["nanoBragg_cuda.cpp"])
+    target="#lib/libsimtbx_nanoBraggCUDA",
+    source=cuda_src + ["nanoBragg_cuda.cpp"])
   env.Prepend(LIBS=["simtbx_nanoBraggCUDA"])
+
+  nanoBragg_env.cudaSharedLibrary(
+    target="#lib/libsimtbx_diffBraggCUDA",
+    source=["../diffBragg/src/diffBraggCUDA.cu", "../diffBragg/src/diffBragg_gpu_kernel.cu"])
+  env.Prepend(LIBS=["simtbx_diffBraggCUDA"])
 
 env.Prepend(LIBS=["omptbx"])
 env.SharedLibrary(
   target="#lib/simtbx_nanoBragg_ext",
+  source=[
+    nanoBragg_obj
+  ]
+)
+
+env.SharedLibrary(
+  target="#lib/simtbx_diffBragg_ext",
   source=[
     nanoBragg_obj
   ]
