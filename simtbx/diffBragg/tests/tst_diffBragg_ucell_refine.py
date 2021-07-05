@@ -80,6 +80,7 @@ SIM.instantiate_diffBragg(oversample=0, verbose=0, auto_set_spotscale=True)
 # D is an instance of diffBragg with reasonable parameters
 # and our dxtbx crystal created above
 D = SIM.D
+SIM.D.compute_curvatures = args.curvatures
 D.progress_meter = True
 
 # STEP6:
