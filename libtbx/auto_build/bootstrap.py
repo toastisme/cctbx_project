@@ -2267,6 +2267,7 @@ class PhenixBuilder(CCIBuilder):
     'xia2',
     'phaser',
     'phaser_regression',
+    'phaser_voyager',
     'iota',
   ]
   HOT_EXTRA = ['msgpack']
@@ -2281,6 +2282,7 @@ class PhenixBuilder(CCIBuilder):
     'reel',
     'phaser',
     'phaser_regression',
+    'phaser_voyager',
     'labelit',
     'elbow',
     'amber_adaptbx',
