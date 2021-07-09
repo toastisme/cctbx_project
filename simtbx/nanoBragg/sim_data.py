@@ -1,7 +1,10 @@
 from __future__ import absolute_import, division, print_function
 
 from collections import Iterable
-from simtbx.diffBragg import diffBragg
+try:
+  from simtbx.diffBragg import diffBragg
+except ImportError:
+  pass
 from scitbx.array_family import flex
 import numpy as np
 from simtbx.nanoBragg.anisotropic_mosaicity import AnisoUmats

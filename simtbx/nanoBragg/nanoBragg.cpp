@@ -1717,9 +1717,9 @@ void
 nanoBragg::update_oversample()
 {
     /* now we know the cell, calculate crystal size in meters */
-    if(xtal_size_x > 0) Na = xtal_size_x/a[0]-1e-6;
-    if(xtal_size_y > 0) Nb = xtal_size_y/b[0]-1e-6;
-    if(xtal_size_z > 0) Nc = xtal_size_z/c[0]-1e-6;
+    if(xtal_size_x > 0) Na = xtal_size_x/a[0];
+    if(xtal_size_y > 0) Nb = xtal_size_y/b[0];
+    if(xtal_size_z > 0) Nc = xtal_size_z/c[0];
     if(Na <= 1.0) Na = 1.0;
     if(Nb <= 1.0) Nb = 1.0;
     if(Nc <= 1.0) Nc = 1.0;
@@ -2175,7 +2175,7 @@ nanoBragg::init_sources()
             init_beam();
         }
         /* make sure stored source intensities are fractional */
-        double norm = flux_sum ; //sources;
+        double norm = flux_sum /sources;
         for (i=0; i < sources && norm>0.0; ++i)
         {
             source_I[i] /= norm;
