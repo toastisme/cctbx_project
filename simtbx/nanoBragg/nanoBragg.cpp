@@ -202,7 +202,6 @@ nanoBragg::nanoBragg(
 // constructor for the nanoBragg class that takes most any member as an argument, defaults in nanoBragg_ext.cpp
 nanoBragg::nanoBragg(
         scitbx::vec2<int> detpixels_slowfast, // = 1024, 1024
-        //scitbx::vec3<int> Ncells_abc, // 1 1 1
         scitbx::vec3<double> Ncells_abc, // 1 1 1
         cctbx::uctbx::unit_cell unitcell, // lysozyme
         vec3 missets_deg, // 0 0 0
@@ -797,7 +796,6 @@ nanoBragg::init_beamcenter()
     {
         if(! user_beam)
         {
-        //printf("HITTTTTTTT!");
             Xbeam = Xclose;
             Ybeam = Yclose;
         }
@@ -1257,16 +1255,9 @@ nanoBragg::update_beamcenter()
     /* make sure beam center is preserved */
     if(detector_pivot == BEAM){
         if(verbose) printf("pivoting detector around direct beam spot\n");
-        //printf("BIGZSZZZZ");
         pix0_vector[1] = -Fbeam*fdet_vector[1]-Sbeam*sdet_vector[1]+distance*beam_vector[1];
         pix0_vector[2] = -Fbeam*fdet_vector[2]-Sbeam*sdet_vector[2]+distance*beam_vector[2];
         pix0_vector[3] = -Fbeam*fdet_vector[3]-Sbeam*sdet_vector[3]+distance*beam_vector[3];
-        //SCITBX_EXAMINE(Fbeam);
-        //SCITBX_EXAMINE(Sbeam);
-        //SCITBX_EXAMINE(pix0_vector[1]);
-        //SCITBX_EXAMINE(pix0_vector[2]);
-        //SCITBX_EXAMINE(pix0_vector[3]);
-        //printf("BIGZSZZZZ");
     }
 
     /* what is the point of closest approach between sample and detector? */
@@ -2175,7 +2166,7 @@ nanoBragg::init_sources()
             init_beam();
         }
         /* make sure stored source intensities are fractional */
-        double norm = flux_sum /sources;
+        double norm = flux_sum/sources;
         for (i=0; i < sources && norm>0.0; ++i)
         {
             source_I[i] /= norm;
@@ -2969,24 +2960,6 @@ nanoBragg::add_nanoBragg_spots()
             {
                 if((fpixel==printout_fpixel && spixel==printout_spixel) || printout_fpixel < 0)
                 {
-                    //printf("LAKSLDKLASKDLKSLAKDA\n");
-                    //SCITBX_EXAMINE(scattering[1]);
-                    //SCITBX_EXAMINE(scattering[2]);
-                    //SCITBX_EXAMINE(scattering[3]);
-
-                    //SCITBX_EXAMINE(incident[1]);
-                    //SCITBX_EXAMINE(incident[2]);
-                    //SCITBX_EXAMINE(incident[3]);
-
-                    //SCITBX_EXAMINE(diffracted[1]) ;
-                    //SCITBX_EXAMINE(diffracted[2]) ;
-                    //SCITBX_EXAMINE(diffracted[3]) ;
-
-                    //SCITBX_EXAMINE(pix0_vector[1]);
-                    //SCITBX_EXAMINE(pix0_vector[2]);
-                    //SCITBX_EXAMINE(pix0_vector[3]);
-
-                    //printf("LAKSLDKLASKDLKSLAKDA\n");
                     twotheta = atan2(sqrt(pixel_pos[2]*pixel_pos[2]+pixel_pos[3]*pixel_pos[3]),pixel_pos[1]);
                     test = sin(twotheta/2.0)/(lambda0*1e10);
                     printf("%4d %4d : stol = %g or %g\n", fpixel,spixel,stol,test);
