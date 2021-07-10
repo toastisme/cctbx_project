@@ -13,6 +13,7 @@ class NBbeam(object):
         self.polarization_fraction = 1
         self.divergence = 0
         self.size_mm = 0.001
+        self.norm_by_nbeams = True  # this appears to be what happens in nanoBragg.cpp
 
     @property
     def size_mm(self):
@@ -58,10 +59,13 @@ class NBbeam(object):
     @property
     def xray_beams(self):
         self._xray_beams = flex_Beam()
+        norm = 1
+        if self.norm_by_nbeams:
+            norm = float(len(self.spectrum))
 
         for wavelen, flux in self.spectrum:
             beam = BeamFactory.simple(wavelen*1e-10)
-            beam.set_flux(flux)
+            beam.set_flux(flux / norm)
             beam.set_unit_s0(self.unit_s0)
             beam.set_polarization_fraction(self.polarization_fraction)
             beam.set_divergence(self.divergence)

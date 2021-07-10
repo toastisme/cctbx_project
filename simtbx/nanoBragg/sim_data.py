@@ -1,10 +1,8 @@
 from __future__ import absolute_import, division, print_function
 
 from collections import Iterable
-try:
-  from simtbx.diffBragg import diffBragg
-except ImportError:
-  pass
+
+#from simtbx.diffBragg import diffBragg
 from scitbx.array_family import flex
 import numpy as np
 from simtbx.nanoBragg.anisotropic_mosaicity import AnisoUmats
@@ -50,7 +48,7 @@ class SimData:
   def __init__(self, use_default_crystal=False):
     self.detector = SimData.simple_detector(180, 0.1, (512, 512))  # dxtbx detector model
     self.seed = 1  # nanoBragg seed member
-    self.crystal = NBcrystal(init_defaults=use_default_crystal)
+    self.crystal = NBcrystal(use_default_crystal)
     self.add_air = False  # whether to add air in the generate_simulated_image method
     self.Umats_method = 0  # how to generate mosaic rotation umats (can be 0,1,2,3)
     self.add_water = True  # whether to add water in the generate_simulated_image method
@@ -482,6 +480,7 @@ class SimData:
     if instantiate:
       self.instantiate_diffBragg()
     self._add_nanoBragg_spots()
+    #self.D.raw_pixels /= len(self.beam.xray_beams)
     self._add_background()
     if self.include_noise:
       self._add_noise()
