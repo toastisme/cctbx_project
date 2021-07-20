@@ -325,12 +325,6 @@ def Test(inFileName = None):
   # to make sure we have a valid unit cell.
   model = shift_and_box_model(model = model)
 
-  # Add Hydrogens to the model
-  print('Adding Hydrogens')
-  reduce_add_h_obj = reduce_hydrogen.place_hydrogens(model = model)
-  reduce_add_h_obj.run()
-  model = reduce_add_h_obj.get_model()
-
   # Interpret the model after shifting and adding Hydrogens to it so that
   # all of the needed fields are filled in when we use them below.
   # @todo Remove this once place_hydrogens() does all the interpretation we need.
@@ -338,6 +332,12 @@ def Test(inFileName = None):
   p = mmtbx.model.manager.get_default_pdb_interpretation_params()
   model.set_pdb_interpretation_params(params = p)
   model.process_input_model(make_restraints=True) # make restraints
+
+  # Add Hydrogens to the model
+  print('Adding Hydrogens')
+  reduce_add_h_obj = reduce_hydrogen.place_hydrogens(model = model)
+  reduce_add_h_obj.run()
+  model = reduce_add_h_obj.get_model()
 
   # Get the first model in the hierarchy.
   firstModel = model.get_hierarchy().models()[0]

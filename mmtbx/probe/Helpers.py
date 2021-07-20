@@ -127,6 +127,7 @@ def getExtraAtomInfo(model, useNeutronDistances = False):
               else:
                 warnings += "Could not find "+a.name+" in CCTBX, using Probe tables\n"
             except:
+              raise(Exception("XXX Nigel, here is the problem"))
               # Warn and drop through to below.
               warnings += ("Could not look up "+a.name+" in CCTBX "+
                 "(perhaps interpretation was not run on the model?), using Probe tables\n")
