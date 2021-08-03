@@ -1260,7 +1260,7 @@ class InMemScript(DialsProcessScript, DialsProcessorWithLogging):
       imgset = ExperimentListFactory.from_filenames([img_path]).imagesets()[0]
       assert len(experiments.detectors()) == 1;   imgset.set_detector(experiments[0].detector)
       assert len(experiments.beams()) == 1;       imgset.set_beam(experiments[0].beam)
-      assert len(experiments.scans()) <= 1;       imgset.set_scan(experiments[0].scan)
+      assert len(experiments.scans()) <= 1;       imgset.set_scan(experiments[0].sequence)
       assert len(experiments.goniometers()) <= 1; imgset.set_goniometer(experiments[0].goniometer)
       for expt_id, expt in enumerate(experiments):
         expt.imageset = imgset

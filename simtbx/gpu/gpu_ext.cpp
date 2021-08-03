@@ -41,7 +41,7 @@ namespace simtbx { namespace gpu {
         .def(init<int const&, const simtbx::nanoBragg::nanoBragg&>(
             ( arg("deviceId"),arg("nanoBragg"))))
 //             "Single panel constructor with data taken from nanoBragg instance")
-        .def(init<int const&, dxtbx::model::Detector const &, dxtbx::model::Beam const &>(
+        .def(init<int const&, dxtbx::model::Detector const &, dxtbx::model::MonochromaticBeam const &>(
             ( arg("deviceId"),arg("detector"),arg("beam"))))
 //             "Multipanel constructor with data taken from dxtbx objects")
         .def("get_deviceID", &simtbx::gpu::gpu_detector::get_deviceID

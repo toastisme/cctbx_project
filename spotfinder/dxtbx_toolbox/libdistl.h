@@ -14,7 +14,7 @@ namespace Distl {
 class dxtbx_diffimage: public diffimage {
 
   ::dxtbx::model::Panel panel;
-  ::dxtbx::model::Beam beam;
+  ::dxtbx::model::MonochromaticBeam beam;
 
 public:
   inline dxtbx_diffimage(){}
@@ -23,8 +23,8 @@ public:
   inline void set_panel(::dxtbx::model::Panel other){
     panel = other;}
 
-  inline void set_beam(::dxtbx::model::Beam& other) {
-    beam = ::dxtbx::model::Beam(other);
+  inline void set_beam(::dxtbx::model::MonochromaticBeam& other) {
+    beam = ::dxtbx::model::MonochromaticBeam(other);
   }
 
   inline double xy2resol(const double x, const double y) const {

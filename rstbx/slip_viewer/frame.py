@@ -30,7 +30,7 @@ class chooser_wrapper(object):
     return "%s [%d]"%(self.path,self.index+1)
 
   def get_detector(self):  return self.image_set.get_detector()
-  def get_scan(self):  return self.image_set.get_scan()
+  def get_scan(self):  return self.image_set.get_sequence()
   def get_beam(self):  return self.image_set.get_beam()
   def get_mask(self):
     return self.image_set.get_mask(self.index)

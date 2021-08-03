@@ -50,7 +50,7 @@ def run(args, verbose=False):
     if len(experiments[0].imageset) > 0 and params.frame_number is not None:
       print("Frame number", params.frame_number)
       experiments[0].imageset = experiments[0].imageset[params.frame_number:params.frame_number+1]
-      experiments[0].scan = experiments[0].imageset.get_scan()
+      experiments[0].sequence = experiments[0].imageset.get_sequence()
     reflections = flex.reflection_table.from_observations(experiments, params)
 
     if params.stats:

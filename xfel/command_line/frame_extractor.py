@@ -75,7 +75,7 @@ class ConstructFrame(object):
     self.beam_obj = experiment.beam
     self.det = experiment.detector
     self.gonio = experiment.goniometer
-    self.scan = experiment.scan
+    self.scan = experiment.sequence
     self.img_sweep = experiment.imageset
 
   # experiment-dependent components ---------------------------------------------------------------------------
