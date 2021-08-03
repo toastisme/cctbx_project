@@ -204,7 +204,7 @@ def run_sim2smv(fileout):
   img = dxtbx.load("noiseimage_001.img")
   print(img)
   FormatCBFMini.as_file(
-    detector=img.get_detector(),beam=img.get_beam(),gonio=img.get_goniometer(),scan=img.get_scan(),
+    detector=img.get_detector(),beam=img.get_beam(),gonio=img.get_goniometer(),scan=img.get_sequence(),
     data=img.get_raw_data(),path=fileout)
   SIM.free_all()
 

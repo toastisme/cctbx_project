@@ -809,11 +809,11 @@ printf("DEBUG: pythony_stolFbg[1]=(%g,%g)\n",nanoBragg.pythony_stolFbg[1][0],nan
 
 
   /* table of sources, as dxtbx "beam"s */
-  static scitbx::af::versa<dxtbx::model::Beam, scitbx::af::flex_grid<> > get_beams(nanoBragg& nanoBragg) {
+  static scitbx::af::versa<dxtbx::model::MonochromaticBeam, scitbx::af::flex_grid<> > get_beams(nanoBragg& nanoBragg) {
       int i;
       /* allocate new flex array */
-//      scitbx::af::versa<dxtbx::model::Beam, scitbx::af::flex_grid<> > nanoBragg_pythony_beams;
-      nanoBragg.pythony_beams = scitbx::af::versa<dxtbx::model::Beam, scitbx::af::flex_grid<> >();
+//      scitbx::af::versa<dxtbx::model::MonochromaticBeam, scitbx::af::flex_grid<> > nanoBragg_pythony_beams;
+      nanoBragg.pythony_beams = scitbx::af::versa<dxtbx::model::MonochromaticBeam, scitbx::af::flex_grid<> >();
       /* make sure it is big enough to hold all sources */
       nanoBragg.pythony_beams.resize(nanoBragg.sources);
 
@@ -824,7 +824,7 @@ printf("DEBUG: pythony_stolFbg[1]=(%g,%g)\n",nanoBragg.pythony_stolFbg[1][0],nan
 
       /* copy internal storage into the flex array */
       for(i=0;i<nanoBragg.sources;++i){
-          nanoBragg.pythony_beams[i].set_direction(vec3(nanoBragg.source_X[i],nanoBragg.source_Y[i],nanoBragg.source_Z[i]));
+          nanoBragg.pythony_beams[i].set_sample_to_source_direction(vec3(nanoBragg.source_X[i],nanoBragg.source_Y[i],nanoBragg.source_Z[i]));
           nanoBragg.pythony_beams[i].set_wavelength(nanoBragg.source_lambda[i]*1e10);
           nanoBragg.pythony_beams[i].set_flux(nanoBragg.source_I[i]);
           // how is this a fraction when it can be negative? (Kahn et al. 1982)
@@ -834,7 +834,7 @@ printf("DEBUG: pythony_stolFbg[1]=(%g,%g)\n",nanoBragg.pythony_stolFbg[1][0],nan
       /* pass this back to python */
       return nanoBragg.pythony_beams;
   }
-  static void   set_beams(nanoBragg& nanoBragg, scitbx::af::versa<dxtbx::model::Beam, scitbx::af::flex_grid<> > const& value) {
+  static void   set_beams(nanoBragg& nanoBragg, scitbx::af::versa<dxtbx::model::MonochromaticBeam, scitbx::af::flex_grid<> > const& value) {
       if(nanoBragg.verbose>3) printf(" about to initialize sources\n");
       nanoBragg.pythony_beams = value;
       if(nanoBragg.verbose>3) printf(" done\n");
@@ -1355,7 +1355,7 @@ printf("DEBUG: pythony_stolFbg[1]=(%g,%g)\n",nanoBragg.pythony_stolFbg[1][0],nan
     class_<nanoBragg>("nanoBragg",no_init)
       /* constructor that takes a dxtbx detector and beam model */
       .def(init<const dxtbx::model::Detector&,
-                const dxtbx::model::Beam&,
+                const dxtbx::model::MonochromaticBeam&,
                 int, int>(
         (arg_("detector"),
          arg_("beam"),
@@ -1816,7 +1816,7 @@ printf("DEBUG: pythony_stolFbg[1]=(%g,%g)\n",nanoBragg.pythony_stolFbg[1][0],nan
       .add_property("xray_beams",
                      make_function(&get_beams,rbv()),
                      make_function(&set_beams,dcp()),
-                     "list of dxtbx::Beam objects corresponding to each zero-divergence and monochromatic x-ray point source in the numerical simulation ")
+                     "list of dxtbx::MonochromaticBeam objects corresponding to each zero-divergence and monochromatic x-ray point source in the numerical simulation ")
       /* x-ray sources, raw position list */
       .add_property("xray_source_XYZ",
                      make_function(&get_source_XYZ,rbv()),

@@ -52,7 +52,7 @@ class ConstructFrame(object):
     self.beam_obj = experiment.beam
     self.det = experiment.detector
     self.gonio = experiment.goniometer
-    self.scan = experiment.scan
+    self.scan = experiment.sequence
     self.img_sweep = experiment.imageset
     print(scan_no, len(self.reflections))
 
@@ -212,7 +212,7 @@ if __name__ == "__main__":
   if importer.unhandled:
     print("unable to process:", importer.unhandled)
   experiment = flatten_experiments(importer.experiments)[0]
-  scan = experiment.scan
+  scan = experiment.sequence
   for scan_no in range(scan.get_image_range()[0], scan.get_image_range()[1]):
     #build each frame
     frame = ConstructFrameFromFiles(params.pickle_name, params.json_name, scan_no).make_frame()

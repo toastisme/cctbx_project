@@ -2,7 +2,7 @@
 Organizer for nanoBragg beam properties
 """
 from __future__ import print_function, division
-from dxtbx.model.beam import BeamFactory
+from dxtbx.model.beam import MonochromaticBeamFactory
 from dxtbx_model_ext import flex_Beam
 
 
@@ -65,7 +65,7 @@ class NBbeam(object):
       norm = float(len(self.spectrum))
 
     for wavelen, flux in self.spectrum:
-      beam = BeamFactory.simple(wavelen * 1e-10)
+      beam = MonochromaticBeamFactory.make_simple_beam(wavelen * 1e-10)
       beam.set_flux(flux / norm)
       beam.set_unit_s0(self.unit_s0)
       beam.set_polarization_fraction(self.polarization_fraction)

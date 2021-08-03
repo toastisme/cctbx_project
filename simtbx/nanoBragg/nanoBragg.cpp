@@ -11,7 +11,7 @@ using boost::math::isnan;
 /* constructor that takes a dxtbx "panel" detector model */
 nanoBragg::nanoBragg(
     const dxtbx::model::Detector& detector, // no default
-    const dxtbx::model::Beam& beam,  // no default
+    const dxtbx::model::MonochromaticBeam& beam,  // no default
     int verbose, // =0
     int panel_id) //=0
 {

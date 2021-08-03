@@ -79,9 +79,9 @@ def run(args):
       slow.elems,
       origin.elems)
 
-  from dxtbx.model import BeamFactory
+  from dxtbx.model import MonochromaticBeamFactory
   wavelength = params.wavelength
-  beam = BeamFactory.simple(wavelength)
+  beam = MonochromaticBeamFactory.make_simple_beam(wavelength)
 
   from dxtbx.model import Experiment, ExperimentList
   experiments = ExperimentList()

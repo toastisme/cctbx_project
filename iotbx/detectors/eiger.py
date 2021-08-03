@@ -51,7 +51,7 @@ class EIGERImage(DetectorImageBase):
       assert tt_angle_deg < 0.01 # assert normal to within 0.01 degree
       self.parameters['TWOTHETA'] = 0.0
 
-      S = dxtbx_instance.get_scan()
+      S = dxtbx_instance.get_sequence()
       self.zero_oscillation = S.get_oscillation()[0]
       osc_range = S.get_oscillation()[1]
       self.parameters['OSC_RANGE'] = osc_range

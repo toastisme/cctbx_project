@@ -35,7 +35,7 @@ class heuristics_base(object):
     beam = img.get_beam()
     S0 = beam.get_s0()
     data = img.get_raw_data()
-    scan = img.get_scan()
+    scan = img.get_sequence()
     print(scan)
     if scan is None:
       print("No scan")

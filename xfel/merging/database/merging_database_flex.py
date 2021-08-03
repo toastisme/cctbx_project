@@ -154,7 +154,7 @@ order_dict = {'wavelength': 0,
 class read_experiments(object):
   def __init__(self,params):
     from six.moves import cPickle as pickle
-    from dxtbx.model import BeamFactory
+    from dxtbx.model import MonochromaticBeamFactory
     from dxtbx.model import DetectorFactory
     from dxtbx.model.crystal import CrystalFactory
     from cctbx.crystal_orientation import crystal_orientation,basis_type
@@ -171,7 +171,7 @@ class read_experiments(object):
       tokens = item.split(' ')
       wavelength = float(tokens[order_dict["wavelength"]])
 
-      beam = BeamFactory.simple(wavelength = wavelength)
+      beam = MonochromaticBeamFactory.make_simple_beam(wavelength = wavelength)
 
       detector = DetectorFactory.simple(
         sensor = DetectorFactory.sensor("PAD"), # XXX shouldn't hard code for XFEL

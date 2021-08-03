@@ -119,7 +119,7 @@ def run_sim(seed=1,wavelength=0.9,distance=500,random_orientation=False,phi=0,os
   #
   # option for detector rotations to be about beam center or sample position
   #SIM.detector_pivot=pivot.Sample
-  SIM.detector_pivot=pivot.Beam
+  SIM.detector_pivot=pivot.MonochromaticBeam
   print("pivoting detector about",SIM.detector_pivot)
   # make the module roi list
   # and also make up per-module mis-alignments shifts and rotations
@@ -263,7 +263,7 @@ def write_cbf(SIM,fileout="noiseimage_00001.cbf"):
   dxDet = dxtbx.model.Detector(dxPanel)
   # now create a beam from nothing
   dxBeam = dxtbx.model.Beam()
-  #dxBeam.set_direction(tuple(flex.double(SIM.beam_vector)*-1))
+  #dxBeam.set_same_to_source_direction(tuple(flex.double(SIM.beam_vector)*-1))
   dxBeam.set_s0(SIM.beam_vector)
   dxBeam.set_wavelength(SIM.wavelength_A)
   dxBeam.set_flux(SIM.flux)
