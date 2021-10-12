@@ -11,7 +11,7 @@ from scitbx.array_family import flex as sciflex
 from libtbx import easy_pickle
 from libtbx.utils import Sorry
 from dials.util.options import OptionParser
-from dxtbx.model import MonochromaticBeamFactory, DetectorFactory
+from dxtbx.model import MonoBeamFactory, DetectorFactory
 from dxtbx.format import FormatMultiImage
 from dxtbx.model import Experiment, ExperimentList
 from dxtbx import imageset
@@ -106,7 +106,7 @@ class construct_reflection_table_and_experiment_list(object):
   # construct the experiments and experiment_list objects
   def expt_beam_maker(self):
     """Construct the beam object for the experiments file."""
-    self.beam = MonochromaticBeamFactory.make_simple_beam(self.wavelength)
+    self.beam = MonoBeamFactory.make_simple_beam(self.wavelength)
 
   def expt_crystal_maker(self):
     """Construct the crystal object for the experiments file."""

@@ -62,7 +62,7 @@ class _Format(FormatPYunspecified):
 
     from copy import deepcopy
 
-    from dxtbx.model.beam import MonochromaticBeam, BeamFactory
+    from dxtbx.model.beam import MonoBeam, BeamFactory
     from dxtbx.model.detector import Detector, DetectorFactory
     from dxtbx.model.goniometer import Goniometer, GoniometerFactory
     from dxtbx.model import Scan, SequenceFactory
@@ -119,7 +119,7 @@ class _Format(FormatPYunspecified):
     self._detector_instance = detector_instance
 
     beam_instance = self._beam()
-    assert(isinstance(beam_instance, MonochromaticBeam))
+    assert(isinstance(beam_instance, MonoBeam))
     self._beam_instance = beam_instance
 
     scan_instance = self._scan()

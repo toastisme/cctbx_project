@@ -125,7 +125,7 @@ di::w_Distl::set_resolution_outer(const double& newvalue)
 
 void
 di::w_Distl::setspotimg(::dxtbx::model::Panel& panel,
-                        ::dxtbx::model::MonochromaticBeam& beam,
+                        ::dxtbx::model::MonoBeam& beam,
                         af::flex_int const& intdata,
                         const int& peripheral_margin,
                         const double& saturation )

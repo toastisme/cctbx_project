@@ -24,7 +24,7 @@ namespace af = scitbx::af;
 
 struct packed_metrology{
   packed_metrology(){/*printf("NO OPERATION")*/;};
-  packed_metrology(dxtbx::model::Detector const &,dxtbx::model::MonochromaticBeam const &);
+  packed_metrology(dxtbx::model::Detector const &,dxtbx::model::MonoBeam const &);
   packed_metrology(const simtbx::nanoBragg::nanoBragg& nB);
   void show() const;
   af::shared<double>sdet;
@@ -39,7 +39,7 @@ struct packed_metrology{
 struct gpu_detector{
   inline gpu_detector(){printf("NO OPERATION, DEVICE NUMBER IS NEEDED");};
   gpu_detector(int const&, const simtbx::nanoBragg::nanoBragg& nB);
-  gpu_detector(int const&, dxtbx::model::Detector const &, dxtbx::model::MonochromaticBeam const &);
+  gpu_detector(int const&, dxtbx::model::Detector const &, dxtbx::model::MonoBeam const &);
   void construct_detail(int const&, dxtbx::model::Detector const &);
 
   inline int get_deviceID(){return h_deviceID;}

@@ -23,7 +23,7 @@ namespace gpu {
   }
 
   packed_metrology::packed_metrology(dxtbx::model::Detector const & arg_detector,
-                                   dxtbx::model::MonochromaticBeam const & arg_beam) {
+                                   dxtbx::model::MonoBeam const & arg_beam) {
 
     for (std::size_t panel_id = 0; panel_id < arg_detector.size(); panel_id++){
           // helper code arising from the nanoBragg constructor, with user_beam=True
@@ -130,7 +130,7 @@ namespace gpu {
 
   gpu_detector::gpu_detector(int const& arg_device_id,
                              dxtbx::model::Detector const & arg_detector,
-                             dxtbx::model::MonochromaticBeam const& arg_beam):
+                             dxtbx::model::MonoBeam const& arg_beam):
     h_deviceID(arg_device_id),
     detector(arg_detector),
     cu_active_pixel_list(NULL),
