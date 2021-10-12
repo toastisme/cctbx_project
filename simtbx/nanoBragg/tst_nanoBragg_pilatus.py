@@ -119,7 +119,7 @@ def run_sim(seed=1,wavelength=0.9,distance=500,random_orientation=False,phi=0,os
   #
   # option for detector rotations to be about beam center or sample position
   #SIM.detector_pivot=pivot.Sample
-  SIM.detector_pivot=pivot.MonochromaticBeam
+  SIM.detector_pivot=pivot.MonoBeam
   print("pivoting detector about",SIM.detector_pivot)
   # make the module roi list
   # and also make up per-module mis-alignments shifts and rotations

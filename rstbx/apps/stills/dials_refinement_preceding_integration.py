@@ -472,8 +472,8 @@ class integrate_one_frame(IntegrationMetaProcedure):
 
   def prepare_dxtbx_models(self,setting_specific_ai,sg,isoform=None):
 
-    from dxtbx.model import MonochromaticBeamFactory
-    beam = MonochromaticBeamFactory.make_simple_beam(wavelength = self.inputai.wavelength)
+    from dxtbx.model import MonoBeamFactory
+    beam = MonoBeamFactory.make_simple_beam(wavelength = self.inputai.wavelength)
 
     from dxtbx.model import DetectorFactory
     detector = DetectorFactory.simple(

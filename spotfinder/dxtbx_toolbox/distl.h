@@ -31,7 +31,7 @@ public:
   Distl::dxtbx_diffimage finder;
   void set_resolution_outer(const double&);
   void setspotimg(::dxtbx::model::Panel&,
-                  ::dxtbx::model::MonochromaticBeam&,
+                  ::dxtbx::model::MonoBeam&,
                   af::flex_int const&,
                   const int&,
                   const double&);

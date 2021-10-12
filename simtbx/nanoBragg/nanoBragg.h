@@ -204,7 +204,7 @@ class nanoBragg {
     af::shared<vec3> pythony_source_XYZ;
     af::shared<double> pythony_source_intensity;
     af::shared<double> pythony_source_lambda;
-    scitbx::af::versa<dxtbx::model::MonochromaticBeam, scitbx::af::flex_grid<> > pythony_beams;
+    scitbx::af::versa<dxtbx::model::MonoBeam, scitbx::af::flex_grid<> > pythony_beams;
 
     /* incident x-ray fluence in photons/m^2   default equivalent to unity
         that is, one electron will scatter 1 ph/SR after a fluence of 1.26e29 ph/m^2
@@ -447,7 +447,7 @@ class nanoBragg {
 //    bool binary_spots; // = 0; no inter-Bragg spots, flat-top spots inside FWHM of sinc function instead
 
     /* the constructor that takes a DXTBX detector and beam model */
-    nanoBragg(const dxtbx::model::Detector&, const dxtbx::model::MonochromaticBeam& beam, int verbose, int panel_id = 0);
+    nanoBragg(const dxtbx::model::Detector&, const dxtbx::model::MonoBeam& beam, int verbose, int panel_id = 0);
 
     /* the default constructor */
 //    nanoBragg();
