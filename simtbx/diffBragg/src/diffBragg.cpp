@@ -175,7 +175,7 @@ void rotZ_manager::set_R(){
 // END rot manager
 
 // BEGIN diffBragg
-diffBragg::diffBragg(const dxtbx::model::Detector& detector, const dxtbx::model::Beam& beam,
+diffBragg::diffBragg(const dxtbx::model::Detector& detector, const dxtbx::model::MonoBeam& beam,
             int verbose):
     nanoBragg(detector, beam, verbose, 0)
     { // diffBragg init
@@ -530,7 +530,7 @@ void diffBragg::rotate_fs_ss_vecs_3D(double panel_rot_angO, double panel_rot_ang
 
 void diffBragg::update_dxtbx_geoms(
     const dxtbx::model::Detector& detector,
-    const dxtbx::model::Beam& beam,
+    const dxtbx::model::MonoBeam& beam,
     int panel_id,
     double panel_rot_angO,
     double panel_rot_angF,
@@ -1142,7 +1142,7 @@ boost::python::list diffBragg::get_Fhkl_channels(){
     return channels;
 }
 
-void diffBragg::update_xray_beams(scitbx::af::versa<dxtbx::model::Beam, scitbx::af::flex_grid<> > const& value) {
+void diffBragg::update_xray_beams(scitbx::af::versa<dxtbx::model::MonoBeam, scitbx::af::flex_grid<> > const& value) {
     pythony_beams = value;
     //SCITBX_ASSERT(sources==pythony_beams.size());
 

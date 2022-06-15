@@ -55,7 +55,7 @@ namespace simtbx { namespace gpu {
             ( arg("deviceId"),arg("nanoBragg")),
              "Single panel constructor with data taken from nanoBragg instance\n"
              "The deviceId is mandatory for CUDA."))
-        .def(init<int const&, dxtbx::model::Detector const &, dxtbx::model::Beam const &>(
+        .def(init<int const&, dxtbx::model::Detector const &, dxtbx::model::MonoBeam const &>(
             ( arg("deviceId"),arg("detector"),arg("beam")),
              "Multipanel constructor with data taken from dxtbx objects\n"
              "The deviceId is mandatory for CUDA."))

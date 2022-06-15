@@ -134,7 +134,7 @@ class rotZ_manager: public rot_manager{
 
 class diffBragg: public nanoBragg{
   public:
-  diffBragg(const dxtbx::model::Detector& detector, const dxtbx::model::Beam& beam,
+  diffBragg(const dxtbx::model::Detector& detector, const dxtbx::model::MonoBeam& beam,
             int verbose);
 
   ~diffBragg(){};
@@ -171,7 +171,7 @@ class diffBragg: public nanoBragg{
 #endif
 
   // methods
-  void update_xray_beams(scitbx::af::versa<dxtbx::model::Beam, scitbx::af::flex_grid<> > const& value);
+  void update_xray_beams(scitbx::af::versa<dxtbx::model::MonoBeam, scitbx::af::flex_grid<> > const& value);
   void initialize_managers();
   void diffBragg_rot_mats();
   void vectorize_umats();
@@ -211,7 +211,7 @@ class diffBragg: public nanoBragg{
   void let_loose(int refine_id);
   int detector_panel_id;
   void shift_originZ(const dxtbx::model::Detector& detector, double shift);
-  void update_dxtbx_geoms(const dxtbx::model::Detector& detector, const dxtbx::model::Beam& beam,
+  void update_dxtbx_geoms(const dxtbx::model::Detector& detector, const dxtbx::model::MonoBeam& beam,
         int panel_id, double panel_rot_angO=0,
         double panel_rot_angF=0,  double panel_rot_angS=0, double panel_offsetX=0,
         double panel_offsetY=0, double panel_offsetZ=0, bool force=true);

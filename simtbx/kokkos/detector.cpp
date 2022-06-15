@@ -19,7 +19,7 @@ using Kokkos::parallel_for;
 namespace simtbx { namespace Kokkos {
 
   packed_metrology::packed_metrology(dxtbx::model::Detector const & arg_detector,
-                                   dxtbx::model::Beam const & arg_beam) {
+                                   dxtbx::model::MonoBeam const & arg_beam) {
 
     for (std::size_t panel_id = 0; panel_id < arg_detector.size(); panel_id++){
           // helper code arising from the nanoBragg constructor, with user_beam=True
@@ -122,7 +122,7 @@ namespace simtbx { namespace Kokkos {
 
   kokkos_detector::kokkos_detector(int const& arg_device,
                              dxtbx::model::Detector const & arg_detector,
-                             dxtbx::model::Beam const& arg_beam):
+                             dxtbx::model::MonoBeam const& arg_beam):
     h_deviceID(arg_device),
     metrology(arg_detector, arg_beam),
     m_panel_count( arg_detector.size() ),

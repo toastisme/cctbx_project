@@ -36,7 +36,7 @@ namespace simtbx { namespace Kokkos {
              "Single panel constructor with data taken from nanoBragg instance\n"
              "deviceId is completely optional and ignored for Kokkos, rather\n"
              "the device is set by the gpu_instance class."))
-        .def(init<int const&, dxtbx::model::Detector const &, dxtbx::model::Beam const &>(
+        .def(init<int const&, dxtbx::model::Detector const &, dxtbx::model::MonoBeam const &>(
             ( arg("deviceId")=-1,arg("detector"),arg("beam")),
              "Multipanel constructor with data taken from dxtbx objects\n"
              "deviceId is completely optional and ignored for Kokkos, rather\n"

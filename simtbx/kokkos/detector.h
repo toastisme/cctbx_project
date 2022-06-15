@@ -24,7 +24,7 @@ namespace af = scitbx::af;
 
 struct packed_metrology{
   packed_metrology(){/*printf("NO OPERATION")*/;};
-  packed_metrology(dxtbx::model::Detector const &,dxtbx::model::Beam const &);
+  packed_metrology(dxtbx::model::Detector const &,dxtbx::model::MonoBeam const &);
   packed_metrology(const simtbx::nanoBragg::nanoBragg& nB);
   void show() const;
   af::shared<double>sdet;
@@ -39,7 +39,7 @@ struct packed_metrology{
 struct kokkos_detector{
   inline kokkos_detector(){printf("NO OPERATION, DEVICE NUMBER IS NEEDED");};
   kokkos_detector(int const&, const simtbx::nanoBragg::nanoBragg& nB);
-  kokkos_detector(int const&, dxtbx::model::Detector const &, dxtbx::model::Beam const &);
+  kokkos_detector(int const&, dxtbx::model::Detector const &, dxtbx::model::MonoBeam const &);
   vector_double_t construct_detail(dxtbx::model::Detector const &);
 
   inline void show_summary(){
